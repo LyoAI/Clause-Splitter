@@ -61,56 +61,16 @@ class ErrorResponse(BaseModel):
     detail: str | None = Field(default=None, description="详细错误信息")
 
 
-# ── Compare / Summary / Pipeline ─────────────────────────────────────────
+# ── SummaryComparison / Pipeline ──────────────────────────────────────────
 
-class CompareRequest(BaseModel):
-    """提交比对任务的请求（支持多对多）."""
-
-    split_task_ids: str = Field(
-        ...,
-        description="已完成拆分的 split 任务 ID，多个用逗号分隔（如 aaa111,bbb222）",
-    )
-    internal_document_names: str = Field(
-        default="",
-        description="内部制度文档名称，多个用逗号分隔（可选）",
-    )
-
-
-class CompareResponse(BaseModel):
-    """提交比对任务后的即时响应."""
+class SummaryComparisonResponse(BaseModel):
+    """提交 summary_comparison 任务后的即时响应."""
 
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
     status: TaskStatusEnum = Field(default=TaskStatusEnum.PENDING)
-    message: str = Field(default="比对任务已提交……")
-
-
-class SummaryRequest(BaseModel):
-    """提交报告生成任务的请求."""
-
-    compare_task_id: str = Field(
-        ...,
-        description="已完成比对的 compare 任务 ID",
-    )
-    external_raw_text: str = Field(
-        default="",
-        description="外规条款原文（Markdown格式，用于报告引用）",
-    )
-    internal_raw_text: str = Field(
-        default="",
-        description="内规条款原文（Markdown格式，用于报告引用）",
-    )
-
-
-class SummaryResponse(BaseModel):
-    """提交报告生成任务后的即时响应."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    task_id: str
-    status: TaskStatusEnum = Field(default=TaskStatusEnum.PENDING)
-    message: str = Field(default="报告生成任务已提交……")
+    message: str = Field(default="比对+报告生成任务已提交……")
 
 
 class PipelineResponse(BaseModel):

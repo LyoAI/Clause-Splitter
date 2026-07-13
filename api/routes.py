@@ -1,4 +1,4 @@
-"""FastAPI routes — /api/v1 split/compare/summary/pipeline and task management."""
+"""FastAPI routes — /api/v1 split/summary_comparison/pipeline and task management."""
 
 from __future__ import annotations
 
@@ -12,10 +12,7 @@ from fastapi.responses import FileResponse
 from models.api import (
     SplitRequest,
     SplitResponse,
-    CompareRequest,
-    CompareResponse,
-    SummaryRequest,
-    SummaryResponse,
+    SummaryComparisonResponse,
     PipelineResponse,
     TaskStatusResponse,
     TaskListResponse,
@@ -35,7 +32,7 @@ UPLOAD_DIR = Path(tempfile.gettempdir()) / "clause_splitter_uploads"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# POST /api/v1/split  — 条款拆分 (existing)
+# POST /api/v1/split  — 条款拆分
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -53,11 +50,7 @@ async def submit_split_task(
     document_name: str = Form(default="", description="可选：覆盖文件名作为文档名称"),
     task_manager: TaskManager = Depends(get_task_manager),
 ) -> SplitResponse:
-    """提交条款拆分任务.
-
-    上传一个法律条文文件（PDF/Word），系统将异步进行条款结构分析
-    和拆解，返回 task_id 用于后续查询进度和下载结果。
-    """
+    """提交条款拆分任务."""
     from config.settings import get_settings
     settings = get_settings()
 
@@ -106,153 +99,103 @@ async def submit_split_task(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# POST /api/v1/compare  — 内外规条款比对
+# POST /api/v1/summary_comparison  — 比对 + 报告 一体化
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post(
-    "/compare",
-    response_model=CompareResponse,
+    "/summary_comparison",
+    response_model=SummaryComparisonResponse,
     status_code=202,
     responses={
         400: {"model": ErrorResponse, "description": "参数无效"},
-        404: {"model": ErrorResponse, "description": "split 任务不存在或未完成"},
     },
 )
-async def submit_compare_task(
+async def submit_summary_comparison(
     background_tasks: BackgroundTasks,
-    split_task_ids: str = Form(..., description="已完成拆分的 split 任务 ID，多个用逗号分隔（如 aaa111,bbb222）"),
-    internal_files: list[UploadFile] = File(..., description="预拆分的内部规章制度 JSON 文件（支持多个，一个文件=一份内规）"),
+    external_files: list[UploadFile] = File(..., description="外规拆分 JSON 文件（支持多个）"),
+    internal_files: list[UploadFile] = File(..., description="内规拆分 JSON 文件（支持多个）"),
+    external_raw_text: str = Form(default="", description="外规原文（Markdown，用于报告引用）"),
+    internal_raw_text: str = Form(default="", description="内规原文（Markdown，用于报告引用）"),
+    document_name: str = Form(default="", description="文档名称（用于报告标题）"),
     task_manager: TaskManager = Depends(get_task_manager),
-) -> CompareResponse:
-    """提交内外规比对任务（支持多对多）.
+) -> SummaryComparisonResponse:
+    """提交比对+报告生成一体化任务.
 
-    加载一个或多个已完成的外规拆分结果，与一个或多个上传的内规拆分结果
-    进行语义级别匹配，判断每条外规义务是否被内规覆盖。
-
-    多对多模式：多个外规 vs 多个内规 → 合并后统一匹配。
+    一次调用完成：外规 vs 内规条款比对 → 差距分析报告 Markdown。
     """
-    # Parse split task IDs
-    ids = [tid.strip() for tid in split_task_ids.split(",") if tid.strip()]
-    if not ids:
-        raise HTTPException(status_code=400, detail="split_task_ids 不能为空")
-
-    # Validate all split tasks
+    # ── Load external obligations ───────────────────────────────────────
+    all_external: list[dict] = []
     ext_doc_names: list[str] = []
-    for stid in ids:
-        st = task_manager.get(stid)
-        if st is None:
-            raise HTTPException(status_code=404, detail=f"Split 任务不存在: {stid}")
-        if st.status != TaskStatusEnum.COMPLETED:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Split 任务 {stid} 尚未完成，当前状态: {st.status.value}",
-            )
-        ext_doc_names.append(st.document_name or stid)
-
-    # Read all internal obligation JSON files
-    all_internal_obligations: list[dict] = []
-    int_doc_names: list[str] = []
-    for int_file in internal_files:
+    for ext_file in external_files:
         try:
-            int_content = await int_file.read()
-            int_obls = json.loads(int_content)
-            if isinstance(int_obls, dict):
-                int_obls = int_obls.get("obligations", [int_obls])
-            if not isinstance(int_obls, list):
-                raise ValueError(f"文件 {int_file.filename} 不是数组格式")
-            # Tag each obligation with its source document name
-            doc_name = int_file.filename or "内规"
-            for obl in int_obls:
+            content = await ext_file.read()
+            obls = json.loads(content)
+            if isinstance(obls, dict):
+                obls = obls.get("obligations", [obls])
+            if not isinstance(obls, list):
+                raise ValueError(f"文件 {ext_file.filename} 不是数组格式")
+            doc_name = ext_file.filename or "外规"
+            for obl in obls:
                 if isinstance(obl, dict) and not obl.get("document_name"):
                     obl["document_name"] = doc_name
-            all_internal_obligations.extend(int_obls)
-            int_doc_names.append(doc_name)
+            all_external.extend(obls)
+            ext_doc_names.append(doc_name)
         except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"内部条款 JSON 解析失败 ({int_file.filename}): {e}")
+            raise HTTPException(status_code=400, detail=f"外规 JSON 解析失败 ({ext_file.filename}): {e}")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    if not all_internal_obligations:
-        raise HTTPException(status_code=400, detail="内部条款为空")
+    # ── Load internal obligations ───────────────────────────────────────
+    all_internal: list[dict] = []
+    int_doc_names: list[str] = []
+    for int_file in internal_files:
+        try:
+            content = await int_file.read()
+            obls = json.loads(content)
+            if isinstance(obls, dict):
+                obls = obls.get("obligations", [obls])
+            if not isinstance(obls, list):
+                raise ValueError(f"文件 {int_file.filename} 不是数组格式")
+            doc_name = int_file.filename or "内规"
+            for obl in obls:
+                if isinstance(obl, dict) and not obl.get("document_name"):
+                    obl["document_name"] = doc_name
+            all_internal.extend(obls)
+            int_doc_names.append(doc_name)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"内规 JSON 解析失败 ({int_file.filename}): {e}")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
-    doc_label = ", ".join(ext_doc_names) + " ↔ " + ", ".join(int_doc_names)
-    task = task_manager.create_task(document_name=doc_label[:80], task_type="compare")
+    if not all_external or not all_internal:
+        raise HTTPException(status_code=400, detail="外规或内规条款为空")
 
-    # Save merged internal obligations for the background task
+    doc_label = document_name or (", ".join(ext_doc_names) + " vs " + ", ".join(int_doc_names))
+    task = task_manager.create_task(document_name=doc_label[:80], task_type="summary_comparison")
+
     task_dir = UPLOAD_DIR / task.task_id
     task_dir.mkdir(parents=True, exist_ok=True)
-    int_path = task_dir / "internal_obligations.json"
-    int_path.write_text(json.dumps(all_internal_obligations, ensure_ascii=False), encoding="utf-8")
-    # Save which split task IDs were used
-    (task_dir / "split_task_ids.json").write_text(json.dumps(ids), encoding="utf-8")
+    (task_dir / "external_obligations.json").write_text(
+        json.dumps(all_external, ensure_ascii=False), encoding="utf-8")
+    (task_dir / "internal_obligations.json").write_text(
+        json.dumps(all_internal, ensure_ascii=False), encoding="utf-8")
 
     background_tasks.add_task(
-        _run_compare_pipeline,
+        _run_summary_comparison,
         task_id=task.task_id,
-        split_task_ids=ids,
-        internal_obligations=all_internal_obligations,
+        external_obligations=all_external,
+        internal_obligations=all_internal,
         external_document_names=ext_doc_names,
         internal_document_names=int_doc_names,
-    )
-
-    return CompareResponse(
-        task_id=task.task_id,
-        status=TaskStatusEnum.PENDING,
-        message=f"比对任务已提交 ({len(ids)} 外规 ↔ {len(int_doc_names)} 内规)……",
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# POST /api/v1/summary  — 差距分析报告生成
-# ═══════════════════════════════════════════════════════════════════════════
-
-@router.post(
-    "/summary",
-    response_model=SummaryResponse,
-    status_code=202,
-    responses={
-        400: {"model": ErrorResponse, "description": "参数无效"},
-        404: {"model": ErrorResponse, "description": "compare 任务不存在或未完成"},
-    },
-)
-async def submit_summary_task(
-    background_tasks: BackgroundTasks,
-    compare_task_id: str = Form(..., description="已完成比对的 compare 任务 ID"),
-    external_raw_text: str = Form(default="", description="外规条款原文（Markdown格式，用于报告引用）"),
-    internal_raw_text: str = Form(default="", description="内规条款原文（Markdown格式，用于报告引用）"),
-    document_name: str = Form(default="", description="文档名称（用于报告标题）"),
-    task_manager: TaskManager = Depends(get_task_manager),
-) -> SummaryResponse:
-    """提交差距分析报告生成任务.
-
-    加载比对结果，结合内外规原文，生成专业的 Markdown 格式差距分析报告。
-    """
-    # Validate compare task
-    compare_task = task_manager.get(compare_task_id)
-    if compare_task is None:
-        raise HTTPException(status_code=404, detail=f"Compare 任务不存在: {compare_task_id}")
-    if compare_task.status != TaskStatusEnum.COMPLETED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Compare 任务尚未完成，当前状态: {compare_task.status.value}",
-        )
-
-    doc_name = document_name or compare_task.document_name or "差距分析"
-    task = task_manager.create_task(document_name=doc_name, task_type="summary")
-
-    background_tasks.add_task(
-        _run_summary_pipeline,
-        task_id=task.task_id,
-        compare_task_id=compare_task_id,
         external_raw_text=external_raw_text,
         internal_raw_text=internal_raw_text,
-        document_name=doc_name,
+        document_name=doc_label,
     )
 
-    return SummaryResponse(
+    return SummaryComparisonResponse(
         task_id=task.task_id,
         status=TaskStatusEnum.PENDING,
-        message=f"报告生成任务已提交 ({doc_name})……",
+        message=f"比对+报告任务已提交 ({len(ext_doc_names)} 外规 ↔ {len(int_doc_names)} 内规)……",
     )
 
 
@@ -277,19 +220,14 @@ async def submit_pipeline_task(
     document_name: str = Form(default="", description="可选：文档名称（合并多个外规时使用）"),
     task_manager: TaskManager = Depends(get_task_manager),
 ) -> PipelineResponse:
-    """提交完整流水线任务（支持多对多）.
-
-    一次上传即可完成：条款拆分 → 内外规比对 → 差距分析报告 全流程。
-    支持多个外部法规文件 + 多个内规 JSON 的合并比对。
-    """
+    """提交完整流水线任务（支持多对多）."""
     from config.settings import get_settings
     settings = get_settings()
 
-    # ── Validate & collect all external files ─────────────────────────────
     if not files:
         raise HTTPException(status_code=400, detail="至少需要一个外部法规文件")
 
-    ext_file_data: list[tuple[str, bytes]] = []  # (filename, content)
+    ext_file_data: list[tuple[str, bytes]] = []
     ext_doc_names: list[str] = []
 
     for ext_file in files:
@@ -299,27 +237,22 @@ async def submit_pipeline_task(
                 status_code=400,
                 detail=f"不支持的文件格式: {suffix}（{ext_file.filename}）。支持的格式: {', '.join(sorted(settings.allowed_extensions))}",
             )
-
         content = await ext_file.read()
         file_size = len(content)
-
         if file_size == 0:
             raise HTTPException(status_code=400, detail=f"文件为空: {ext_file.filename}")
-
         max_size_mb = settings.max_file_size_bytes / (1024 * 1024)
         if file_size > settings.max_file_size_bytes:
             raise HTTPException(
                 status_code=413,
                 detail=f"文件过大: {ext_file.filename} ({file_size / 1024 / 1024:.1f} MB)。最大允许 {max_size_mb:.0f} MB",
             )
-
         ext_file_data.append((ext_file.filename or "未命名", content))
         ext_doc_names.append(Path(ext_file.filename or "未命名").stem)
 
     # ── Read all internal obligation JSONs ────────────────────────────────
     all_internal_obligations: list[dict] = []
     int_doc_names: list[str] = []
-
     for int_file in internal_files:
         try:
             int_content = await int_file.read()
@@ -344,20 +277,17 @@ async def submit_pipeline_task(
 
     doc_name = document_name or ", ".join(ext_doc_names)
 
-    # Create task
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     task = task_manager.create_task(document_name=doc_name[:80], task_type="pipeline")
     task_dir = UPLOAD_DIR / task.task_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save external files to disk
     ext_saved_paths: list[str] = []
     for fname, fcontent in ext_file_data:
         fpath = task_dir / fname
         fpath.write_bytes(fcontent)
         ext_saved_paths.append(str(fpath))
 
-    # Save internal obligations
     int_path = task_dir / "internal_obligations.json"
     int_path.write_text(json.dumps(all_internal_obligations, ensure_ascii=False), encoding="utf-8")
 
@@ -392,7 +322,7 @@ async def get_task_status(
     task_id: str,
     task_manager: TaskManager = Depends(get_task_manager),
 ) -> TaskStatusResponse:
-    """查询任务状态和进度（支持 split/compare/summary/pipeline 所有任务类型）."""
+    """查询任务状态和进度."""
     task = task_manager.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
@@ -416,19 +346,12 @@ async def get_task_status(
 # GET /api/v1/tasks  — 列出所有任务
 # ═══════════════════════════════════════════════════════════════════════════
 
-@router.get(
-    "/tasks",
-    response_model=TaskListResponse,
-)
+@router.get("/tasks", response_model=TaskListResponse)
 async def list_tasks(
     task_type: str = "",
     task_manager: TaskManager = Depends(get_task_manager),
 ) -> TaskListResponse:
-    """列出所有已记录的任务（支持按类型筛选）.
-
-    Args:
-        task_type: 可选：筛选任务类型 (split | compare | summary | pipeline)
-    """
+    """列出所有已记录的任务（支持按类型筛选）."""
     if task_type:
         tasks = task_manager.list_by_type(task_type)
     else:
@@ -476,11 +399,10 @@ async def get_result_json(
     task_id: str,
     task_manager: TaskManager = Depends(get_task_manager),
 ) -> dict:
-    """获取 JSON 格式的结果（支持所有任务类型）."""
+    """获取 JSON 格式的结果."""
     task = task_manager.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-
     if task.status != TaskStatusEnum.COMPLETED:
         raise HTTPException(
             status_code=400,
@@ -517,7 +439,6 @@ async def download_excel(
     task = task_manager.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-
     if task.status != TaskStatusEnum.COMPLETED:
         raise HTTPException(
             status_code=400,
@@ -555,7 +476,6 @@ async def download_report(
     task = task_manager.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-
     if task.status != TaskStatusEnum.COMPLETED:
         raise HTTPException(
             status_code=400,
@@ -564,7 +484,6 @@ async def download_report(
 
     report_path = task.result_report_path
     if not report_path or not Path(report_path).exists():
-        # Try to return report from JSON result
         json_path = task.result_json_path
         if json_path and Path(json_path).exists():
             data = json.loads(Path(json_path).read_text(encoding="utf-8"))
@@ -604,7 +523,6 @@ async def _run_split_pipeline(
         task_manager.update(task_id, status=TaskStatusEnum.PARSING,
                             current_step="Parsing document...")
 
-        # Progress callback: push LangGraph node state to TaskManager in real-time
         def _on_progress(progress: float, step: str, _state: dict) -> None:
             task_manager.update(
                 task_id,
@@ -642,134 +560,90 @@ async def _run_split_pipeline(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Background task: compare
+# Background task: summary_comparison (compare + summary in one call)
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def _run_compare_pipeline(
+async def _run_summary_comparison(
     task_id: str,
-    split_task_ids: list[str],
+    external_obligations: list[dict],
     internal_obligations: list[dict],
     external_document_names: list[str] | None = None,
     internal_document_names: list[str] | None = None,
+    external_raw_text: str = "",
+    internal_raw_text: str = "",
+    document_name: str = "",
 ) -> None:
-    """Run clause comparison in the background (supports many-to-many).
-
-    Loads external obligations from multiple split tasks, merges them,
-    and compares against all internal obligations.
-    """
+    """Run compare + summary in one background task."""
     task_manager = get_task_manager()
     llm = get_llm()
 
+    task_dir = UPLOAD_DIR / task_id
+    ext_doc_list = list(external_document_names or [])
+    int_doc_list = list(internal_document_names or [])
+
     try:
-        task_manager.update(task_id, status=TaskStatusEnum.DECOMPOSING,
-                            current_step="Loading split results...")
-
-        # Load external obligations from ALL split tasks
-        all_external_obligations: list[dict] = []
-        ext_doc_names: list[str] = list(external_document_names or [])
-
-        for stid in split_task_ids:
-            split_task = task_manager.get(stid)
-            if not split_task or not split_task.result_json_path:
-                raise ValueError(f"Split task {stid} result not found")
-
-            split_data = json.loads(Path(split_task.result_json_path).read_text(encoding="utf-8"))
-            obls = split_data.get("obligations", [])
-            ext_doc = split_data.get("document_name", "")
-
-            # Tag each obligation with its source document if not already set
-            for obl in obls:
-                if isinstance(obl, dict) and not obl.get("document_name"):
-                    obl["document_name"] = ext_doc
-
-            all_external_obligations.extend(obls)
-            if ext_doc not in ext_doc_names:
-                ext_doc_names.append(ext_doc)
-
+        # ── Phase 1: Compare ────────────────────────────────────────────
         task_manager.update(
             task_id,
-            current_step=f"Comparing {len(all_external_obligations)} external ({len(split_task_ids)} docs) "
-                         f"against {len(internal_obligations)} internal ({len(internal_document_names or [])} docs)...",
+            status=TaskStatusEnum.DECOMPOSING,
+            current_step=f"[1/2] Comparing {len(external_obligations)} external ({len(ext_doc_list)} docs) "
+                         f"against {len(internal_obligations)} internal ({len(int_doc_list)} docs)...",
+            pipeline_phase="comparing",
         )
 
-        service = CompareService(llm=llm)
-        result = await service.compare(
-            external_obligations=all_external_obligations,
+        compare_service = CompareService(llm=llm)
+        compare_result = await compare_service.compare(
+            external_obligations=external_obligations,
             internal_obligations=internal_obligations,
-            external_document_names=ext_doc_names,
-            internal_document_names=internal_document_names or [],
+            external_document_names=ext_doc_list,
+            internal_document_names=int_doc_list,
         )
 
-        # Save result
-        task_dir = UPLOAD_DIR / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
-        json_path = task_dir / "result.json"
-        json_path.write_text(
-            result.model_dump_json(indent=2, ensure_ascii=False),
+        (task_dir / "compare_result.json").write_text(
+            compare_result.model_dump_json(indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
-        task_manager.mark_completed(
+        task_manager.update(task_id, progress=50.0,
+                            total_obligations=compare_result.total_external_obligations)
+
+        # ── Phase 2: Summary ────────────────────────────────────────────
+        task_manager.update(
             task_id,
-            total_obligations=len(result.matches),
-            json_path=str(json_path),
+            current_step="[2/2] Generating gap analysis report...",
+            pipeline_phase="summarizing",
         )
 
-    except Exception as e:
-        import traceback
-        task_manager.mark_failed(task_id, f"{e}\n{traceback.format_exc()}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Background task: summary
-# ═══════════════════════════════════════════════════════════════════════════
-
-async def _run_summary_pipeline(
-    task_id: str,
-    compare_task_id: str,
-    external_raw_text: str,
-    internal_raw_text: str,
-    document_name: str,
-) -> None:
-    """Run gap analysis report generation in the background."""
-    task_manager = get_task_manager()
-    llm = get_llm()
-
-    try:
-        task_manager.update(task_id, status=TaskStatusEnum.DECOMPOSING,
-                            current_step="Loading comparison result...")
-
-        # Load compare result
-        compare_task = task_manager.get(compare_task_id)
-        if not compare_task or not compare_task.result_json_path:
-            raise ValueError("Compare task result not found")
-
-        compare_data = json.loads(Path(compare_task.result_json_path).read_text(encoding="utf-8"))
-        from models.compare import CompareResult
-        compare_result = CompareResult(**compare_data)
-
-        task_manager.update(task_id, current_step="Generating gap analysis report...")
-
-        task_dir = UPLOAD_DIR / task_id
-        service = SummaryService(llm=llm)
-        result = await service.generate(
+        summary_service = SummaryService(llm=llm)
+        summary_result = await summary_service.generate(
             compare_result=compare_result,
             external_raw_text=external_raw_text,
             internal_raw_text=internal_raw_text,
             output_dir=str(task_dir),
         )
 
-        # Save result JSON
+        # ── Save combined result ───────────────────────────────────────
+        combined = {
+            "document_name": document_name,
+            "external_documents": ext_doc_list,
+            "internal_documents": int_doc_list,
+            "compare_result": compare_result.model_dump(),
+            "report": summary_result["report"],
+            "report_path": summary_result.get("report_path", ""),
+        }
+
         json_path = task_dir / "result.json"
         json_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2),
+            json.dumps(combined, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
         task_manager.mark_completed(
             task_id,
+            total_obligations=compare_result.total_external_obligations,
             json_path=str(json_path),
-            report_path=result.get("report_path", ""),
+            report_path=summary_result.get("report_path", ""),
         )
 
     except Exception as e:
@@ -790,11 +664,7 @@ async def _run_full_pipeline(
     internal_document_names: list[str] | None = None,
     internal_raw_text: str = "",
 ) -> None:
-    """Run the full pipeline: split → compare → summary (supports many-to-many).
-
-    Splits each external file, merges all obligations, then compares
-    against all internal regulations and generates a combined report.
-    """
+    """Run the full pipeline: split → compare → summary (supports many-to-many)."""
     import shutil
     task_manager = get_task_manager()
     llm = get_llm()
@@ -818,13 +688,11 @@ async def _run_full_pipeline(
         for idx, file_path in enumerate(file_paths):
             doc_name = ext_doc_list[idx] if idx < len(ext_doc_list) else Path(file_path).stem
 
-            # Per-file progress callback, scaled into pipeline's 0-33% split phase
             file_start_pct = 33.0 * idx / len(file_paths)
             file_end_pct = 33.0 * (idx + 1) / len(file_paths)
 
             def _make_split_callback(_file_start: float, _file_end: float):
                 def _cb(progress: float, step: str, _state: dict) -> None:
-                    # Scale node progress [0, 100] → pipeline range [_file_start, _file_end]
                     scaled = _file_start + (progress / 100.0) * (_file_end - _file_start)
                     task_manager.update(
                         task_id,
@@ -859,10 +727,8 @@ async def _run_full_pipeline(
                                  f"({result.total_obligations} obligations)",
                 )
 
-        # Save merged split result
         primary_result = all_split_results[0] if all_split_results else None
         split_json_path = task_dir / "split_result.json"
-        # Use primary result but with merged obligations
         if primary_result:
             from models.clause import ClauseObligation
             merged_obls = [ClauseObligation(**o) for o in all_ext_obligations]
@@ -907,7 +773,6 @@ async def _run_full_pipeline(
         task_manager.update(task_id, current_step="[3/3] Generating gap analysis report...",
                             pipeline_phase="summarizing")
 
-        # Get external raw text for report
         ext_raw = ""
         for fpath in file_paths:
             try:
@@ -939,7 +804,6 @@ async def _run_full_pipeline(
             encoding="utf-8",
         )
 
-        # Copy Excel if available
         excel_path = ""
         if primary_result and primary_result.excel_path and Path(primary_result.excel_path).exists():
             excel_path = str(task_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx")
