@@ -119,16 +119,29 @@ async def health_check():
 # ── 命令行入口 ────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import signal
     import uvicorn
 
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8000"))
 
     logger.info("启动服务: %s:%d", host, port)
-    uvicorn.run(
-        "main:app",
-        host=host,
-        port=port,
-        reload=True,
-        log_level="info",
+    server = uvicorn.Server(
+        uvicorn.Config(
+            "main:app",
+            host=host,
+            port=port,
+            reload=os.environ.get("UVICORN_RELOAD", "false").lower() == "true",
+            log_level="info",
+            timeout_graceful_shutdown=3,
+        )
     )
+
+    # Ensure clean shutdown on Ctrl+C even when background threads are running
+    def _shutdown(sig, frame):
+        logger.info("收到退出信号，正在关闭服务……")
+        server.should_exit = True
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    server.run()

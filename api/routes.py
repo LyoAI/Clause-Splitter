@@ -404,6 +404,15 @@ async def list_tasks(
     )
 
 
+@router.delete("/tasks")
+async def clear_tasks(
+    task_manager: TaskManager = Depends(get_task_manager),
+) -> dict:
+    """清空所有任务记录（内存 + 磁盘）."""
+    count = task_manager.clear_all()
+    return {"deleted": count, "message": f"已清空 {count} 个任务记录"}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # GET /api/v1/result/{task_id}/json  — 结果 JSON
 # ═══════════════════════════════════════════════════════════════════════════

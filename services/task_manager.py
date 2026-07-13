@@ -186,6 +186,14 @@ class TaskManager:
         """按类型筛选任务."""
         return [t for t in self.get_all() if t.task_type == task_type]
 
+    def clear_all(self) -> int:
+        """清空所有任务（内存 + 磁盘）."""
+        count = len(self._tasks)
+        for task_id in list(self._tasks.keys()):
+            self.delete(task_id)
+        logger.info("已清空全部 %d 个任务", count)
+        return count
+
     def cleanup_old(self, max_age_seconds: float = 3600) -> int:
         """清理过期任务."""
         now = datetime.now(timezone.utc)

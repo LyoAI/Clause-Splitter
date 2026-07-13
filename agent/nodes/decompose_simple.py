@@ -100,8 +100,9 @@ async def decompose_simple_node(state: dict) -> dict:
         obl["index"] = i + 1
 
     total_articles = state.get("total_articles", 0)
+    prev_processed = state.get("processed_articles", 0)
+    processed = min(prev_processed + len(current_batch), total_articles) if total_articles else prev_processed + len(current_batch)
     milestones = get_settings().progress_milestones
-    processed = min(batch_index + len(current_batch), total_articles) if total_articles else batch_index + len(current_batch)
     progress = milestones["decompose_start"] + (processed / max(total_articles, 1)) * (milestones["decompose_end"] - milestones["decompose_start"])
 
     logger.info(
@@ -114,6 +115,6 @@ async def decompose_simple_node(state: dict) -> dict:
         "current_batch_index": batch_index + 1,
         "processed_articles": processed,
         "progress": progress,
-        "current_step": f"条款拆分中…… {processed}/{total_articles}",
+        "current_step": f"拆分中…… {processed}/{total_articles} articles (batch {batch_index + 1}/{len(batches)})",
         "status": "decomposing",
     }
