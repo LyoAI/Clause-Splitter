@@ -21,7 +21,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage
 from tqdm import tqdm
 
-from utils.logger import get_logger
+from utils import get_logger
 from llm.base import LLMServingABC
 
 
