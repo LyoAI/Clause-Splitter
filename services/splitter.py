@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +33,19 @@ class ClauseSplitService:
         """
         self.llm = llm
 
-    async def split(self, file_path: str, document_name: str) -> ClauseSplitResult:
+    async def split(
+        self,
+        file_path: str,
+        document_name: str,
+        progress_callback: Callable[[float, str, dict[str, Any]], None] | None = None,
+    ) -> ClauseSplitResult:
         """执行完整的条款拆分流水线.
 
         Args:
             file_path: 上传文件的路径。
             document_name: 原始文件名。
+            progress_callback: 可选的进度回调 fn(progress: float, step: str, state: dict)。
+                               每次 LangGraph 节点完成后调用。
 
         Returns:
             ClauseSplitResult 包含所有提取的义务记录。
@@ -57,7 +65,19 @@ class ClauseSplitService:
 
         config = {"configurable": {"thread_id": f"split-{document_name}"}}
         try:
-            final_state = await graph.ainvoke(initial_state, config=config)
+            if progress_callback is not None:
+                # Streaming mode: report progress after each node step
+                final_state = initial_state.copy()
+                async for chunk in graph.astream(initial_state, config=config):
+                    # chunk is {node_name: partial_state_dict}
+                    for _node_name, node_output in chunk.items():
+                        if isinstance(node_output, dict):
+                            final_state.update(node_output)
+                            progress = float(node_output.get("progress", 0))
+                            step = str(node_output.get("current_step", ""))
+                            progress_callback(progress, step, final_state)
+            else:
+                final_state = await graph.ainvoke(initial_state, config=config)
         except Exception as e:
             logger.error("流水线执行失败: %s", e)
             return ClauseSplitResult(

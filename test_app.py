@@ -8,16 +8,21 @@ Usage:
     # 1. Split only
     python test_app.py --split --file upload_materials/外部法规.pdf
 
-    # 2. Compare only (needs a completed split task)
-    python test_app.py --compare --split-task-id abc123 --internal-file 内规拆分结果.json
+    # 2. Compare only (supports many-to-many: comma-separated IDs/files)
+    python test_app.py --compare --split-task-id abc123 --internal-file 内规.json
+    python test_app.py --compare --split-task-id abc123,def456 --internal-file 内规1.json,内规2.json
 
     # 3. Summary only (needs a completed compare task)
     python test_app.py --summary --compare-task-id def456
 
-    # 4. Full pipeline
-    python test_app.py --pipeline --file 外部法规.pdf --internal-file 内规拆分结果.json
+    # 4. Full pipeline (server-side: one task ID, 3 phases)
+    python test_app.py --pipeline --file 外规.docx --internal-file 内规.json
+    python test_app.py --pipeline --file 外规A.docx,外规B.docx --internal-file 内规1.json,内规2.json
 
-    # 5. List tasks
+    # 5. Chain mode (client-side: 3 task IDs, shows intermediate results)
+    python test_app.py --chain --file 外规.docx --internal-file 内规.json
+
+    # 6. List tasks
     python test_app.py --list
 """
 
@@ -303,33 +308,62 @@ def _print_split_summary(data: dict) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run_compare(split_task_id: str, internal_file: str, internal_doc_name: str = "") -> str:
-    """Upload internal obligations, compare against split result."""
-    if not Path(internal_file).exists():
-        console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {internal_file}")
+    """Upload internal obligations, compare against split result.
+
+    Args:
+        split_task_id: Comma-separated split task IDs for multi-doc comparison.
+        internal_file: Comma-separated paths to internal obligation JSON files.
+        internal_doc_name: Internal document name (unused when multi-file).
+
+    Returns:
+        Compare task ID.
+    """
+    int_files = [f.strip() for f in internal_file.split(",") if f.strip()]
+    if not int_files:
+        console.print(f"\n  {ICONS['cross']} [red]At least one internal file required[/]")
         sys.exit(1)
 
-    int_name = internal_doc_name or Path(internal_file).stem
-    ficon = _file_icon(internal_file)
+    for f in int_files:
+        if not Path(f).exists():
+            console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
+            sys.exit(1)
+
+    split_ids_str = ",".join(s.strip() for s in split_task_id.split(",") if s.strip())
+
+    int_display = ", ".join(Path(f).name for f in int_files)
+    ficon = _file_icon(int_files[0])
 
     _banner(ICONS["compare"], "Phase 2 — Clause Comparison",
-            f"{ICONS['link']}  split_task={split_task_id}  |  {ficon}  internal={Path(internal_file).name}",
+            f"{ICONS['link']}  split_tasks={split_ids_str}  |  {ficon}  internal={int_display}",
             color="yellow")
 
     console.print(f"\n  {ICONS['upload']}  [bold]Submitting compare task...[/]")
-    with open(internal_file, "rb") as f:
-        resp = _post(
-            "/compare",
-            data={"split_task_id": split_task_id, "internal_document_name": int_name},
-            files={"internal_file": (Path(internal_file).name, f, "application/json")},
+    console.print(f"  {ICONS['bullet']}  External split tasks: [cyan]{split_ids_str}[/]")
+    console.print(f"  {ICONS['bullet']}  Internal files: [yellow]{int_display}[/]")
+
+    # Build multipart form with multiple internal files
+    files_payload: list[tuple] = []
+    for fpath in int_files:
+        files_payload.append(
+            ("internal_files", (Path(fpath).name, open(fpath, "rb"), "application/json"))
         )
+    data_payload = {"split_task_ids": split_ids_str}
+
+    try:
+        resp = _post("/compare", data=data_payload, files=files_payload)
+    finally:
+        for _, (_, f, _) in files_payload:
+            f.close()
+
     task_id = resp["task_id"]
     console.print(f"  {ICONS['check']}  Compare task: [bold yellow]{task_id}[/]")
 
-    final = poll_task(task_id, label=f"compare:{int_name}")
+    out_label = Path(int_files[0]).stem if len(int_files) == 1 else "multi_compare"
+    final = poll_task(task_id, label=f"compare:{out_label}")
 
-    out_dir = OUTPUT_ROOT / int_name
+    out_dir = OUTPUT_ROOT / out_label
     json_data = _get(f"/result/{task_id}/json")
-    save_json(json_data, out_dir, f"{int_name}_compare_result.json")
+    save_json(json_data, out_dir, f"{out_label}_compare_result.json")
 
     _print_compare_summary(json_data)
 
@@ -450,42 +484,60 @@ def run_pipeline(
     doc_name: str = "",
     internal_doc_name: str = "",
 ) -> None:
-    """Run full pipeline: split → compare → summary."""
-    if not Path(file_path).exists():
-        console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {file_path}")
-        sys.exit(1)
-    if not Path(internal_file).exists():
-        console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {internal_file}")
-        sys.exit(1)
+    """Run full pipeline: split → compare → summary (supports multi-file).
 
-    fname = Path(file_path).name
-    fext_icon = _file_icon(file_path)
-    fint_icon = _file_icon(internal_file)
+    Args:
+        file_path: Comma-separated external regulation file paths.
+        internal_file: Comma-separated internal obligation JSON paths.
+    """
+    ext_files = [f.strip() for f in file_path.split(",") if f.strip()]
+    int_files = [f.strip() for f in internal_file.split(",") if f.strip()]
+
+    for f in ext_files:
+        if not Path(f).exists():
+            console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
+            sys.exit(1)
+    for f in int_files:
+        if not Path(f).exists():
+            console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
+            sys.exit(1)
+
+    fext_icon = _file_icon(ext_files[0])
+    fint_icon = _file_icon(int_files[0])
+
+    ext_display = ", ".join(Path(f).name for f in ext_files)
+    int_display = ", ".join(Path(f).name for f in int_files)
 
     _banner(ICONS["pipeline"], "FULL PIPELINE  —  Split → Compare → Report",
-            f"{fext_icon}  external={Path(file_path).name}  |  {fint_icon}  internal={Path(internal_file).name}",
+            f"{fext_icon}  external={ext_display}  |  {fint_icon}  internal={int_display}",
             color="green")
 
     console.print(f"\n  {ICONS['rocket']}  [bold]Launching pipeline...[/]")
-    with open(file_path, "rb") as ext_f, open(internal_file, "rb") as int_f:
-        resp = _post(
-            "/pipeline",
-            data={
-                "document_name": doc_name or fname,
-                "internal_document_name": internal_doc_name or Path(internal_file).stem,
-                "internal_raw_text": internal_raw_text,
-            },
-            files={
-                "file": (fname, ext_f),
-                "internal_file": (Path(internal_file).name, int_f, "application/json"),
-            },
-        )
+
+    # Build multipart form
+    files_payload: list[tuple] = []
+    for fpath in ext_files:
+        files_payload.append(("files", (Path(fpath).name, open(fpath, "rb"), "application/octet-stream")))
+    for fpath in int_files:
+        files_payload.append(("internal_files", (Path(fpath).name, open(fpath, "rb"), "application/json")))
+
+    data_payload = {
+        "document_name": doc_name or Path(ext_files[0]).stem,
+        "internal_raw_text": internal_raw_text,
+    }
+
+    try:
+        resp = _post("/pipeline", data=data_payload, files=files_payload)
+    finally:
+        for _, (_, f, _) in files_payload:
+            f.close()
+
     task_id = resp["task_id"]
     console.print(f"  {ICONS['check']}  Pipeline task: [bold green]{task_id}[/]")
     console.print(f"  {ICONS['bullet']}  [dim]{resp['message']}[/]")
 
-    final = poll_task(task_id, label=f"pipeline:{fname}")
-    doc_name_final = final.get("document_name", Path(file_path).stem)
+    final = poll_task(task_id, label=f"pipeline:{Path(ext_files[0]).stem}")
+    doc_name_final = final.get("document_name", Path(ext_files[0]).stem)
 
     out_dir = OUTPUT_ROOT / Path(doc_name_final).stem
     console.print(f"\n  {ICONS['download']}  [bold]Saving results →[/] [dim]{out_dir}/[/]")
@@ -614,6 +666,108 @@ def run_list(task_type: str = "") -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Chain (client-side orchestration: split → compare → summary)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_chain(
+    file_path: str,
+    internal_file: str,
+    internal_raw_text: str = "",
+    doc_name: str = "",
+    internal_doc_name: str = "",
+) -> None:
+    """Run split → compare → summary on the client side.
+
+    Each phase produces its own task_id. Intermediate results are displayed
+    and saved. On failure, prints which phase failed so you can resume manually.
+
+    Contrast with --pipeline:
+      - --chain: 3 API calls, 3 task IDs, intermediate results visible
+      - --pipeline: 1 API call, 1 task ID, results only at the end
+    """
+    if not Path(file_path).exists():
+        console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {file_path}")
+        sys.exit(1)
+
+    int_files = [f.strip() for f in internal_file.split(",") if f.strip()]
+    for f in int_files:
+        if not Path(f).exists():
+            console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
+            sys.exit(1)
+
+    _banner(ICONS["rocket"], "CHAIN MODE — Client-Side Orchestration",
+            f"Split → Compare → Summary  |  {_file_icon(file_path)}  {Path(file_path).name}  |  "
+            f"{_file_icon(int_files[0])}  {len(int_files)} internal file(s)",
+            color="green")
+
+    chain_failed = False
+
+    # ── Phase 1: Split ──────────────────────────────────────────────────
+    split_id = ""
+    try:
+        console.print(f"\n  {ICONS['star']}  [bold cyan]Phase 1/3: Splitting...[/]")
+        split_id = run_split(file_path)
+        console.print(f"  {ICONS['check']}  Split complete → task_id: [bold cyan]{split_id}[/]")
+    except SystemExit:
+        split_id = ""
+    except Exception as e:
+        console.print(f"  {ICONS['cross']}  [red]Split failed: {e}[/]")
+        chain_failed = True
+
+    if not split_id or chain_failed:
+        console.print(f"\n  {ICONS['cross']}  [red bold]Chain stopped at Phase 1 (Split).[/]")
+        console.print(f"  💡  Fix the issue and resume with: python test_app.py --compare --split-task-id <id> --internal-file {internal_file}")
+        sys.exit(1)
+
+    # ── Phase 2: Compare ────────────────────────────────────────────────
+    compare_id = ""
+    try:
+        console.print(f"\n  {ICONS['star']}  [bold yellow]Phase 2/3: Comparing...[/]")
+        compare_id = run_compare(split_id, internal_file, internal_doc_name)
+        console.print(f"  {ICONS['check']}  Compare complete → task_id: [bold yellow]{compare_id}[/]")
+    except SystemExit:
+        compare_id = ""
+    except Exception as e:
+        console.print(f"  {ICONS['cross']}  [red]Compare failed: {e}[/]")
+        chain_failed = True
+
+    if not compare_id or chain_failed:
+        console.print(f"\n  {ICONS['cross']}  [red bold]Chain stopped at Phase 2 (Compare).[/]")
+        console.print(f"  💡  Split completed (task_id={split_id}). Resume with:")
+        console.print(f"      python test_app.py --compare --split-task-id {split_id} --internal-file {internal_file}")
+        sys.exit(1)
+
+    # ── Phase 3: Summary ────────────────────────────────────────────────
+    try:
+        console.print(f"\n  {ICONS['star']}  [bold magenta]Phase 3/3: Generating Report...[/]")
+        summary_id = run_summary(compare_id, internal_raw_text=internal_raw_text or "",
+                                 doc_name=doc_name or Path(file_path).stem)
+        console.print(f"  {ICONS['check']}  Summary complete → task_id: [bold magenta]{summary_id}[/]")
+    except SystemExit:
+        chain_failed = True
+    except Exception as e:
+        console.print(f"  {ICONS['cross']}  [red]Summary failed: {e}[/]")
+        chain_failed = True
+
+    if chain_failed:
+        console.print(f"\n  {ICONS['cross']}  [red bold]Chain stopped at Phase 3 (Summary).[/]")
+        console.print(f"  💡  Previous phases completed. Resume with:")
+        console.print(f"      python test_app.py --summary --compare-task-id {compare_id}")
+        sys.exit(1)
+
+    # ── Done ─────────────────────────────────────────────────────────────
+    console.print()
+    console.print(Panel(
+        Text(f"All 3 phases completed successfully!\n\n"
+             f"  Split:    {split_id}\n"
+             f"  Compare:  {compare_id}\n"
+             f"  Results:  outputs/",
+             style="green"),
+        title="✅  CHAIN COMPLETE", border_style="green",
+    ))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -636,19 +790,20 @@ Examples:
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--split", action="store_true", help="📝  Clause splitting only")
-    mode.add_argument("--compare", action="store_true", help="🔍  Clause comparison only")
+    mode.add_argument("--compare", action="store_true", help="🔍  Clause comparison only (supports comma-separated IDs/files)")
     mode.add_argument("--summary", action="store_true", help="📋  Gap analysis report only")
-    mode.add_argument("--pipeline", action="store_true", help="🚀  Full pipeline (split → compare → report)")
+    mode.add_argument("--pipeline", action="store_true", help="🚀  Full pipeline — server-side orchestration (split → compare → report)")
+    mode.add_argument("--chain", action="store_true", help="🔗  Chain mode — client-side orchestration, shows intermediate results")
     mode.add_argument("--list", nargs="?", const="", metavar="TYPE",
                       help="📋  List all tasks (optional: filter by type)")
     mode.add_argument("--clear", action="store_true", help="🗑️   Clear all task records")
 
     parser.add_argument("--base-url", default=BASE_URL, help=f"API base URL (default: {BASE_URL})")
-    parser.add_argument("--file", help="📄  External regulation file (for --split / --pipeline)")
+    parser.add_argument("--file", help="📄  External regulation file (for --split/--chain/--pipeline; comma-sep for multi)")
     parser.add_argument("--document-name", default="", help="Override document name")
 
-    parser.add_argument("--split-task-id", help="🔗  Split task ID (for --compare)")
-    parser.add_argument("--internal-file", help="📦  Internal obligations JSON (for --compare / --pipeline)")
+    parser.add_argument("--split-task-id", help="🔗  Split task ID(s) for --compare (comma-separated for multi-doc)")
+    parser.add_argument("--internal-file", help="📦  Internal obligations JSON for --compare/--chain/--pipeline (comma-separated for multi-doc)")
     parser.add_argument("--internal-doc-name", default="", help="Internal document name")
 
     parser.add_argument("--compare-task-id", help="🔗  Compare task ID (for --summary)")
@@ -665,7 +820,7 @@ Examples:
         console.print(f"\n  🗑️  {data['message']}")
         return
 
-    if not any([args.split, args.compare, args.summary, args.pipeline, args.list is not None]):
+    if not any([args.split, args.compare, args.summary, args.pipeline, args.chain, args.list is not None]):
         if args.file:
             args.split = True
         else:
@@ -698,6 +853,12 @@ Examples:
             sys.exit(1)
         run_pipeline(args.file, args.internal_file, args.internal_text,
                     args.document_name, args.internal_doc_name)
+    elif args.chain:
+        if not args.file or not args.internal_file:
+            console.print(f"\n  ❌ [red]--file and --internal-file are required for --chain[/]")
+            sys.exit(1)
+        run_chain(args.file, args.internal_file, args.internal_text,
+                  args.document_name, args.internal_doc_name)
 
 
 if __name__ == "__main__":

@@ -64,15 +64,15 @@ class ErrorResponse(BaseModel):
 # ── Compare / Summary / Pipeline ─────────────────────────────────────────
 
 class CompareRequest(BaseModel):
-    """提交比对任务的请求."""
+    """提交比对任务的请求（支持多对多）."""
 
-    split_task_id: str = Field(
+    split_task_ids: str = Field(
         ...,
-        description="已完成拆分的 split 任务 ID",
+        description="已完成拆分的 split 任务 ID，多个用逗号分隔（如 aaa111,bbb222）",
     )
-    internal_document_name: str = Field(
+    internal_document_names: str = Field(
         default="",
-        description="内部制度文档名称",
+        description="内部制度文档名称，多个用逗号分隔（可选）",
     )
 
 

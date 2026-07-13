@@ -117,20 +117,6 @@ class ClauseObligation(BaseModel):
         description="Detailed ambiguity notes; empty when unambiguous",
     )
 
-    @field_validator("action_verb")
-    @classmethod
-    def enforce_single_verb(cls, v: str) -> str:
-        """Reject compound verbs like '建立、完善并执行'.
-
-        Compound verbs must be split into separate records — one per verb.
-        """
-        if any(sep in v for sep in ("、", "并", "和", "及", "与")):
-            raise ValueError(
-                f"action_verb must be a single verb, got compound: '{v}'. "
-                f"Split compound actions into separate records."
-            )
-        return v
-
     @field_validator("trigger_condition", "trigger_sub_condition", "object", "method")
     @classmethod
     def normalize_slash(cls, v: str) -> str:

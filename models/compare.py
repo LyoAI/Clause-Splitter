@@ -1,10 +1,15 @@
-"""Compare & summary data models for internal-vs-external regulation matching."""
+"""Compare & summary data models for internal-vs-external regulation matching.
+
+Supports many-to-many matching: multiple external regulations vs multiple
+internal policies. Each MatchResult tracks document provenance.
+"""
 
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from models.clause import ClauseSplitResult
 
@@ -22,13 +27,26 @@ class CoverageStatus(str, Enum):
 # ── Match result ──────────────────────────────────────────────────────────
 
 class MatchResult(BaseModel):
-    """One external obligation matched against internal obligations."""
+    """One external obligation matched against internal obligations.
+
+    Document provenance fields (external_document_name, external_article_id,
+    matched_internal_document_name) make each match traceable back to its
+    source document — essential for many-to-many comparisons.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     external_clause_id: str = Field(
         ...,
         description="External obligation index (matches split result index)",
+    )
+    external_document_name: str = Field(
+        default="",
+        description="Source external regulation document name",
+    )
+    external_article_id: str = Field(
+        default="",
+        description="Original article reference, e.g. '第十四条'",
     )
     status: CoverageStatus = Field(
         ...,
@@ -37,6 +55,10 @@ class MatchResult(BaseModel):
     matched_internal_id: str | None = Field(
         default=None,
         description="Matched internal obligation index, null if not covered",
+    )
+    matched_internal_document_name: str | None = Field(
+        default=None,
+        description="Source internal policy document name that matched",
     )
     analysis: str = Field(
         ...,
@@ -52,14 +74,61 @@ class MatchResult(BaseModel):
 # ── Compare result ────────────────────────────────────────────────────────
 
 class CompareResult(BaseModel):
-    """Full comparison result for one document pair."""
+    """Full comparison result for one or more document pairs.
 
-    model_config = ConfigDict(extra="forbid")
+    Supports many-to-many: external_documents and internal_documents are
+    lists of document names. Backward-compat computed properties
+    external_document_name / internal_document_name return the first
+    element (or empty string).
+    """
 
-    external_document_name: str = Field(default="")
-    internal_document_name: str = Field(default="")
+    model_config = ConfigDict(extra="ignore")  # ignore old single-name fields
+
+    external_documents: list[str] = Field(
+        default_factory=list,
+        description="List of external regulation document names",
+    )
+    internal_documents: list[str] = Field(
+        default_factory=list,
+        description="List of internal policy document names",
+    )
     total_external_obligations: int = Field(default=0, ge=0)
+    total_internal_obligations: int = Field(
+        default=0, ge=0,
+        description="Total internal obligations used in comparison",
+    )
     matches: list[MatchResult] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_old_format(cls, data: Any) -> Any:
+        """Migrate old single-doc-name fields to new list format."""
+        if isinstance(data, dict):
+            # Old format: external_document_name: str → external_documents: list[str]
+            if "external_document_name" in data and not data.get("external_documents"):
+                old_name = data.pop("external_document_name", "")
+                if old_name:
+                    data["external_documents"] = [old_name]
+            # Old format: internal_document_name: str → internal_documents: list[str]
+            if "internal_document_name" in data and not data.get("internal_documents"):
+                old_name = data.pop("internal_document_name", "")
+                if old_name:
+                    data["internal_documents"] = [old_name]
+        return data
+
+    # ── Backward-compat computed properties ───────────────────────────────
+
+    @property
+    def external_document_name(self) -> str:
+        """Backward compat: first external document name."""
+        return self.external_documents[0] if self.external_documents else ""
+
+    @property
+    def internal_document_name(self) -> str:
+        """Backward compat: first internal document name."""
+        return self.internal_documents[0] if self.internal_documents else ""
+
+    # ── Statistics computed properties ────────────────────────────────────
 
     @property
     def fully_covered_count(self) -> int:
@@ -81,8 +150,12 @@ class CompareResult(BaseModel):
         return self.fully_covered_count / total
 
     def to_summary_dict(self) -> dict:
-        """Return a dict suitable for LLM consumption."""
+        """Return a dict suitable for LLM consumption in summary report."""
         return {
+            "external_documents": self.external_documents,
+            "internal_documents": self.internal_documents,
+            "total_external_obligations": self.total_external_obligations,
+            "total_internal_obligations": self.total_internal_obligations,
             "fully_covered": self.fully_covered_count,
             "partially_covered": self.partially_covered_count,
             "not_covered": self.not_covered_count,
