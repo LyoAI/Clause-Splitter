@@ -237,7 +237,7 @@ class ExcelExporter:
         wb.close()
 
     def _write_header(self, ws: Worksheet) -> None:
-        """写入 Excel 表头（4行）."""
+        """写入 Excel 表头（4行，13列 A-M）."""
         # Row 1 — 主标题
         ws.merge_cells("A1:A4")
         ws["A1"] = "序号"

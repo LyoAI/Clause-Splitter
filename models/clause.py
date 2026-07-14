@@ -44,7 +44,7 @@ class ClauseObligation(BaseModel):
     to match the Excel template column names.
     """
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     index: int = Field(
         default=0,
@@ -62,7 +62,7 @@ class ClauseObligation(BaseModel):
         description="C — sub-condition (if any)",
     )
     subject: str = Field(
-        ..., min_length=1,
+        default="/",
         serialization_alias="义务主体",
         description="D — entity or role that performs the action (most likely one)",
     )
@@ -72,17 +72,17 @@ class ClauseObligation(BaseModel):
         description="E — target of the action (entity/person/matter)",
     )
     obligation_rule: ObligationRule = Field(
-        ...,
+        default=ObligationRule.SHALL,
         serialization_alias="义务规则",
         description="F — '应当' or '禁止'",
     )
     action_verb: str = Field(
-        ..., min_length=1,
+        default="/",
         serialization_alias="义务动作",
         description="G — single predicate verb, e.g. '负责' '建立' '承担'",
     )
     action_target: str = Field(
-        ..., min_length=1,
+        default="/",
         serialization_alias="义务事项",
         description="H — specific business content the verb points to",
     )
@@ -97,12 +97,12 @@ class ClauseObligation(BaseModel):
         description="J — source regulation/document name",
     )
     clause_number: str = Field(
-        ..., min_length=1,
+        default="",
         serialization_alias="条款编号",
         description="K — clause reference, e.g. '第十四条'",
     )
     source_text: str = Field(
-        ..., min_length=1,
+        default="",
         serialization_alias="引用原文",
         description="L — shortest complete original sentence",
     )
@@ -115,6 +115,11 @@ class ClauseObligation(BaseModel):
         default="",
         serialization_alias="歧义详情",
         description="Detailed ambiguity notes; empty when unambiguous",
+    )
+    should_split: str = Field(
+        default="是",
+        serialization_alias="是否拆分",
+        description="N — '是'=需拆分提取义务, '否'=定义/列举类条款不拆分",
     )
 
     @field_validator("trigger_condition", "trigger_sub_condition", "object", "method")

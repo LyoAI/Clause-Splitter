@@ -288,6 +288,14 @@ def _normalize_obligation(
         source_article = source.get("条款编号", source_article)
         source_text = source.get("条款核心原句", source_text)
 
+    # Check 是否拆分 field — non-split records (定义/列举类条款) are discarded
+    should_split = _get("是否拆分", default="是")
+    if isinstance(content, dict):
+        should_split = content.get("是否拆分", should_split)
+    if should_split == "否":
+        logger.debug("条款 %s 标记为不拆分，跳过", article_id)
+        return None
+
     # Convert obligation rule string to enum (using configurable word sets)
     settings = get_settings()
     rule_value = obligation_rule_str.strip()
@@ -306,7 +314,7 @@ def _normalize_obligation(
         "index": 0,
         "trigger_condition": _get("触发义务条件", default="/"),
         "trigger_sub_condition": _get("触发义务子条件", default="/"),
-        "subject": _get("义务主体", default=""),
+        "subject": _get("义务主体", default="/"),
         "object": _get("义务客体", default="/"),
         "obligation_rule": obligation_rule,
         "action_verb": obligation_verb,
@@ -317,4 +325,5 @@ def _normalize_obligation(
         "source_text": source_text or _get("引用原文", default=""),
         "ambiguity_note": _get("歧义说明", default="无歧义"),
         "ambiguity_detail": _get("歧义详情", default=""),
+        "should_split": "是",
     }

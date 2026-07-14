@@ -155,6 +155,7 @@ def self_correct_node(state: dict) -> dict:
             record["ambiguity_note"] = f"[Auto-fix failed: {err.get('error', '')[:100]}]"
             record["action_verb"] = record.get("action_verb", "/")
             record["action_target"] = record.get("action_target", "（需人工复核）")
+            record.setdefault("should_split", "是")
             valid.append(record)
 
     # Re-number

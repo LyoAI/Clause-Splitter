@@ -284,7 +284,7 @@ def _print_split_summary(data: dict) -> None:
     obls = data.get("obligations", [])
     table = Table(title=f"{ICONS['stats']}  Split Result", border_style="cyan",
                   title_style="bold cyan")
-    table.add_column("", style="cyan", width=2)
+    table.add_column("", style="cyan", width=3, no_wrap=True)
     table.add_column("Metric", style="white")
     table.add_column("Value", style="bold")
 
@@ -324,7 +324,7 @@ def _print_compare_summary(data: dict) -> None:
 
     table = Table(title=f"{ICONS['search']}  Compare Result", border_style="yellow",
                   title_style="bold yellow")
-    table.add_column("", width=2)
+    table.add_column("", width=3, no_wrap=True)
     table.add_column("Metric", style="white")
     table.add_column("Value", style="bold")
 
@@ -558,7 +558,7 @@ def _print_pipeline_summary(data: dict) -> None:
 
     table = Table(title=f"{ICONS['rocket']}  Pipeline Results", border_style="green",
                   title_style="bold green")
-    table.add_column("", width=2)
+    table.add_column("", width=3, no_wrap=True)
     table.add_column("Phase", style="white")
     table.add_column("Result", style="bold")
 
