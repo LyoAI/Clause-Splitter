@@ -45,7 +45,7 @@ class SummaryService:
         Returns:
             {"report": str (Markdown), "report_path": str}
         """
-        from agent.prompts.summary import get_system_prompt, format_user_prompt
+        from prompts.summary import get_system_prompt, format_user_prompt
 
         if not self.llm:
             logger.error("SummaryService: LLM 实例未注入")

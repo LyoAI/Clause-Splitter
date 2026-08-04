@@ -17,6 +17,7 @@ class AgentState(TypedDict, total=False):
     # Input
     file_path: str
     document_name: str
+    file_type: str  # "text" | "excel" — routing decision after parse
 
     # Parsing
     raw_text: str
@@ -39,6 +40,10 @@ class AgentState(TypedDict, total=False):
 
     # Export
     excel_path: str | None
+    output_dir: str | None  # Override export output directory (for multi-doc Excel)
+
+    # Excel multi-document support
+    excel_document_groups: list
 
     # Task control
     status: str
@@ -55,6 +60,7 @@ def create_initial_state(**kwargs: Any) -> dict:
     defaults: dict[str, Any] = {
         "file_path": "",
         "document_name": "",
+        "file_type": "",
         "raw_text": "",
         "document_structure": None,
         "total_articles": 0,
@@ -65,6 +71,8 @@ def create_initial_state(**kwargs: Any) -> dict:
         "validation_errors": [],
         "retry_count": 0,
         "excel_path": None,
+        "output_dir": None,
+        "excel_document_groups": [],
         "status": "pending",
         "progress": 0.0,
         "current_step": "",

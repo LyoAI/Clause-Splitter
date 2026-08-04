@@ -11,8 +11,8 @@ import json
 # state is plain dict
 from typing import Any
 from agent.nodes import get_llm_from_state
-from agent.prompts.loader import PromptLoader
-from agent.prompts.decompose_complex import (
+from prompts.loader import PromptLoader
+from prompts.split.decompose_complex import (
     format_user_prompt,
     format_validation_error_feedback,
     format_unparseable_output_feedback,

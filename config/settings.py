@@ -16,7 +16,7 @@ class Settings:
     """Application-wide configuration."""
 
     # ── File handling ───────────────────────────────────────────────────
-    allowed_extensions: set[str] = field(default_factory=lambda: {".pdf", ".docx", ".doc", ".txt"})
+    allowed_extensions: set[str] = field(default_factory=lambda: {".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls"})
     max_file_size_bytes: int = 50 * 1024 * 1024  # 50 MB
     max_chars_per_document: int = 200_000
     min_chars_for_analysis: int = 10
@@ -41,9 +41,9 @@ class Settings:
     ])
 
     # ── Batch planning ──────────────────────────────────────────────────
-    max_batch_chars: int = 15000
-    max_batch_obligations: int = 50
-    complex_solo_threshold: float = 6.0  # only truly complex articles get solo batches
+    max_batch_chars: int = 30000          # 一次 batch 最多 30K 字符
+    max_batch_obligations: int = 100      # 或 100 条预估义务
+    complex_solo_threshold: float = 6.0   # only truly complex articles get solo batches
 
     # ── Complexity estimation ───────────────────────────────────────────
     complexity_length_tiers: list[tuple[int, float]] = field(default_factory=lambda: [
@@ -56,6 +56,17 @@ class Settings:
     # ── ReAct decomposition ─────────────────────────────────────────────
     max_react_iterations: int = 5
     max_self_correct_retries: int = 3
+
+    # ── Excel clause parsing ────────────────────────────────────────────
+    excel_max_sample_rows: int = 30          # rows sent to LLM for schema detection
+    excel_max_react_iterations: int = 3      # ReAct retries for Excel schema detection
+    max_excel_rows_per_document: int = 5000  # safety cap for very large Excel files
+
+    # ── Compare Agent (BM25 + ReAct) ────────────────────────────────────
+    compare_batch_size: int = 15             # ext obligations per ReAct batch
+    compare_bm25_top_k: int = 20             # default BM25 search results per query
+    compare_max_react_iterations: int = 5    # max ReAct loops per batch
+    compare_bm25_fallback_threshold: int = 30  # int obls below this → no BM25, full send
 
     # ── LLM ─────────────────────────────────────────────────────────────
     default_model: str = "qwen3-max"

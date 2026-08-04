@@ -18,7 +18,10 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# Load .env before anything else
+# Load .env BEFORE any project imports — PySerini (imported via api.routes →
+# pipeline.compare_pipeline → tools.search) needs JAVA_HOME + OPENAI_API_KEY
+# set in os.environ at import time. Putting these in .env + calling load_dotenv
+# early is the only setup needed; no manual export required.
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 

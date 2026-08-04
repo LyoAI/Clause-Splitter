@@ -18,7 +18,7 @@ from utils import get_logger
 
 logger = get_logger()
 
-_SKILLS_DIR = Path(__file__).parent.parent.parent / "skills"
+_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
 class PromptLoader:
@@ -74,16 +74,12 @@ class PromptLoader:
     # ── Scene prompts ────────────────────────────────────────────────────
 
     def get_structure_analysis_prompt(self) -> str:
-        from agent.prompts.structure_analysis import SYSTEM_PROMPT
-        return SYSTEM_PROMPT
-
-    def get_complexity_judge_prompt(self) -> str:
-        from agent.prompts.complexity_judge import SYSTEM_PROMPT
+        from prompts.split.structure import SYSTEM_PROMPT
         return SYSTEM_PROMPT
 
     def get_decompose_simple_prompt(self, document_name: str = "") -> str:
         """One-shot decomposition prompt with SKILL.md rules injected."""
-        from agent.prompts.decompose_simple import SYSTEM_PROMPT_TEMPLATE
+        from prompts.split.decompose_simple import SYSTEM_PROMPT_TEMPLATE
         return self.format_prompt(
             SYSTEM_PROMPT_TEMPLATE,
             skill_content=self.skill_content,
@@ -92,7 +88,7 @@ class PromptLoader:
 
     def get_decompose_complex_prompt(self, document_name: str = "") -> str:
         """ReAct decomposition prompt with SKILL.md rules injected."""
-        from agent.prompts.decompose_complex import SYSTEM_PROMPT_TEMPLATE
+        from prompts.split.decompose_complex import SYSTEM_PROMPT_TEMPLATE
         return self.format_prompt(
             SYSTEM_PROMPT_TEMPLATE,
             skill_content=self.skill_content,
@@ -100,7 +96,7 @@ class PromptLoader:
         )
 
     def get_validation_prompt(self) -> str:
-        from agent.prompts.validation import SYSTEM_PROMPT
+        from prompts.split.validate import SYSTEM_PROMPT
         return SYSTEM_PROMPT
 
     # ── Variable interpolation ───────────────────────────────────────────

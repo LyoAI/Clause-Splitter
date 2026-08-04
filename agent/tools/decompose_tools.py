@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.prompts.loader import PromptLoader
+from prompts.loader import PromptLoader
 from config.settings import get_settings
 from models.clause import ClauseObligation, ObligationRule
 from utils import get_logger

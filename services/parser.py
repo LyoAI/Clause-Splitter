@@ -9,7 +9,7 @@ from utils.file.doc_parser import extract_text
 
 logger = get_logger()
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 

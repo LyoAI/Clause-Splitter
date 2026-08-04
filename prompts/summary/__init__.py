@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from agent.prompts.loader import PromptLoader
+from prompts.loader import PromptLoader
 
 
 def get_system_prompt() -> str:

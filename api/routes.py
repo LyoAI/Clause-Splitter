@@ -21,7 +21,6 @@ from models.api import (
 from models.task import TaskStatusEnum
 from services.parser import DocumentParseService
 from services.splitter import ClauseSplitService
-from services.compare_service import CompareService
 from services.summary_service import SummaryService
 from services.task_manager import TaskManager
 from api.dependencies import get_task_manager, get_llm
@@ -46,7 +45,7 @@ UPLOAD_DIR = Path(tempfile.gettempdir()) / "clause_splitter_uploads"
 )
 async def submit_split_task(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(..., description="待拆分的法律文件（PDF/DOCX/DOC/TXT）"),
+    file: UploadFile = File(..., description="待拆分的法律文件（PDF/DOCX/DOC/TXT/XLSX/XLS）"),
     document_name: str = Form(default="", description="可选：覆盖文件名作为文档名称"),
     task_manager: TaskManager = Depends(get_task_manager),
 ) -> SplitResponse:
@@ -214,7 +213,7 @@ async def submit_summary_comparison(
 )
 async def submit_pipeline_task(
     background_tasks: BackgroundTasks,
-    files: list[UploadFile] = File(..., description="待拆分的外部法律文件（PDF/DOCX/DOC/TXT），支持多个"),
+    files: list[UploadFile] = File(..., description="待拆分的外部法律文件（PDF/DOCX/DOC/TXT/XLSX/XLS），支持多个"),
     internal_files: list[UploadFile] = File(..., description="预拆分的内部规章制度 JSON 文件，支持多个"),
     internal_raw_text: str = Form(default="", description="内规条款原文（Markdown格式，用于报告引用）"),
     document_name: str = Form(default="", description="可选：文档名称（合并多个外规时使用）"),
@@ -514,45 +513,102 @@ async def _run_split_pipeline(
     file_path: str,
     document_name: str,
 ) -> None:
-    """Run the split pipeline in the background."""
+    """Run the split pipeline in the background.
+
+    For Excel files (.xlsx/.xls): uses the multi-document pipeline which
+    auto-detects column structure, groups by document name, and runs
+    per-document parallel splitting with per-document output directories.
+
+    For PDF/DOCX/DOC/TXT: uses the standard text-based pipeline.
+    """
+    import json
     import shutil
+    from pathlib import Path
+
     task_manager = get_task_manager()
     llm = get_llm()
+    suffix = Path(file_path).suffix.lower()
 
     try:
-        task_manager.update(task_id, status=TaskStatusEnum.PARSING,
-                            current_step="Parsing document...")
+        # ── Excel path: multi-document pipeline ──────────────────────
+        if suffix in (".xlsx", ".xls"):
+            task_manager.update(task_id, status=TaskStatusEnum.PARSING,
+                                current_step="检测到 Excel 文件，启动多文档解析……")
 
-        def _on_progress(progress: float, step: str, _state: dict) -> None:
-            task_manager.update(
-                task_id,
-                progress=progress,
-                current_step=step,
-                total_articles=_state.get("total_articles", 0),
-                processed_articles=_state.get("processed_articles", 0),
-                total_obligations=len(_state.get("obligations", [])),
+            async def _on_excel_progress(progress: float, step: str, _state: dict) -> None:
+                task_manager.update(
+                    task_id,
+                    progress=progress,
+                    current_step=step,
+                    total_articles=_state.get("total_articles", 0),
+                    total_obligations=_state.get("total_obligations", 0),
+                )
+
+            service = ClauseSplitService(llm=llm)
+            result = await service.split_multi_document_excel(
+                file_path, document_name,
+                progress_callback=_on_excel_progress,
             )
 
-        service = ClauseSplitService(llm=llm)
-        result = await service.split(file_path, document_name,
-                                     progress_callback=_on_progress)
+            # Save aggregated result JSON
+            task_dir = UPLOAD_DIR / task_id
+            task_dir.mkdir(parents=True, exist_ok=True)
+            json_path = task_dir / "result.json"
+            json_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
-        task_dir = UPLOAD_DIR / task_id
-        json_path = task_dir / "result.json"
-        json_path.write_text(
-            result.model_dump_json(indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+            # Collect first available Excel path
+            excel_path = ""
+            for doc in result.get("documents", []):
+                if doc.get("excel_path") and Path(doc["excel_path"]).exists():
+                    excel_path = doc["excel_path"]
+                    break
 
-        excel_path = ""
-        if result.excel_path and Path(result.excel_path).exists():
-            excel_path = str(task_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx")
-            shutil.copy2(result.excel_path, excel_path)
+            task_manager.mark_completed(
+                task_id,
+                total_obligations=result.get("total_obligations", 0),
+                total_articles=result.get("total_articles", 0),
+                json_path=str(json_path),
+                excel_path=excel_path,
+            )
 
-        task_manager.mark_completed(
-            task_id, result.total_obligations,
-            json_path=str(json_path), excel_path=excel_path,
-        )
+        else:
+            # ── Text-based path: standard pipeline ───────────────────
+            task_manager.update(task_id, status=TaskStatusEnum.PARSING,
+                                current_step="Parsing document...")
+
+            def _on_progress(progress: float, step: str, _state: dict) -> None:
+                task_manager.update(
+                    task_id,
+                    progress=progress,
+                    current_step=step,
+                    total_articles=_state.get("total_articles", 0),
+                    processed_articles=_state.get("processed_articles", 0),
+                    total_obligations=len(_state.get("obligations", [])),
+                )
+
+            service = ClauseSplitService(llm=llm)
+            result = await service.split(file_path, document_name,
+                                         progress_callback=_on_progress)
+
+            task_dir = UPLOAD_DIR / task_id
+            json_path = task_dir / "result.json"
+            json_path.write_text(
+                result.model_dump_json(indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            excel_path = ""
+            if result.excel_path and Path(result.excel_path).exists():
+                excel_path = str(task_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx")
+                shutil.copy2(result.excel_path, excel_path)
+
+            task_manager.mark_completed(
+                task_id, result.total_obligations,
+                json_path=str(json_path), excel_path=excel_path,
+            )
 
     except Exception as e:
         import traceback
@@ -582,7 +638,7 @@ async def _run_summary_comparison(
     int_doc_list = list(internal_document_names or [])
 
     try:
-        # ── Phase 1: Compare ────────────────────────────────────────────
+        # ── Phase 1: Compare (BM25 + ReAct Agent) ──────────────────────
         task_manager.update(
             task_id,
             status=TaskStatusEnum.DECOMPOSING,
@@ -591,12 +647,14 @@ async def _run_summary_comparison(
             pipeline_phase="comparing",
         )
 
-        compare_service = CompareService(llm=llm)
-        compare_result = await compare_service.compare(
+        # Use new BM25 + ReAct ComparePipeline for scalable many-to-many
+        compare_pipeline = ComparePipeline(llm=llm)
+        compare_result = await compare_pipeline.run(
             external_obligations=external_obligations,
             internal_obligations=internal_obligations,
             external_document_names=ext_doc_list,
             internal_document_names=int_doc_list,
+            output_dir=str(task_dir),
         )
 
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -753,12 +811,13 @@ async def _run_full_pipeline(
                                          f"{len(internal_obligations)} internal obligations...",
                             pipeline_phase="comparing")
 
-        compare_service = CompareService(llm=llm)
-        compare_result = await compare_service.compare(
+        compare_pipeline = ComparePipeline(llm=llm)
+        compare_result = await compare_pipeline.run(
             external_obligations=all_ext_obligations,
             internal_obligations=internal_obligations,
             external_document_names=ext_doc_list,
             internal_document_names=int_doc_list,
+            output_dir=str(task_dir),
         )
 
         compare_json_path = task_dir / "compare_result.json"

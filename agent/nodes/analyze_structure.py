@@ -144,8 +144,8 @@ def _segments_to_articles(segments: list[dict[str, Any]]) -> list[ArticleInfo]:
 
 async def _llm_segment(raw_text: str, llm: Any) -> list[ArticleInfo] | None:
     """Use LLM to identify article boundaries — works for any document format."""
-    from agent.prompts.loader import PromptLoader
-    from agent.prompts.structure_analysis import format_user_prompt
+    from prompts.loader import PromptLoader
+    from prompts.split.structure import format_user_prompt
 
     settings = get_settings()
     loader = PromptLoader()

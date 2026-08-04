@@ -1,7 +1,7 @@
-"""简单条款拆分节点 —— One-shot LLM + structured output.
+"""简单条款拆分节点 —— 批量 One-shot LLM.
 
 处理复杂度 < COMPLEX_SOLO_THRESHOLD 的简单条款批次。
-使用 LangChain with_structured_output 一次性提取。
+同批次所有条款打包成一次 LLM 调用，输出合并 YAML。
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from typing import Any
 
 # state is plain dict
 from agent.nodes import get_llm_from_state
-from agent.prompts.loader import PromptLoader
-from agent.prompts.decompose_simple import format_user_prompt
+from prompts.loader import PromptLoader
+from prompts.split.decompose_simple import format_batch_user_prompt
 from agent.tools.decompose_tools import decompose_article_batch, _parse_llm_output_to_obligations
 from config.settings import get_settings
 from models.clause import ClauseObligation
@@ -22,10 +22,10 @@ logger = get_logger()
 
 
 async def decompose_simple_node(state: dict) -> dict:
-    """One-shot 拆分简单条款.
+    """批量 One-shot 拆分简单条款.
 
-    对当前 batch 的每个条款调用 LLM，直接输出结构化 YAML/JSON，
-    然后通过 Pydantic 验证。
+    同批次所有条款打包成一次 LLM call，大幅减少 API 调用次数。
+    每条义务的 条款编号 由 YAML 自身标注，不依赖 article_id 回退。
 
     Args:
         state: 包含 batches, current_batch_index, obligations 的 AgentState。
@@ -42,60 +42,60 @@ async def decompose_simple_node(state: dict) -> dict:
 
     current_batch = batches[batch_index]
     logger.info(
-        "简单拆分: 批次 %d/%d, %d 个条款",
+        "简单拆分: 批次 %d/%d, %d 个条款 (批量)",
         batch_index + 1, len(batches), len(current_batch),
     )
 
-    # 加载 prompt
     loader = PromptLoader()
     system_prompt = loader.get_decompose_simple_prompt(document_name=document_name)
-
-    # Get LLM instance from state
     llm = get_llm_from_state(state)
 
     new_obligations: list[dict[str, Any]] = []
     existing_obligations = state.get("obligations", [])
 
-    for article in current_batch:
-        article_id = article.get("article_id", "未知")
-        article_text = article.get("full_text", "")
-
-        user_prompt = format_user_prompt(article_id, article_text)
-
+    if llm is not None:
+        # ── All articles in one LLM call ────────────────────────────
+        user_prompt = format_batch_user_prompt(current_batch)
         try:
-            if llm is not None:
-                # 使用 LLM
-                response = llm.invoke([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ])
-                content = response.content if hasattr(response, "content") else str(response)
-            else:
-                # No LLM — use direct function call
+            response = llm.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
+            content = response.content if hasattr(response, "content") else str(response)
+        except Exception as e:
+            logger.error("批次 %d LLM 调用失败: %s", batch_index + 1, e)
+            content = ""
+
+        # Parse — 条款编号 from YAML, empty article_id as fallback
+        parsed = _parse_llm_output_to_obligations(content, "", document_name)
+        for obl_dict in parsed:
+            try:
+                ClauseObligation(**obl_dict)
+                new_obligations.append(obl_dict)
+            except Exception as e:
+                logger.warning("义务验证失败: %s", e)
+    else:
+        # No LLM — per-article direct call
+        for article in current_batch:
+            article_id = article.get("article_id", "未知")
+            article_text = article.get("full_text", "")
+            try:
                 articles_json = json.dumps([{"id": article_id, "text": article_text}])
                 result = decompose_article_batch(
                     articles_json=articles_json,
                     document_name=document_name,
                 )
-                content = json.dumps(result.get("obligations", []))
+                for obl_dict in result.get("obligations", []):
+                    try:
+                        ClauseObligation(**obl_dict)
+                        new_obligations.append(obl_dict)
+                    except Exception as e:
+                        logger.warning("条款 %s 验证失败: %s", article_id, e)
+            except Exception as e:
+                logger.error("拆分条款 %s 失败: %s", article_id, e)
 
-            # Parse LLM output
-            parsed = _parse_llm_output_to_obligations(content, article_id, document_name)
-
-            for obl_dict in parsed:
-                try:
-                    ClauseObligation(**obl_dict)
-                    new_obligations.append(obl_dict)
-                except Exception as e:
-                    logger.warning("条款 %s 验证失败: %s", article_id, e)
-
-        except Exception as e:
-            logger.error("拆分条款 %s 失败: %s", article_id, e)
-
-    # 合并到现有 obligations
+    # 合并
     all_obligations = list(existing_obligations) + new_obligations
-
-    # Re-number
     for i, obl in enumerate(all_obligations):
         obl["index"] = i + 1
 

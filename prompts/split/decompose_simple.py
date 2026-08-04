@@ -51,18 +51,29 @@ SYSTEM_PROMPT_TEMPLATE = """# 条款义务拆分器（简单模式）
 
 
 def format_user_prompt(article_id: str, article_text: str) -> str:
-    """Format the user prompt for simple clause decomposition.
-
-    Args:
-        article_id: Article identifier (e.g. '第十四条').
-        article_text: Full text of the article.
-
-    Returns:
-        Formatted user prompt string.
-    """
+    """Format the user prompt for a single article (used by complex path)."""
     return f"""请拆分以下条款：
 
 条款编号：{article_id}
 条款文本：
 {article_text}
 """
+
+
+def format_batch_user_prompt(articles: list[dict]) -> str:
+    """Pack multiple simple articles into one prompt for batched LLM call.
+
+    Each obligation in the LLM output must include its source 条款编号.
+    """
+    lines = [
+        f"请逐一拆分以下 {len(articles)} 个条款。每个条款的每条义务记录中必须正确标注对应的条款编号。",
+        "",
+    ]
+    for art in articles:
+        aid = art.get("article_id", "?")
+        text = art.get("full_text", "")
+        lines.append(f"---")
+        lines.append(f"条款编号：{aid}")
+        lines.append(f"条款文本：{text}")
+        lines.append("")
+    return "\n".join(lines)

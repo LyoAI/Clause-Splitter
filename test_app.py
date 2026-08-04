@@ -758,9 +758,9 @@ def main() -> None:
         epilog="""
 Examples:
   python test_app.py --split --file 外部法规.docx
-  python test_app.py --summary-comparison --external-files 外规.json --internal-files 内规.json
-  python test_app.py --pipeline --file 外规.docx --internal-files 内规.json
-  python test_app.py --chain --file 外规.docx --internal-files 内规.json
+  python test_app.py --summary-comparison --external-files 外规.json --internal-dir outputs/内规库/
+  python test_app.py --pipeline --file 外规.docx --internal-dir outputs/内规库/
+  python test_app.py --chain --file 外规.docx --internal-dir outputs/内规库/
   python test_app.py --list          # show all tasks
   python test_app.py --list split    # filter by type
         """,
@@ -780,7 +780,8 @@ Examples:
     parser.add_argument("--document-name", default="", help="Override document name")
 
     parser.add_argument("--external-files", help="📦  External obligation JSON file(s) for --compare/--summary (comma-sep)")
-    parser.add_argument("--internal-files", help="📦  Internal obligation JSON file(s) for --compare/--summary/--chain/--pipeline (comma-sep)")
+    parser.add_argument("--internal-files", default="", help="📦  Internal obligation JSON file(s) for --compare/--summary/--chain/--pipeline (comma-sep)")
+    parser.add_argument("--internal-dir", default="", help="📁  Directory of internal *_split_result.json files (alternative to --internal-files)")
 
     parser.add_argument("--external-text", default="", help="External regulation raw text (for --summary)")
     parser.add_argument("--internal-text", default="", help="Internal regulation raw text (for --summary)")
@@ -794,6 +795,23 @@ Examples:
         data = resp.json()
         console.print(f"\n  🗑️  {data['message']}")
         return
+
+    # ── Resolve internal files from --internal-files or --internal-dir ──
+    def _resolve_internal_files(files: str, directory: str) -> str:
+        """Return comma-separated paths from --internal-files or --internal-dir."""
+        if directory:
+            d = Path(directory)
+            if not d.is_dir():
+                console.print(f"\n  ❌ [red]Not a directory:[/] {directory}")
+                sys.exit(1)
+            json_files = sorted(d.glob("*_split_result.json"))
+            if not json_files:
+                console.print(f"\n  ❌ [red]No *_split_result.json files found in:[/] {directory}")
+                sys.exit(1)
+            return ",".join(str(f) for f in json_files)
+        return files
+
+    internal_files = _resolve_internal_files(args.internal_files, args.internal_dir)
 
     if not any([args.split, getattr(args, 'summary_comparison', False), args.pipeline, args.chain, args.list is not None]):
         if args.file:
@@ -813,22 +831,22 @@ Examples:
             sys.exit(1)
         run_split(args.file)
     elif getattr(args, 'summary_comparison', False):
-        if not args.external_files or not args.internal_files:
-            console.print(f"\n  ❌ [red]--external-files and --internal-files are required for --summary-comparison[/]")
+        if not args.external_files or not internal_files:
+            console.print(f"\n  ❌ [red]--external-files and (--internal-files or --internal-dir) are required[/]")
             sys.exit(1)
-        run_summary_comparison(args.external_files, args.internal_files,
+        run_summary_comparison(args.external_files, internal_files,
                                args.external_text, args.internal_text, args.document_name)
     elif args.pipeline:
-        if not args.file or not args.internal_files:
-            console.print(f"\n  ❌ [red]--file and --internal-files are required for --pipeline[/]")
+        if not args.file or not internal_files:
+            console.print(f"\n  ❌ [red]--file and (--internal-files or --internal-dir) are required[/]")
             sys.exit(1)
-        run_pipeline(args.file, args.internal_files, args.internal_text,
+        run_pipeline(args.file, internal_files, args.internal_text,
                     args.document_name)
     elif args.chain:
-        if not args.file or not args.internal_files:
-            console.print(f"\n  ❌ [red]--file and --internal-files are required for --chain[/]")
+        if not args.file or not internal_files:
+            console.print(f"\n  ❌ [red]--file and (--internal-files or --internal-dir) are required[/]")
             sys.exit(1)
-        run_chain(args.file, args.internal_files, args.internal_text,
+        run_chain(args.file, internal_files, args.internal_text,
                   args.document_name)
 
 

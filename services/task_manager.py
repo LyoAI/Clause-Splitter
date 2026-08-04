@@ -134,6 +134,7 @@ class TaskManager:
         self,
         task_id: str,
         total_obligations: int = 0,
+        total_articles: int = 0,
         json_path: str = "",
         excel_path: str = "",
         report_path: str = "",
@@ -147,6 +148,7 @@ class TaskManager:
         task.progress = 100.0
         task.current_step = "处理完成"
         task.total_obligations = total_obligations
+        task.total_articles = total_articles
         task.result_json_path = json_path
         task.result_excel_path = excel_path
         task.result_report_path = report_path

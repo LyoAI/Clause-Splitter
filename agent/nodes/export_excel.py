@@ -30,8 +30,12 @@ def export_excel_node(state: dict) -> dict:
     settings = get_settings()
     logger.info("正在导出 Excel: %d 条义务记录……", len(obligations))
 
-    # Output path: outputs/{document_name}/
-    output_dir = Path(settings.project_root) / "outputs" / Path(document_name).stem
+    # Output path: if state provides output_dir, use it; otherwise default
+    override_dir = state.get("output_dir")
+    if override_dir:
+        output_dir = Path(override_dir)
+    else:
+        output_dir = Path(settings.project_root) / "outputs" / Path(document_name).stem
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx"
 

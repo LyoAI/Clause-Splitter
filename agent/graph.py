@@ -1,8 +1,11 @@
 """LangGraph 状态图构建 —— 组装完整流水线.
 
-流水线: parse → analyze_structure → plan_batches → [decompose_simple | decompose_complex] → validate → export
+流水线:
+  Excel 路径:  parse_document → parse_excel → plan_batches → [decompose_simple | decompose_complex] → validate → export
+  文本路径:    parse_document → analyze_structure → plan_batches → [decompose_simple | decompose_complex] → validate → export
 
 条件路由:
+- parse_document 后：根据 file_type 路由到 parse_excel (Excel) 或 analyze_structure (文本)
 - plan_batches 后：根据复杂度路由到 decompose_simple 或 decompose_complex
 - decompose 后：如果还有未处理的 batch，循环回 decompose；否则进入 validate
 - validate 后：通过 → export；失败 → self_correct → validate（最多3次）
@@ -15,6 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from agent.state import AgentState, create_initial_state
 from agent.nodes.parse_document import parse_document_node
+from agent.nodes.parse_excel import parse_excel_node
 from agent.nodes.analyze_structure import analyze_structure_node
 from agent.nodes.plan_batches import plan_batches_node
 from agent.nodes.decompose_simple import decompose_simple_node
@@ -70,6 +74,29 @@ def route_after_decompose(state: dict) -> str:
     return "validate"
 
 
+def _route_after_parse(state: dict) -> str:
+    """解析后路由：根据文件类型决定下一步.
+
+    - Excel (.xlsx/.xls) → parse_excel 节点（ReAct 结构化解析）
+    - 文本文档 (PDF/DOCX/DOC/TXT) → analyze_structure 节点（现有路径）
+    - 解析失败 → END
+
+    Returns:
+        "excel", "text", 或 "failed"
+    """
+    if state.get("status") == "failed":
+        logger.warning("文档解析失败，终止流水线")
+        return "failed"
+
+    file_type = state.get("file_type", "text")
+    if file_type == "excel":
+        logger.info("路由: Excel → parse_excel (ReAct)")
+        return "excel"
+
+    logger.info("路由: 文本文档 → analyze_structure")
+    return "text"
+
+
 # ── Graph 构建 ────────────────────────────────────────────────────────────
 
 def build_split_graph() -> StateGraph:
@@ -82,6 +109,7 @@ def build_split_graph() -> StateGraph:
 
     # ── 添加节点 ──
     workflow.add_node("parse_document", parse_document_node)
+    workflow.add_node("parse_excel", parse_excel_node)
     workflow.add_node("analyze_structure", analyze_structure_node)
     workflow.add_node("plan_batches", plan_batches_node)
     workflow.add_node("decompose_simple", decompose_simple_node)
@@ -93,8 +121,19 @@ def build_split_graph() -> StateGraph:
     # ── 入口 ──
     workflow.set_entry_point("parse_document")
 
-    # ── 线性边（确定性流程）──
-    workflow.add_edge("parse_document", "analyze_structure")
+    # ── 条件路由: 根据文件类型分流 ──
+    #   Excel → parse_excel (ReAct 结构化解析) → plan_batches
+    #   文本  → analyze_structure (现有路径)     → plan_batches
+    workflow.add_conditional_edges(
+        "parse_document",
+        _route_after_parse,
+        {
+            "excel": "parse_excel",
+            "text": "analyze_structure",
+            "failed": END,
+        },
+    )
+    workflow.add_edge("parse_excel", "plan_batches")
     workflow.add_edge("analyze_structure", "plan_batches")
 
     # ── 条件路由: 复杂度判定 ──
@@ -151,7 +190,84 @@ def build_split_graph() -> StateGraph:
     return graph
 
 
-# ── 便捷方法 ──────────────────────────────────────────────────────────────
+def build_split_subgraph() -> StateGraph:
+    """构建子流水线 —— 从 plan_batches 开始，用于多文档 Excel 并行拆分.
+
+    入口为 plan_batches，跳过了 parse_document 和 parse_excel。
+    下游节点（decompose → validate → export_excel）与完整管线完全相同。
+
+    适用场景：
+    - 多文档 Excel：一次性解析所有文档的 articles，然后对每个文档
+      并行运行此子管线，实现 per-document 输出。
+
+    Returns:
+        Compiled StateGraph with MemorySaver checkpoint, entry at plan_batches.
+    """
+    workflow = StateGraph(AgentState)
+
+    # ── 添加节点（与 build_split_graph 相同的下游节点）──
+    workflow.add_node("plan_batches", plan_batches_node)
+    workflow.add_node("decompose_simple", decompose_simple_node)
+    workflow.add_node("decompose_complex", decompose_complex_node)
+    workflow.add_node("validate", validate_node)
+    workflow.add_node("self_correct", self_correct_node)
+    workflow.add_node("export_excel", export_excel_node)
+
+    # ── 入口: plan_batches ──
+    workflow.set_entry_point("plan_batches")
+
+    # ── 条件路由: 复杂度判定 ──
+    workflow.add_conditional_edges(
+        "plan_batches",
+        route_by_complexity,
+        {
+            "simple": "decompose_simple",
+            "complex": "decompose_complex",
+            "validate": "validate",
+        },
+    )
+
+    # ── 条件路由: 拆分后继续或验证 ──
+    workflow.add_conditional_edges(
+        "decompose_simple",
+        route_after_decompose,
+        {
+            "continue": "plan_batches",
+            "validate": "validate",
+        },
+    )
+    workflow.add_conditional_edges(
+        "decompose_complex",
+        route_after_decompose,
+        {
+            "continue": "plan_batches",
+            "validate": "validate",
+        },
+    )
+
+    # ── 条件路由: 验证后导出或自修正 ──
+    workflow.add_conditional_edges(
+        "validate",
+        route_after_validate,
+        {
+            "export": "export_excel",
+            "self_correct": "self_correct",
+            "fail": "export_excel",
+        },
+    )
+
+    # ── Self-correct → 回到验证 ──
+    workflow.add_edge("self_correct", "validate")
+
+    # ── 导出 → 结束 ──
+    workflow.add_edge("export_excel", END)
+
+    # ── 编译 ──
+    checkpointer = MemorySaver()
+    subgraph = workflow.compile(checkpointer=checkpointer)
+
+    logger.info("Agent 子状态图构建完成（入口: plan_batches）")
+    return subgraph
 
 async def run_pipeline(
     file_path: str,
