@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -27,7 +26,17 @@ from api.dependencies import get_task_manager, get_llm
 
 router = APIRouter(tags=["clause-splitter"])
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "clause_splitter_uploads"
+UPLOAD_DIR = Path(__file__).parent.parent / ".cache" / "tasks"
+
+
+def _get_persistent_index_dir() -> str:
+    """Return the path to the persistent BM25 index for internal regulations.
+
+    This is the single source of truth for the index location.
+    CLI builds it here (--build-index), API reuses it.
+    """
+    from config.settings import get_settings
+    return str(Path(get_settings().project_root) / "outputs" / "internal" / ".bm25_index")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -545,13 +554,14 @@ async def _run_split_pipeline(
                 )
 
             service = ClauseSplitService(llm=llm)
+            task_dir = UPLOAD_DIR / task_id
             result = await service.split_multi_document_excel(
                 file_path, document_name,
                 progress_callback=_on_excel_progress,
+                output_base_dir=str(task_dir),
             )
 
             # Save aggregated result JSON
-            task_dir = UPLOAD_DIR / task_id
             task_dir.mkdir(parents=True, exist_ok=True)
             json_path = task_dir / "result.json"
             json_path.write_text(
@@ -559,7 +569,7 @@ async def _run_split_pipeline(
                 encoding="utf-8",
             )
 
-            # Collect first available Excel path
+            # Collect first available Excel path (now under task_dir)
             excel_path = ""
             for doc in result.get("documents", []):
                 if doc.get("excel_path") and Path(doc["excel_path"]).exists():
@@ -590,10 +600,11 @@ async def _run_split_pipeline(
                 )
 
             service = ClauseSplitService(llm=llm)
-            result = await service.split(file_path, document_name,
-                                         progress_callback=_on_progress)
-
             task_dir = UPLOAD_DIR / task_id
+            result = await service.split(file_path, document_name,
+                                         progress_callback=_on_progress,
+                                         output_dir=str(task_dir))
+
             json_path = task_dir / "result.json"
             json_path.write_text(
                 result.model_dump_json(indent=2, ensure_ascii=False),
@@ -602,8 +613,10 @@ async def _run_split_pipeline(
 
             excel_path = ""
             if result.excel_path and Path(result.excel_path).exists():
-                excel_path = str(task_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx")
-                shutil.copy2(result.excel_path, excel_path)
+                target = str(task_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx")
+                if result.excel_path != target:
+                    shutil.copy2(result.excel_path, target)
+                excel_path = target
 
             task_manager.mark_completed(
                 task_id, result.total_obligations,
@@ -656,6 +669,7 @@ async def _run_summary_comparison(
             external_document_names=ext_doc_list,
             internal_document_names=int_doc_list,
             output_dir=str(task_dir),
+            index_dir=_get_persistent_index_dir(),
         )
 
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -766,6 +780,7 @@ async def _run_full_pipeline(
             result = await split_service.split(
                 file_path, doc_name,
                 progress_callback=_make_split_callback(file_start_pct, file_end_pct),
+                output_dir=str(task_dir),
             )
             all_split_results.append(result)
 
@@ -820,6 +835,7 @@ async def _run_full_pipeline(
             external_document_names=ext_doc_list,
             internal_document_names=int_doc_list,
             output_dir=str(task_dir),
+            index_dir=_get_persistent_index_dir(),
         )
 
         compare_json_path = task_dir / "compare_result.json"
@@ -867,8 +883,10 @@ async def _run_full_pipeline(
 
         excel_path = ""
         if primary_result and primary_result.excel_path and Path(primary_result.excel_path).exists():
-            excel_path = str(task_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx")
-            shutil.copy2(primary_result.excel_path, excel_path)
+            target = str(task_dir / f"{Path(document_name).stem}_条款拆分结果.xlsx")
+            if primary_result.excel_path != target:
+                shutil.copy2(primary_result.excel_path, target)
+            excel_path = target
 
         task_manager.mark_completed(
             task_id,

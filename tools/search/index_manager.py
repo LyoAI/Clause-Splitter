@@ -6,12 +6,25 @@ id → full obligation dict for O(1) detail retrieval.
 
 The Lucene index stores (id, contents) for BM25 scoring only.
 Full obligation data lives in the store (dict, ~20MB per 10K obls).
+
+Lifecycle:
+    ── Offline (after splitting internal regulations) ──
+    mgr = IndexManager()
+    mgr.build_from_directory("outputs/internal/", "outputs/internal/.bm25_index/")
+
+    ── Online (when comparing against external regulations) ──
+    mgr = IndexManager()
+    mgr._index_path = "outputs/internal/.bm25_index/"
+    mgr._load_obligation_store(internal_obligations)
+    searcher = mgr.open()   # instant — index already exists
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -61,6 +74,8 @@ class IndexManager:
 
     def build(
         self, obligations: list[dict[str, Any]],
+        index_path: str = "",
+        append: bool = False,
     ) -> str:
         """Build a Lucene BM25 index + in-memory store from obligations.
 
@@ -69,6 +84,11 @@ class IndexManager:
 
         Args:
             obligations: List of ClauseObligation dicts (13-field format).
+            index_path: If provided, build at this exact path (persistent).
+                        Otherwise, generate a random path under base_dir.
+            append: If True and index exists at index_path, append to it
+                    instead of overwriting. New obligations are added to
+                    the existing index without touching existing documents.
 
         Returns:
             Path to the built index directory.
@@ -79,18 +99,44 @@ class IndexManager:
         if not obligations:
             raise ValueError("Cannot build index from empty obligations list")
 
-        # Generate unique index directory
-        index_id = uuid.uuid4().hex[:8]
-        self._index_path = str(self._base_dir / f"index_{index_id}")
-        Path(self._index_path).mkdir(parents=True, exist_ok=True)
+        # Use explicit path (persistent) or generate random one
+        if index_path:
+            self._index_path = index_path
+        else:
+            index_id = uuid.uuid4().hex[:8]
+            self._index_path = str(self._base_dir / f"index_{index_id}")
 
-        logger.info(
-            "Building BM25 index at %s from %d obligations...",
-            self._index_path, len(obligations),
-        )
+        # Determine mode
+        exists = self.index_exists(self._index_path)
+        actual_append = append and exists
 
-        indexer = LuceneIndexer(self._index_path)
-        self._obligation_store = {}
+        if actual_append:
+            # Read manifest to get accurate previous count (store might be empty)
+            old_manifest = self._read_manifest(self._index_path)
+            prev_total = old_manifest.get("total_obligations", len(self._obligation_store))
+            logger.info(
+                "Appending %d obligations to existing index at %s "
+                "(current total=%d)...",
+                len(obligations), self._index_path, prev_total,
+            )
+            # Don't clear the store — extend it
+        else:
+            if append and not exists:
+                logger.info(
+                    "Append requested but index doesn't exist — creating new: %s",
+                    self._index_path,
+                )
+            Path(self._index_path).mkdir(parents=True, exist_ok=True)
+            logger.info(
+                "Building BM25 index at %s from %d obligations...",
+                self._index_path, len(obligations),
+            )
+            # Fresh build → clear the store
+            self._obligation_store = {}
+            old_manifest = {}
+            prev_total = 0
+
+        indexer = LuceneIndexer(self._index_path, append=actual_append)
         indexed_count = 0
 
         for obl in obligations:
@@ -110,13 +156,59 @@ class IndexManager:
                 )
 
         indexer.close()
-        self._num_docs = indexed_count
+        self._num_docs = prev_total + indexed_count
 
-        logger.info(
-            "BM25 index built: %d/%d obligations indexed, store=%d entries",
-            indexed_count, len(obligations), len(self._obligation_store),
-        )
+        # ── Update manifest ────────────────────────────────────────────
+        # Count which documents were indexed in this batch
+        new_doc_counts: dict[str, int] = {}
+        for obl in obligations:
+            doc_name = obl.get("document_name", "")
+            if doc_name:
+                new_doc_counts[doc_name] = new_doc_counts.get(doc_name, 0) + 1
+
+        if actual_append:
+            # Merge with existing manifest
+            merged = {**old_manifest.get("documents", {}), **new_doc_counts}
+            self._write_manifest(self._index_path, merged, self._num_docs)
+            logger.info(
+                "Appended %d obligations (total=%d, store=%d entries)",
+                indexed_count, self._num_docs, len(self._obligation_store),
+            )
+        else:
+            self._write_manifest(self._index_path, new_doc_counts, self._num_docs)
+            logger.info(
+                "BM25 index built: %d/%d obligations indexed, store=%d entries",
+                indexed_count, len(obligations), len(self._obligation_store),
+            )
         return self._index_path
+
+    def append_obligations(
+        self, obligations: list[dict[str, Any]],
+    ) -> str:
+        """Append obligations to the existing index.
+
+        Convenience wrapper around build(..., append=True).
+        Requires that an index has already been built or loaded.
+
+        Args:
+            obligations: New ClauseObligation dicts to add.
+
+        Returns:
+            Path to the updated index.
+
+        Raises:
+            RuntimeError: If no index path is set (call build first).
+        """
+        if not self._index_path:
+            raise RuntimeError(
+                "No index path set. Call build() or load an existing index first."
+            )
+        if not self.index_exists(self._index_path):
+            raise RuntimeError(
+                f"Index does not exist at {self._index_path}. "
+                "Call build() first to create it."
+            )
+        return self.build(obligations, index_path=self._index_path, append=True)
 
     def _obligation_to_index_doc(
         self, obl: dict[str, Any],
@@ -151,6 +243,277 @@ class IndexManager:
 
         obl_id = str(obl.get("index", len(self._obligation_store) + 1))
         return {"id": obl_id, "contents": contents}
+
+    # ── Existence check ──────────────────────────────────────────────────
+
+    @staticmethod
+    def index_exists(index_path: str) -> bool:
+        """Check if a valid Lucene index exists at the given path."""
+        if not index_path or not Path(index_path).exists():
+            return False
+        # A valid Lucene index has segment files
+        return any(Path(index_path).glob("segments_*"))
+
+    # ── Manifest (tracks which documents are in the index) ───────────────
+
+    @staticmethod
+    def _manifest_path(index_dir: str) -> Path:
+        """Return the path to the index manifest file."""
+        return Path(index_dir) / "index_manifest.json"
+
+    @classmethod
+    def _read_manifest(cls, index_dir: str) -> dict[str, Any]:
+        """Read the index manifest, or return empty dict if not found."""
+        mp = cls._manifest_path(index_dir)
+        if mp.exists():
+            try:
+                return json.loads(mp.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    @classmethod
+    def _write_manifest(
+        cls, index_dir: str,
+        doc_counts: dict[str, int],
+        total_obligations: int,
+    ) -> None:
+        """Write the index manifest tracking which documents are indexed."""
+        mp = cls._manifest_path(index_dir)
+        mp.write_text(json.dumps({
+            "documents": doc_counts,
+            "total_obligations": total_obligations,
+            "built_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _get_indexed_documents(self) -> set[str]:
+        """Return the set of document names already in the index.
+
+        Uses the manifest file (fast, no need to load obligations).
+        Falls back to scanning the obligation store if no manifest.
+        """
+        if self._index_path and self.index_exists(self._index_path):
+            manifest = self._read_manifest(self._index_path)
+            docs = manifest.get("documents", {})
+            if docs:
+                return set(docs.keys())
+            # Fallback: use obligation store
+            if self._obligation_store:
+                return {
+                    obl.get("document_name", "")
+                    for obl in self._obligation_store.values()
+                    if obl.get("document_name")
+                }
+        return set()
+
+    # ── Build from directory (offline, after splitting) ─────────────────
+
+    def build_from_directory(
+        self,
+        internal_dir: str,
+        index_path: str = "",
+        append: bool = False,
+    ) -> str:
+        """Scan a directory of *_split_result.json files and build a BM25 index.
+
+        This is the **offline** path:
+        1. Split internal regulations → outputs/internal/
+        2. Call build_from_directory("outputs/internal/") → builds index once
+        3. Subsequent comparisons just open the pre-built index
+
+        Args:
+            internal_dir: Directory containing **/*_split_result.json files.
+            index_path: Where to store the Lucene index.
+                        Defaults to <internal_dir>/.bm25_index/.
+            append: If True and index exists, only add obligations from
+                    documents NOT already in the index (dedup by document_name).
+                    Documents that are already indexed are skipped.
+
+        Returns:
+            Path to the built index.
+
+        Raises:
+            ValueError: If no split_result.json files found or all empty.
+        """
+        scan_dir = Path(internal_dir)
+        if not scan_dir.is_dir():
+            raise ValueError(f"Directory not found: {internal_dir}")
+
+        json_files = sorted(scan_dir.glob("**/*_split_result.json"))
+        if not json_files:
+            raise ValueError(
+                f"No *_split_result.json files found in {internal_dir}"
+            )
+
+        # Determine index path
+        resolved_index_path = index_path or str(scan_dir / ".bm25_index")
+
+        # Smart append: skip documents already in the index (uses manifest)
+        if append and self.index_exists(resolved_index_path):
+            # Set _index_path so _get_indexed_documents() can read the manifest
+            old_index_path = self._index_path
+            self._index_path = resolved_index_path
+            known_docs = self._get_indexed_documents()
+            self._index_path = old_index_path  # restore
+            if known_docs:
+                logger.info(
+                    "Append mode: %d document(s) already indexed → will skip",
+                    len(known_docs),
+                )
+        else:
+            known_docs: set[str] = set()
+
+        logger.info(
+            "Scanning %d split result files in %s ...",
+            len(json_files), internal_dir,
+        )
+
+        all_obligations: list[dict[str, Any]] = []
+        doc_counts: dict[str, int] = {}
+        skipped_docs = 0
+        parse_errors = 0
+
+        for fpath in json_files:
+            try:
+                data = json.loads(fpath.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to read %s: %s", fpath.name, e)
+                parse_errors += 1
+                continue
+
+            if isinstance(data, dict):
+                obls = data.get("obligations", [])
+                doc_name = data.get("document_name", fpath.stem)
+            elif isinstance(data, list):
+                obls = data
+                doc_name = fpath.stem
+            else:
+                continue
+
+            if not obls:
+                continue
+
+            # Skip if already indexed (smart append)
+            if known_docs and doc_name in known_docs:
+                skipped_docs += 1
+                logger.info("  ⏭️  Skip (already indexed): %s (%d obligations)", doc_name[:60], len(obls))
+                continue
+
+            doc_counts[doc_name] = len(obls)
+            all_obligations.extend(obls)
+
+        if parse_errors:
+            logger.warning("%d files failed to parse", parse_errors)
+        if skipped_docs:
+            logger.info("%d document(s) skipped (already in index)", skipped_docs)
+
+        if not all_obligations:
+            if skipped_docs > 0:
+                logger.info("All %d document(s) already indexed — nothing to append.", skipped_docs)
+                return resolved_index_path
+            raise ValueError(
+                f"No obligations found in {len(json_files)} split result files "
+                f"under {internal_dir}"
+            )
+
+        # Print summary
+        logger.info("Documents to index:")
+        for doc, count in sorted(doc_counts.items()):
+            logger.info("  + %s: %d obligations", doc[:60], count)
+
+        # Build (or append)
+        start = time.time()
+        result_path = self.build(
+            all_obligations,
+            index_path=resolved_index_path,
+            append=append,
+        )
+        elapsed = time.time() - start
+
+        logger.info(
+            "Index %s in %.1fs: %d obligations → %s",
+            "updated" if append else "built", elapsed,
+            len(all_obligations), result_path,
+        )
+
+        return result_path
+
+    @staticmethod
+    def get_index_info(index_path: str) -> dict[str, Any]:
+        """Return metadata about an existing index.
+
+        Args:
+            index_path: Path to the Lucene index directory.
+
+        Returns:
+            Dict with keys: exists, path, num_docs, size_mb.
+        """
+        path = Path(index_path)
+        if not IndexManager.index_exists(index_path):
+            return {
+                "exists": False,
+                "path": str(path),
+                "num_docs": 0,
+                "size_mb": 0,
+            }
+
+        # Count docs by opening briefly
+        num_docs = 0
+        try:
+            searcher = LuceneIndexer(index_path)  # type: ignore[attr-defined]
+            # PySerini doesn't expose num_docs directly on indexer,
+            # so we estimate from segment files
+            searcher.close()
+        except Exception:
+            pass
+
+        # Calculate size
+        total_size = 0
+        for f in path.rglob("*"):
+            if f.is_file():
+                total_size += f.stat().st_size
+
+        # Try to get doc count via a quick searcher open
+        try:
+            from pyserini.search.lucene import LuceneSearcher
+            s = LuceneSearcher(str(path))
+            num_docs = s.num_docs
+            s.close()
+        except Exception:
+            pass
+
+        return {
+            "exists": True,
+            "path": str(path),
+            "num_docs": num_docs,
+            "size_mb": round(total_size / (1024 * 1024), 2),
+        }
+
+    def load_obligation_store(
+        self, obligations: list[dict[str, Any]],
+    ) -> int:
+        """Load/reload the in-memory obligation store from a list of obligations.
+
+        Called when reusing an existing index — the index provides BM25 scoring
+        but the store provides O(1) detail retrieval.
+
+        Args:
+            obligations: List of ClauseObligation dicts.
+
+        Returns:
+            Number of entries loaded into the store.
+        """
+        self._obligation_store = {}
+        for obl in obligations:
+            obl_id = str(obl.get("index", ""))
+            if obl_id:
+                self._obligation_store[obl_id] = obl
+        self._num_docs = len(obligations)
+        logger.info(
+            "Obligation store loaded: %d entries",
+            len(self._obligation_store),
+        )
+        return len(self._obligation_store)
 
     # ── Open ───────────────────────────────────────────────────────────
 

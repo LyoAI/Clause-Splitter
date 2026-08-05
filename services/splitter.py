@@ -38,6 +38,7 @@ class ClauseSplitService:
         file_path: str,
         document_name: str,
         progress_callback: Callable[[float, str, dict[str, Any]], None] | None = None,
+        output_dir: str = "",
     ) -> ClauseSplitResult:
         """执行完整的条款拆分流水线.
 
@@ -46,6 +47,7 @@ class ClauseSplitService:
             document_name: 原始文件名。
             progress_callback: 可选的进度回调 fn(progress: float, step: str, state: dict)。
                                每次 LangGraph 节点完成后调用。
+            output_dir: 导出目录。空字符串表示使用默认 outputs/{doc_name}/。
 
         Returns:
             ClauseSplitResult 包含所有提取的义务记录。
@@ -61,6 +63,7 @@ class ClauseSplitService:
             file_path=file_path,
             document_name=document_name,
             llm=self.llm,
+            output_dir=output_dir or None,
         )
 
         config = {"configurable": {"thread_id": f"split-{document_name}"}}

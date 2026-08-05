@@ -5,24 +5,22 @@ Usage:
     # Start the server first:
     uv run main.py
 
-    # 1. Split only (raw doc → obligations JSON)
-    python test_app.py --split --file upload_materials/外部法规.pdf
+    # ── Offline: Split + Index internal regulations (once) ──
+    python run.py --pre-split --file 内规库.xlsx --output-dir outputs/internal
+    python run.py --build-index --internal-dir outputs/internal/
 
-    # 1b. Pre-split large multi-doc Excel by document name, then split each
-    python test_app.py --pre-split --file 超大内规库.xlsx
+    # ── Online: Compare external vs internal (every new external doc) ──
+    python run.py --pipeline --file 外规.docx --internal-dir outputs/internal/ --output-dir outputs/external
 
-    # 2. Summary-comparison (file-based, one call = compare + report)
-    python test_app.py --summary-comparison --external-files 外规拆分.json --internal-files 内规拆分.json
+    # ── Index management ──
+    python run.py --index-info --internal-dir outputs/internal/
+    python run.py --build-index --internal-dir outputs/internal/ --force   # rebuild
 
-    # 3. Full pipeline — server-side (raw doc → split → compare → report)
-    python test_app.py --pipeline --file 外规.docx --internal-files 内规.json
-    python test_app.py --pipeline --file 外规A.docx,外规B.docx --internal-files 内规1.json,内规2.json
-
-    # 4. Chain mode — client-side (split → summary_comparison)
-    python test_app.py --chain --file 外规.docx --internal-files 内规.json
-
-    # 5. List tasks
-    python test_app.py --list
+    # ── Other modes ──
+    python run.py --split --file document.pdf
+    python run.py --summary-comparison --external-files 外规.json --internal-files 内规.json
+    python run.py --chain --file 外规.docx --internal-files 内规.json
+    python run.py --list
 """
 
 from __future__ import annotations
@@ -706,8 +704,173 @@ def run_pre_split(file_path: str, output_dir: str = "", force: bool = False) -> 
         summary_parts.append(f"[dim]{skipped} skipped[/]")
     console.print(f"\n  {', '.join(summary_parts)} out of {len(sub_files) + skipped} total")
     console.print(f"  📁  Temp .txt files kept at: [dim]{use_dir}[/]")
-    if output_dir:
-        console.print(f"  📁  Outputs under: [dim]{OUTPUT_ROOT}[/]")
+    console.print(f"  📁  Outputs under: [dim]{_out_base}[/]")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Build BM25 Index (offline, after splitting internal regulations)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_build_index(internal_dir: str, force: bool = False) -> None:
+    """Build persistent BM25 index from all *_split_result.json files.
+
+    This is the **offline** step — run once after splitting internal regulations.
+    Subsequent comparisons will reuse this index (millisecond open, no rebuild).
+
+    By default, if the index already exists, only NEW documents (not yet in the
+    index) are appended — existing documents are skipped. Use --force to rebuild
+    the entire index from scratch.
+
+    Index is stored at: <internal_dir>/.bm25_index/
+
+    Args:
+        internal_dir: Directory containing **/*_split_result.json files.
+        force: If True, full rebuild (delete old index). If False, smart append.
+    """
+    from tools.search.index_manager import IndexManager
+
+    scan_dir = Path(internal_dir)
+    if not scan_dir.is_dir():
+        console.print(f"\n  ❌ [red]Directory not found:[/] {internal_dir}")
+        sys.exit(1)
+
+    index_dir = str(scan_dir / ".bm25_index")
+    index_exists = IndexManager.index_exists(index_dir)
+
+    if force and index_exists:
+        _banner("🔧", "REBUILD BM25 INDEX (--force)",
+                f"📁  {scan_dir.absolute()}  →  [dim]{index_dir}[/] (overwrite)",
+                color="yellow")
+    elif index_exists:
+        _banner("➕", "APPEND TO BM25 INDEX",
+                f"📁  {scan_dir.absolute()}  →  [dim]{index_dir}[/] (new documents only)",
+                color="blue")
+    else:
+        _banner("🔧", "BUILD BM25 INDEX (first time)",
+                f"📁  {scan_dir.absolute()}  →  [dim]{index_dir}[/]",
+                color="blue")
+
+    # If force rebuild, remove old index
+    if force and index_exists:
+        import shutil
+        shutil.rmtree(index_dir)
+        console.print(f"\n  🗑️   Old index removed: [dim]{index_dir}[/]")
+        index_exists = False
+
+    # Scan for split results
+    json_files = sorted(scan_dir.glob("**/*_split_result.json"))
+    if not json_files:
+        console.print(f"\n  ❌ [red]No *_split_result.json files found in:[/] {internal_dir}")
+        console.print(f"  💡  Run [bold]--pre-split[/] or [bold]--split[/] first to generate split results.")
+        sys.exit(1)
+
+    # Show existing index info
+    if index_exists and not force:
+        info = IndexManager.get_index_info(index_dir)
+        manifest = IndexManager._read_manifest(index_dir)
+        existing_doc_count = len(manifest.get("documents", {}))
+        console.print(f"\n  📊  Existing index: [bold cyan]{info['num_docs']}[/] obligations, "
+                      f"[bold cyan]{existing_doc_count}[/] documents")
+        console.print(f"      Size: [dim]{info['size_mb']} MB[/]")
+    else:
+        existing_doc_count = 0
+
+    # Show files found
+    console.print(f"\n  📑  Found [bold cyan]{len(json_files)}[/] split result files:")
+
+    total_obls = 0
+    for fpath in json_files[:20]:
+        try:
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+            obls = data if isinstance(data, list) else data.get("obligations", [])
+            count = len(obls)
+            total_obls += count
+            rel = fpath.relative_to(scan_dir)
+            console.print(f"      {ICONS['json']}  [dim]{rel}[/]  →  [cyan]{count}[/] obligations")
+        except Exception:
+            console.print(f"      {ICONS['warn']}  [dim]{fpath.name}[/]  →  [red]parse error[/]")
+
+    if len(json_files) > 20:
+        console.print(f"      ... and {len(json_files) - 20} more")
+
+    console.print(f"\n  📊  Total in directory: [bold green]{total_obls}[/] obligations from {len(json_files)} documents")
+
+    # Build / Append
+    if index_exists and not force:
+        console.print(f"\n  ➕  [bold]Appending new documents[/] to existing index...")
+    else:
+        console.print(f"\n  🔧  [bold]Building index[/] from scratch...")
+
+    try:
+        mgr = IndexManager()
+        start = time.time()
+
+        append_mode = index_exists and not force
+        result_path = mgr.build_from_directory(
+            str(scan_dir), index_path=index_dir, append=append_mode,
+        )
+        elapsed = time.time() - start
+
+        info = IndexManager.get_index_info(result_path)
+        console.print(f"\n  ✅ [green bold]Index {'updated' if append_mode else 'built'} successfully![/]")
+        console.print(f"      Path: [dim]{result_path}[/]")
+        console.print(f"      Documents indexed: [bold cyan]{info['num_docs']}[/]")
+        console.print(f"      Size: [dim]{info['size_mb']} MB[/]")
+        console.print(f"      Time: [dim]{elapsed:.1f}s[/]")
+
+        console.print(f"\n  🚀  [green]Ready for comparison![/] "
+                      f"Use [bold]--pipeline[/] or [bold]--summary-comparison[/] "
+                      f"with [bold]--internal-dir {scan_dir}/[/]")
+    except Exception as e:
+        console.print(f"\n  ❌ [red]Index build failed: {e}[/]")
+        sys.exit(1)
+
+
+def run_index_info(internal_dir: str) -> None:
+    """Show information about the BM25 index."""
+    from tools.search.index_manager import IndexManager
+
+    scan_dir = Path(internal_dir)
+    index_dir = str(scan_dir / ".bm25_index")
+
+    _banner("ℹ️", "BM25 INDEX INFO", f"📁  {index_dir}", color="blue")
+
+    if not IndexManager.index_exists(index_dir):
+        console.print(f"\n  ⚠️   [yellow]No index found at:[/] {index_dir}")
+        console.print(f"  💡  Run [bold]--build-index --internal-dir {internal_dir}[/] to create one.")
+        return
+
+    info = IndexManager.get_index_info(index_dir)
+
+    table = Table(title="📊  BM25 Index Status", border_style="blue", title_style="bold blue")
+    table.add_column("", width=3, no_wrap=True)
+    table.add_column("Metric", style="white")
+    table.add_column("Value", style="bold")
+
+    table.add_row("📁", "Path", f"[dim]{info['path']}[/]")
+    table.add_row("📑", "Documents indexed", f"[bold cyan]{info['num_docs']}[/]")
+    table.add_row("💾", "Size on disk", f"[dim]{info['size_mb']} MB[/]")
+    table.add_row("✅", "Status", "[green]Ready[/]")
+
+    # Show constituent documents by scanning split results
+    json_files = sorted(scan_dir.glob("**/*_split_result.json"))
+    if json_files:
+        table.add_row("📦", "Source files", f"[dim]{len(json_files)} split results[/]")
+        for fpath in json_files[:10]:
+            try:
+                data = json.loads(fpath.read_text(encoding="utf-8"))
+                obls = data if isinstance(data, list) else data.get("obligations", [])
+                rel = fpath.relative_to(scan_dir)
+                table.add_row("", "", f"[dim]{rel}[/] → [cyan]{len(obls)}[/] obligations")
+            except Exception:
+                pass
+        if len(json_files) > 10:
+            table.add_row("", "", f"[dim]... and {len(json_files) - 10} more[/]")
+
+    console.print()
+    console.print(table)
+
+    console.print(f"\n  💡  To rebuild: [bold]python run.py --build-index --internal-dir {internal_dir} --force[/]")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -720,6 +883,7 @@ def run_summary_comparison(
     external_raw_text: str = "",
     internal_raw_text: str = "",
     doc_name: str = "",
+    output_dir: str = "",
 ) -> str:
     """Compare + report in one API call (POST /summary_comparison).
 
@@ -774,7 +938,8 @@ def run_summary_comparison(
     final = poll_task(task_id, label=f"comparison:{out_label}")
 
     # Download results
-    out_dir = OUTPUT_ROOT / out_label
+    base = Path(output_dir) if output_dir else OUTPUT_ROOT
+    out_dir = base / out_label
     json_data = _get(f"/result/{task_id}/json")
     save_json(json_data, out_dir, f"{out_label}_比较报告.json")
 
@@ -813,12 +978,14 @@ def run_pipeline(
     internal_files: str,
     internal_raw_text: str = "",
     doc_name: str = "",
+    output_dir: str = "",
 ) -> None:
     """Run full pipeline: split → compare → summary (supports multi-file).
 
     Args:
         file_path: Comma-separated external regulation file paths.
         internal_files: Comma-separated internal obligation JSON paths.
+        output_dir: Base directory for saving results (default: outputs/).
     """
     ext_files = [f.strip() for f in file_path.split(",") if f.strip()]
     int_files = [f.strip() for f in internal_files.split(",") if f.strip()]
@@ -869,7 +1036,8 @@ def run_pipeline(
     final = poll_task(task_id, label=f"pipeline:{Path(ext_files[0]).stem}")
     doc_name_final = final.get("document_name", Path(ext_files[0]).stem)
 
-    out_dir = OUTPUT_ROOT / Path(doc_name_final).stem
+    base = Path(output_dir) if output_dir else OUTPUT_ROOT
+    out_dir = base / Path(doc_name_final).stem
     console.print(f"\n  {ICONS['download']}  [bold]Saving results →[/] [dim]{out_dir}/[/]")
 
     json_data = _get(f"/result/{task_id}/json")
@@ -1042,7 +1210,8 @@ def run_chain(
 
         # Download split result for next phase
         json_data = _get(f"/result/{split_id}/json")
-        out_dir = OUTPUT_ROOT / Path(file_path).stem
+        base = Path(output_dir) if output_dir else OUTPUT_ROOT
+        out_dir = base / Path(file_path).stem
         out_dir.mkdir(parents=True, exist_ok=True)
         ext_split_file = str(out_dir / f"{Path(file_path).stem}_split_result.json")
         Path(ext_split_file).write_text(json.dumps(json_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1067,6 +1236,7 @@ def run_chain(
             external_raw_text="",
             internal_raw_text=internal_raw_text or "",
             doc_name=doc_name or Path(file_path).stem,
+            output_dir=output_dir,
         )
     except SystemExit:
         compare_id = ""
@@ -1102,17 +1272,16 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # 拆分内规（Excel 批量）
+  # ── Offline: Split + Index internal regulations ────────
   python run.py --pre-split --file 内规库.xlsx --output-dir outputs/internal
+  python run.py --build-index --internal-dir outputs/internal/
 
-  # 拆分外规（单个文件）
-  python run.py --split --file 外规.docx --output-dir outputs/external
-
-  # 比对 + 报告（外规 vs 内规库）
-  python run.py --summary-comparison --external-files outputs/external/外规/外规_split_result.json --internal-dir outputs/internal/
-
-  # 一键流水线
+  # ── Online: Compare external vs internal ───────────────
   python run.py --pipeline --file 外规.docx --internal-dir outputs/internal/ --output-dir outputs/external
+
+  # ── Index management ───────────────────────────────────
+  python run.py --index-info --internal-dir outputs/internal/
+  python run.py --build-index --internal-dir outputs/internal/ --force   # rebuild
 
   python run.py --list          # show all tasks
         """,
@@ -1127,6 +1296,8 @@ Examples:
     mode.add_argument("--list", nargs="?", const="", metavar="TYPE",
                       help="📋  List all tasks (optional: filter by type)")
     mode.add_argument("--clear", action="store_true", help="🗑️   Clear all task records")
+    mode.add_argument("--build-index", action="store_true", help="🔧  Build persistent BM25 index from internal split results (offline, run once)")
+    mode.add_argument("--index-info", action="store_true", help="ℹ️   Show BM25 index status and statistics")
 
     parser.add_argument("--base-url", default=BASE_URL, help=f"API base URL (default: {BASE_URL})")
     parser.add_argument("--file", help="📄  Raw regulation file for --split/--chain/--pipeline (comma-sep for multi)")
@@ -1159,7 +1330,7 @@ Examples:
             if not d.is_dir():
                 console.print(f"\n  ❌ [red]Not a directory:[/] {directory}")
                 sys.exit(1)
-            json_files = sorted(d.glob("*_split_result.json"))
+            json_files = sorted(d.glob("**/*_split_result.json"))
             if not json_files:
                 console.print(f"\n  ❌ [red]No *_split_result.json files found in:[/] {directory}")
                 sys.exit(1)
@@ -1168,7 +1339,11 @@ Examples:
 
     internal_files = _resolve_internal_files(args.internal_files, args.internal_dir)
 
-    if not any([args.split, getattr(args, 'pre_split', False), getattr(args, 'summary_comparison', False), args.pipeline, args.chain, args.list is not None]):
+    # Show resolved paths
+    _resolved_output = Path(args.output_dir) if args.output_dir else OUTPUT_ROOT
+    console.print(f"  📁  Output dir: [cyan]{_resolved_output}[/]")
+
+    if not any([args.split, getattr(args, 'pre_split', False), getattr(args, 'summary_comparison', False), args.pipeline, args.chain, args.list is not None, args.build_index, args.index_info]):
         if args.file:
             args.split = True
         else:
@@ -1185,6 +1360,16 @@ Examples:
             console.print(f"\n  ❌ [red]--file is required for --pre-split[/]")
             sys.exit(1)
         run_pre_split(args.file, output_dir=args.output_dir, force=args.force)
+    elif args.build_index:
+        if not args.internal_dir:
+            console.print(f"\n  ❌ [red]--internal-dir is required for --build-index[/]")
+            sys.exit(1)
+        run_build_index(args.internal_dir, force=args.force)
+    elif args.index_info:
+        if not args.internal_dir:
+            console.print(f"\n  ❌ [red]--internal-dir is required for --index-info[/]")
+            sys.exit(1)
+        run_index_info(args.internal_dir)
     elif args.split:
         if not args.file:
             console.print(f"\n  ❌ [red]--file is required for --split[/]")
@@ -1195,13 +1380,14 @@ Examples:
             console.print(f"\n  ❌ [red]--external-files and (--internal-files or --internal-dir) are required[/]")
             sys.exit(1)
         run_summary_comparison(args.external_files, internal_files,
-                               args.external_text, args.internal_text, args.document_name)
+                               args.external_text, args.internal_text, args.document_name,
+                               output_dir=args.output_dir)
     elif args.pipeline:
         if not args.file or not internal_files:
             console.print(f"\n  ❌ [red]--file and (--internal-files or --internal-dir) are required[/]")
             sys.exit(1)
         run_pipeline(args.file, internal_files, args.internal_text,
-                    args.document_name)
+                    args.document_name, output_dir=args.output_dir)
     elif args.chain:
         if not args.file or not internal_files:
             console.print(f"\n  ❌ [red]--file and (--internal-files or --internal-dir) are required[/]")

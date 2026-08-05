@@ -15,8 +15,14 @@
   义务记录 (JSON)                    义务记录 (JSON)
       │                                    │
       │                          ┌─────────▼──────────┐
+      │                          │  🔧 离线构建索引     │  ← 一次性操作
       │                          │  Lucene BM25 索引   │
       │                          │  (万级内规秒级检索)  │
+      │                          └─────────┬──────────┘
+      │                                    │
+      │                          ┌─────────▼──────────┐
+      │                          │  🚀 在线复用索引     │  ← 每次比对直接打开
+      │                          │  毫秒级加载，不重建  │
       │                          └─────────┬──────────┘
       │                                    │
       └──────────┬─────────────────────────┘
@@ -51,6 +57,9 @@
 
 ### 内外规比对（Compare）
 
+- **离线索引构建** — 内规拆分完成后，一次性构建 Lucene BM25 索引到 `outputs/internal/.bm25_index/`
+- **在线复用索引** — 每次外规比对时直接打开已有索引，毫秒级加载，无需重建
+- **索引重建** — 内规库变更后，运行 `--build-index --force` 全量重建（< 1秒）
 - **BM25 + ReAct Agent** — PySerini Lucene BM25 检索引擎 + LLM ReAct 搜索代理
 - **万级内规秒级检索** — Lucene 倒排索引，10,000 条内规 < 200ms 构建，BM25 毫秒级查询
 - **内存 Obligation Store** — O(1) 详情检索，无需 Lucene I/O
@@ -109,20 +118,44 @@ uv run main.py
 ### 端到端测试
 
 ```bash
-# ── 任务 1: 拆分全部内规 ──────────────────────
-python run.py --split --file upload_materials/内部网络数据安全管理条例.docx
+# ═══════════════════════════════════════════════════════
+# 阶段一：离线 — 拆分内规 + 构建索引（仅一次）
+# ═══════════════════════════════════════════════════════
 
-# ── 任务 2: 外规 vs 全部内规 → 差距分析报告 ────
-# Step 1: 拆分外规
-python run.py --split --file upload_materials/网络数据安全风险评估办法.docx
+# Step 1: 拆分内规库（Excel 批量）
+python run.py --pre-split --file 内规库.xlsx --output-dir outputs/internal
 
-# Step 2: 一比多比对 + 报告
+# Step 2: 构建 BM25 索引（一次性操作）
+python run.py --build-index --internal-dir outputs/internal/
+
+# 查看索引状态
+python run.py --index-info --internal-dir outputs/internal/
+
+# ═══════════════════════════════════════════════════════
+# 阶段二：在线 — 新外规比对（每次）
+# ═══════════════════════════════════════════════════════
+
+# 一键流水线（外规拆分 → 比对 → 报告）
+python run.py --pipeline --file 外规.docx --internal-dir outputs/internal/ --output-dir outputs/external
+
+# 或分步执行
+python run.py --split --file 外规.docx --output-dir outputs/external
 python run.py --summary-comparison \
-  --external-files outputs/网络数据安全风险评估办法/网络数据安全风险评估办法_split_result.json \
-  --internal-dir outputs/
+  --external-files outputs/external/外规/外规_split_result.json \
+  --internal-dir outputs/internal/
+
+# ═══════════════════════════════════════════════════════
+# 索引维护：内规变更后重建索引
+# ═══════════════════════════════════════════════════════
+
+# 1. 重新拆分变更的内规文档
+python run.py --split --file 修改后的内规.docx --output-dir outputs/internal
+
+# 2. 重建索引（全量，< 1秒）
+python run.py --build-index --internal-dir outputs/internal/ --force
 ```
 
-> `--internal-dir` 自动扫描目录下所有 `*_split_result.json`，内规库扩充后只需把新 JSON 放入同一目录。
+> **索引策略**: Lucene 索引是 append-only 的，不支持增量删除。内规变更后推荐全量重建，数千条义务 < 1 秒完成。
 
 ### 运行单元测试
 
@@ -195,27 +228,39 @@ parse_document → analyze_structure → plan_batches
 ### Compare 流水线（BM25 + ReAct Agent）
 
 ```
-外规义务 (N条)
-      │
-      ▼
-  分批 (15条/批)
-      │
-      ▼
-  asyncio.gather 并行 ─────────────────────┐
-      │                                     │
-      ▼                                     ▼
-  ReAct Agent (每批)                  ReAct Agent
-      │                                     │
-      ├─ bm25_search(query)                 │
-      ├─ get_obligation_detail(id)          │
-      ├─ search_by_fields(...)              │
-      │   (最多5轮迭代)                     │
-      ▼                                     ▼
-  MatchResult[]                      MatchResult[]
-      │                                     │
-      └──────────────┬──────────────────────┘
-                     ▼
-              合并 → CompareResult
+┌─ 离线（一次性）──────────────────────────────────────┐
+│  outputs/internal/**/*_split_result.json             │
+│      │                                               │
+│      ▼                                               │
+│  IndexManager.build_from_directory()                 │
+│      │                                               │
+│      ▼                                               │
+│  outputs/internal/.bm25_index/  ← Lucene BM25 索引   │
+└──────────────────────────────────────────────────────┘
+
+┌─ 在线（每次比对）────────────────────────────────────┐
+│  外规义务 (N条)                                      │
+│       │                                              │
+│       ▼                                              │
+│   分批 (15条/批)                                     │
+│       │                                              │
+│       ▼                                              │
+│   asyncio.gather 并行 ─────────┐                     │
+│       │                        │                     │
+│       ▼                        ▼                     │
+│   ReAct Agent              ReAct Agent               │
+│       │                        │                     │
+│       ├─ bm25_search(query)    │                     │
+│       ├─ get_obligation_detail │  ← BM25 索引毫秒级   │
+│       ├─ search_by_fields(...) │                     │
+│       │   (最多5轮迭代)        │                     │
+│       ▼                        ▼                     │
+│   MatchResult[]           MatchResult[]              │
+│       │                        │                     │
+│       └──────────┬─────────────┘                     │
+│                  ▼                                   │
+│           合并 → CompareResult                       │
+└──────────────────────────────────────────────────────┘
 ```
 
 ## 项目结构

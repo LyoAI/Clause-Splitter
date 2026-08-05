@@ -59,6 +59,8 @@ class ComparePipeline:
         external_raw_text: str = "",
         internal_raw_text: str = "",
         output_dir: str | None = None,
+        index_dir: str = "",
+        rebuild_index: bool = False,
     ) -> CompareResult:
         """Run the comparison pipeline.
 
@@ -70,6 +72,10 @@ class ComparePipeline:
             external_raw_text: (unused, kept for API compat).
             internal_raw_text: (unused, kept for API compat).
             output_dir: If provided, save compare_result.json here.
+            index_dir: Path for persistent BM25 index. If index exists here,
+                       reuse it (skip rebuild) unless rebuild_index=True.
+                       If empty, build temp index (old behavior).
+            rebuild_index: Force rebuild even if index exists at index_dir.
 
         Returns:
             CompareResult with all matches and statistics.
@@ -109,20 +115,83 @@ class ComparePipeline:
             )
 
         # ═══════════════════════════════════════════════════════════
-        # Phase 1: Build BM25 index
+        # Phase 1: Open or build BM25 index
         # ═══════════════════════════════════════════════════════════
-        logger.info("ComparePipeline Phase 1: Building BM25 index...")
+        #
+        # Strategy:
+        #   - Persistent index at index_dir exists → open it (FAST, offline-built)
+        #   - Persistent index doesn't exist → build from internal_obligations (first-time setup)
+        #   - No index_dir → build temp index (one-shot, old behavior)
+        #
+        # The obligation_store is ALWAYS rebuilt from the passed internal_obligations
+        # to ensure it matches what the caller expects.
+        #
         index_mgr = IndexManager()
+        persistent = bool(index_dir)
+        need_build = True
+
+        if persistent and not rebuild_index and IndexManager.index_exists(index_dir):
+            # ── FAST PATH: index already built offline ─────────────────
+            info = IndexManager.get_index_info(index_dir)
+            logger.info(
+                "ComparePipeline Phase 1: Reusing existing BM25 index at %s "
+                "(%d docs, %.1f MB)",
+                index_dir, info.get("num_docs", 0), info.get("size_mb", 0),
+            )
+            need_build = False
+            index_mgr._index_path = index_dir
+            # Load obligation store from passed obligations (always fresh)
+            index_mgr.load_obligation_store(internal_obligations)
+
+            # Warn if store size significantly differs from index doc count
+            index_docs = info.get("num_docs", 0)
+            store_docs = len(internal_obligations)
+            if index_docs > 0 and abs(index_docs - store_docs) / max(index_docs, 1) > 0.15:
+                logger.warning(
+                    "Index has %d docs but store has %d obligations (%.0f%% difference). "
+                    "Consider rebuilding with --build-index or --rebuild-index.",
+                    index_docs, store_docs,
+                    abs(index_docs - store_docs) / max(index_docs, 1) * 100,
+                )
+
+        if need_build:
+            if persistent:
+                logger.info(
+                    "ComparePipeline Phase 1: Building BM25 index at %s "
+                    "(first-time setup — will be reused on subsequent runs)...",
+                    index_dir,
+                )
+            else:
+                logger.info("ComparePipeline Phase 1: Building temp BM25 index...")
+
+            try:
+                index_path = index_mgr.build(
+                    internal_obligations,
+                    index_path=index_dir if persistent else "",
+                )
+                logger.info(
+                    "BM25 index built: %d docs at %s",
+                    len(internal_obligations), index_path,
+                )
+            except Exception as e:
+                logger.error("Failed to build BM25 index: %s", e)
+                index_mgr.cleanup()
+                return CompareResult(
+                    external_documents=ext_list,
+                    internal_documents=int_list,
+                    total_external_obligations=ext_count,
+                    total_internal_obligations=int_count,
+                    matches=[],
+                )
+
         try:
-            index_path = index_mgr.build(internal_obligations)
             searcher = index_mgr.open()
             logger.info(
-                "BM25 index ready: %d docs at %s",
-                searcher.num_docs, index_path,
+                "BM25 searcher ready: %d docs",
+                searcher.num_docs,
             )
         except Exception as e:
-            logger.error("Failed to build BM25 index: %s", e)
-            index_mgr.cleanup()
+            logger.error("Failed to open BM25 index: %s", e)
             return CompareResult(
                 external_documents=ext_list,
                 internal_documents=int_list,
@@ -213,7 +282,10 @@ class ComparePipeline:
         # Cleanup + build result
         # ═══════════════════════════════════════════════════════════
         searcher.close()
-        index_mgr.cleanup()
+        if not persistent:
+            index_mgr.cleanup()  # only cleanup temp indexes
+        else:
+            logger.info("Persistent index kept at %s (ready for next comparison)", index_dir)
 
         result = CompareResult(
             external_documents=ext_list,
