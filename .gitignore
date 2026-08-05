@@ -11,3 +11,4 @@ wheels/
 outputs/
 upload_materials/
 .cache/
+*.DS_Store
