@@ -17,7 +17,7 @@ class Settings:
 
     # ── File handling ───────────────────────────────────────────────────
     allowed_extensions: set[str] = field(default_factory=lambda: {".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls"})
-    max_file_size_bytes: int = 50 * 1024 * 1024  # 50 MB
+    max_file_size_bytes: int = 500 * 1024 * 1024  # 500 MB（超大 Excel 内规库）
     max_chars_per_document: int = 200_000
     min_chars_for_analysis: int = 10
 

@@ -8,6 +8,9 @@ Usage:
     # 1. Split only (raw doc → obligations JSON)
     python test_app.py --split --file upload_materials/外部法规.pdf
 
+    # 1b. Pre-split large multi-doc Excel by document name, then split each
+    python test_app.py --pre-split --file 超大内规库.xlsx
+
     # 2. Summary-comparison (file-based, one call = compare + report)
     python test_app.py --summary-comparison --external-files 外规拆分.json --internal-files 内规拆分.json
 
@@ -27,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -238,7 +242,7 @@ def save_binary(content: bytes, output_dir: Path, filename: str) -> Path:
 # Split
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run_split(file_path: str) -> str:
+def run_split(file_path: str, output_dir: str = "") -> str:
     """Upload document, poll until split complete, download results."""
     if not Path(file_path).exists():
         console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {file_path}")
@@ -262,7 +266,8 @@ def run_split(file_path: str) -> str:
     doc_name = final.get("document_name", Path(file_path).stem)
 
     # Download results
-    out_dir = OUTPUT_ROOT / Path(doc_name).stem
+    base = Path(output_dir) if output_dir else OUTPUT_ROOT
+    out_dir = base / Path(doc_name).stem
     console.print(f"\n  {ICONS['download']}  [bold]Saving results →[/] [dim]{out_dir}/[/]")
 
     json_data = _get(f"/result/{task_id}/json")
@@ -364,6 +369,345 @@ def _print_compare_summary(data: dict) -> None:
             console.print(f"  [dim]#{ext_id}[/] {icon} [{sc}]{status}[/]: {analysis}...")
     else:
         console.print(f"\n  {ICONS['star']}  [green bold]All obligations fully covered![/]")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Pre-Split (pandas split large Excel by document name)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── LLM column detection — one call, plain text output, no JSON ────────
+
+
+def _llm_detect_columns(df) -> tuple[str, str, str]:
+    """LLM 看一眼表头，告诉我们哪列是条款编号、哪列是条款内容、哪列是制度名称。
+
+    只发送列名列表，LLM 用自然语言回复，我们解析一下就行。
+    返回 (article_id_col, article_text_col, doc_name_col)。
+    """
+    col_list = "\n".join(f"  - {str(col)}" for col in df.columns)
+
+    system_prompt = (
+        "你是一个 Excel 列名识别助手。"
+        "给定一个 Excel 的列名列表，请识别：\n"
+        "1. 「条款内容」列 — 包含每一条的具体法律条文正文，逐条不同，不是整部法规的全文\n"
+        "2. 「条款编号」列 — 条款的编号（如第一条、第十四条、1.1 等）\n"
+        "3. 「制度名称」列 — 法规或制度的名称，在同一制度的多行中重复出现\n\n"
+        "⚠️ 注意区分：「制度内容」或「法规内容」通常是整部法规的全文概要，内容极长且每行相同，"
+        "这不是条款内容列。条款内容列每行是一条独立的条款。\n\n"
+        "请用以下格式回复（不要输出其他内容，一行一个）：\n"
+        "条款内容列: <列名>\n"
+        "条款编号列: <列名>\n"
+        "制度名称列: <列名>\n"
+        "\n如果某一列不存在，对应的值写「无」。"
+    )
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return _detect_columns_by_heuristic(df)
+
+    api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+    if not api_key:
+        return _detect_columns_by_heuristic(df)
+
+    try:
+        client = OpenAI(
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key=api_key,
+        )
+        response = client.chat.completions.create(
+            model=os.environ.get("LLM_MODEL", "qwen3-max"),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"列名列表：\n\n{col_list}"},
+            ],
+            temperature=0.1,
+        )
+        content = response.choices[0].message.content
+    except Exception as e:
+        console.print(f"  ⚠️  [yellow]LLM 调用失败: {e}，使用本地规则兜底[/]")
+        return _detect_columns_by_heuristic(df)
+
+    # ── 解析 LLM 回复：一行一个字段 ─────────────────────────────────
+    available = set(str(c) for c in df.columns)
+    id_col, text_col, doc_col = "", "", ""
+
+    for line in content.split("\n"):
+        line = line.strip()
+        if "条款内容列" in line:
+            text_col = line.split(":", 1)[-1].strip() if ":" in line else line.split("：", 1)[-1].strip()
+            if text_col == "无":
+                text_col = ""
+        elif "条款编号列" in line:
+            id_col = line.split(":", 1)[-1].strip() if ":" in line else line.split("：", 1)[-1].strip()
+            if id_col == "无":
+                id_col = ""
+        elif "制度名称列" in line:
+            doc_col = line.split(":", 1)[-1].strip() if ":" in line else line.split("：", 1)[-1].strip()
+            if doc_col == "无":
+                doc_col = ""
+
+    # 验证列名是否真实存在于 DataFrame 中
+    text_col = text_col if text_col in available else ""
+    id_col = id_col if id_col in available else ""
+    doc_col = doc_col if doc_col in available else ""
+
+    # 模糊匹配兜底
+    if not text_col:
+        for col in available:
+            # "制度内容"/"法规内容"是全量文本，不是逐条的条款内容
+            if any(kw in col for kw in ["制度内容", "法规内容", "全文"]):
+                continue
+            if "条款" in col or "条文" in col or ("内容" in col and "制度" not in col and "法规" not in col):
+                text_col = col
+                break
+    if not doc_col:
+        for col in available:
+            if "名称" in col or "制度" in col:
+                doc_col = col
+                break
+    if not id_col:
+        for col in available:
+            if ("编号" in col or "条目" in col) and col != text_col:
+                id_col = col
+                break
+
+    if text_col and doc_col:
+        console.print(f"  🤖  LLM 识别: 条款内容=[cyan]{text_col}[/], "
+                      f"条款编号=[cyan]{id_col or '(无)'}[/], "
+                      f"制度名称=[cyan]{doc_col}[/]")
+        return id_col, text_col, doc_col
+
+    # LLM 回复解析失败，走本地规则
+    console.print("  ⚠️  [yellow]LLM 回复解析失败，使用本地规则兜底[/]")
+    return _detect_columns_by_heuristic(df)
+
+
+def _detect_columns_by_heuristic(df) -> tuple[str, str, str]:
+    """本地规则兜底：列名关键词 + 内容长度判断。"""
+    import pandas as pd
+    available = [str(c) for c in df.columns]
+
+    # 制度名称列
+    doc_col = ""
+    for col in available:
+        if any(kw in col for kw in ["制度名称", "法规名称", "文档名称", "文件名称"]):
+            doc_col = col
+            break
+    if not doc_col:
+        for col in available:
+            if "名称" in col:
+                doc_col = col
+                break
+
+    # 条款编号列
+    id_col = ""
+    for col in available:
+        if any(kw in col for kw in ["条款编号", "条款名称", "条目名称"]):
+            if col != doc_col:
+                id_col = col
+                break
+
+    # 条款内容列
+    # ⚠️ 注意区分：「制度内容」是全量文本（每行重复），「条款内容」才是每条的具体条文
+    text_col = ""
+    for col in available:
+        if any(kw in col for kw in ["条款内容", "法规条款", "条文内容", "条款正文"]):
+            text_col = col
+            break
+    if not text_col:
+        # 宽松匹配：包含「条款」但不是制度全文列
+        for col in available:
+            if "条款" in col and "制度" not in col and col != doc_col and col != id_col:
+                text_col = col
+                break
+    if not text_col:
+        best_avg = 0
+        for col in available:
+            if df[col].dtype == "object" and col != doc_col and col != id_col:
+                # 排除「制度内容」「法规内容」等全文列
+                if any(kw in col for kw in ["制度内容", "法规内容", "全文"]):
+                    continue
+                avg = df[col].dropna().apply(lambda x: len(str(x))).mean()
+                if avg > best_avg and avg > 20:
+                    best_avg = avg
+                    text_col = col
+
+    console.print(f"  🔧  本地规则: 条款内容=[cyan]{text_col}[/], "
+                  f"条款编号=[cyan]{id_col or '(无)'}[/], "
+                  f"制度名称=[cyan]{doc_col}[/]")
+    return id_col, text_col, doc_col
+
+
+def run_pre_split(file_path: str, output_dir: str = "", force: bool = False) -> None:
+    """Pre-split a large multi-document Excel into per-document .txt files, then split each.
+
+    Instead of saving each group as .xlsx (which triggers the slow Excel pipeline with
+    ReAct schema detection per sub-file), we extract the article text directly from the
+    DataFrame and save as .txt — so each sub-document goes through the SAME fast text
+    pipeline as a PDF would (parse_document → analyze_structure → decompose → export).
+
+    If force=False, documents whose *_split_result.json already exists under output_dir
+    will be skipped (resume support).
+    """
+    # Resolve output base for skip check and result saving
+    _out_base = Path(output_dir) if output_dir else OUTPUT_ROOT
+    import tempfile
+    try:
+        import pandas as pd
+    except ImportError:
+        console.print(f"\n  ❌ [red]pandas is required for --pre-split. Install: pip install pandas openpyxl[/]")
+        sys.exit(1)
+
+    if not Path(file_path).exists():
+        console.print(f"\n  ❌ [red]File not found:[/] {file_path}")
+        sys.exit(1)
+
+    _banner(ICONS["gear"], "PRE-SPLIT — 大 Excel 按制度名称拆分 → .txt → 文本管道",
+            f"📄  {Path(file_path).name}", color="blue")
+
+    # ── Step 1: Read + LLM detect columns ONCE ──────────────────────
+    console.print(f"\n  📖  Reading Excel with pandas...")
+    try:
+        df = pd.read_excel(file_path)
+    except Exception as e:
+        console.print(f"\n  ❌ [red]Failed to read Excel: {e}[/]")
+        sys.exit(1)
+
+    console.print(f"  📊  {len(df)} rows × {len(df.columns)} columns")
+    console.print(f"  📋  Columns: {', '.join(str(c) for c in df.columns[:10])}")
+
+    # One LLM call: look at headers, tell us which column is what
+    console.print(f"\n  🤖  LLM 识别表头...")
+    id_col, text_col, doc_col = _llm_detect_columns(df)
+
+    if not doc_col or not text_col:
+        console.print(f"\n  ❌ [red]无法识别所需列。"
+                      f"制度名称='{doc_col}', 条款内容='{text_col}'[/]")
+        console.print(f"  💡  Available columns: {list(df.columns)}")
+        sys.exit(1)
+
+    # 安全检查：条款内容列不应是"制度内容"这种全文列
+    avg_len = df[text_col].dropna().apply(lambda x: len(str(x))).mean()
+    if avg_len > 1000:
+        console.print(f"  ⚠️  [yellow]警告: 条款内容列 '{text_col}' 平均每行 {avg_len:.0f} 字符[/]")
+        console.print(f"  ⚠️  [yellow]这看起来像是「制度内容」全文列而非「条款内容」逐条列[/]")
+        console.print(f"  💡  请检查 Excel 表头，或手动指定列名")
+        # 尝试找一个更好的列
+        for col in df.columns:
+            col_str = str(col)
+            if "条款" in col_str and "内容" in col_str and "制度" not in col_str:
+                if col_str != text_col:
+                    console.print(f"  🔧  自动切换为: [cyan]{col_str}[/]")
+                    text_col = col_str
+                    break
+
+    # ── Step 2: Group → build structured .txt per document ────────────
+    use_dir = Path(output_dir) if output_dir else Path(tempfile.mkdtemp(prefix="pre_split_"))
+    use_dir.mkdir(parents=True, exist_ok=True)
+
+    groups = df.groupby(doc_col)
+    doc_names = list(groups.groups.keys())
+    console.print(f"\n  📑  Found [bold cyan]{len(doc_names)}[/] documents via column '[cyan]{doc_col}[/]':")
+    for name in doc_names[:20]:
+        count = len(groups.get_group(name))
+        console.print(f"      - {str(name)[:60]}  ({count} rows)")
+    if len(doc_names) > 20:
+        console.print(f"      ... and {len(doc_names) - 20} more")
+
+    # Build .txt for each group
+    sub_files: list[tuple[str, str]] = []  # (doc_name, txt_file_path)
+    skipped = 0
+    for doc_name, group_df in groups:
+        safe_name = re.sub(r"[\\/:*?\"<>|]", "_", str(doc_name))[:80]
+
+        # ── Skip if already processed (unless --force) ──────────────
+        result_json = _out_base / safe_name / f"{safe_name}_split_result.json"
+        if not force and result_json.exists():
+            console.print(f"  ⏭️   [dim]Skip (already exists):[/] {doc_name[:60]}")
+            skipped += 1
+            continue
+
+        txt_path = use_dir / f"{safe_name}.txt"
+
+        # Build structured text: one article per paragraph with ID prefix
+        lines: list[str] = []
+        empty_count = 0
+        for _, row in group_df.iterrows():
+            art_text = str(row[text_col]) if pd.notna(row[text_col]) else ""
+            if not art_text.strip():
+                empty_count += 1
+                continue
+
+            # Prepend article ID if available (helps analyze_structure regex)
+            if id_col and pd.notna(row.get(id_col)):
+                art_id = str(row[id_col]).strip()
+                if art_id:
+                    # If text already starts with the ID, don't duplicate
+                    if art_text.startswith(art_id):
+                        lines.append(art_text)
+                    else:
+                        lines.append(f"{art_id}  {art_text}")
+                else:
+                    lines.append(art_text)
+            else:
+                lines.append(art_text)
+            lines.append("")  # blank line between articles
+
+        text_content = "\n".join(lines).strip()
+        if not text_content:
+            total_rows = len(group_df)
+            console.print(
+                f"  ⚠️  [yellow]Skipping empty document:[/] {doc_name}")
+            console.print(
+                f"      [dim]text_col=[{text_col}], "
+                f"total_rows={total_rows}, "
+                f"empty_rows={empty_count}, "
+                f"non_empty={total_rows - empty_count}[/]")
+            # Print first row's available column values for debugging
+            if total_rows > 0:
+                first_row = group_df.iloc[0]
+                sample = {str(c): str(first_row[c])[:80] if pd.notna(first_row[c]) else "NaN"
+                          for c in group_df.columns[:6]}
+                console.print(f"      [dim]first row sample: {sample}[/]")
+            continue
+
+        txt_path.write_text(text_content, encoding="utf-8")
+        sub_files.append((str(doc_name), str(txt_path)))
+
+    if skipped:
+        console.print(f"  ⏭️   [dim]{skipped} already processed → skipped[/]")
+    console.print(f"\n  💾  Saved {len(sub_files)} .txt files → [dim]{use_dir}[/]")
+
+    # ── Step 3: Process each .txt through text pipeline (= PDF path) ──
+    if not sub_files:
+        console.print(f"\n  ✅ [green]All {skipped} document(s) already processed. Nothing to do.[/]\n")
+        return
+
+    console.print(f"\n  🚀  Processing [bold]{len(sub_files)}[/] documents (text pipeline, same as PDF)...\n")
+
+    success, failed = 0, 0
+    for i, (doc_name, txt_path) in enumerate(sub_files):
+        console.print(f"  {'─' * 60}")
+        console.print(f"  [{i + 1}/{len(sub_files)}] [bold]{doc_name[:60]}[/] [dim]({Path(txt_path).stat().st_size} bytes)[/]")
+        try:
+            run_split(txt_path, output_dir=output_dir)
+            success += 1
+        except SystemExit:
+            failed += 1
+            console.print(f"  ⚠️  [yellow]Skipped (see error above)[/]")
+
+    # ── Summary ───────────────────────────────────────────────────────
+    console.print(f"\n  {'─' * 60}")
+    summary_parts = [f"✅ [bold green]{success}[/] succeeded"]
+    if failed:
+        summary_parts.append(f"[bold red]{failed}[/] failed")
+    if skipped:
+        summary_parts.append(f"[dim]{skipped} skipped[/]")
+    console.print(f"\n  {', '.join(summary_parts)} out of {len(sub_files) + skipped} total")
+    console.print(f"  📁  Temp .txt files kept at: [dim]{use_dir}[/]")
+    if output_dir:
+        console.print(f"  📁  Outputs under: [dim]{OUTPUT_ROOT}[/]")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -660,6 +1004,7 @@ def run_chain(
     internal_files: str,
     internal_raw_text: str = "",
     doc_name: str = "",
+    output_dir: str = "",
 ) -> None:
     """Run split → compare → summary on the client side (file-based, no task IDs).
 
@@ -693,7 +1038,7 @@ def run_chain(
     split_id = ""
     try:
         console.print(f"\n  {ICONS['star']}  [bold cyan]Phase 1/3: Splitting...[/]")
-        split_id = run_split(file_path)
+        split_id = run_split(file_path, output_dir=output_dir)
 
         # Download split result for next phase
         json_data = _get(f"/result/{split_id}/json")
@@ -757,17 +1102,25 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python test_app.py --split --file 外部法规.docx
-  python test_app.py --summary-comparison --external-files 外规.json --internal-dir outputs/内规库/
-  python test_app.py --pipeline --file 外规.docx --internal-dir outputs/内规库/
-  python test_app.py --chain --file 外规.docx --internal-dir outputs/内规库/
-  python test_app.py --list          # show all tasks
-  python test_app.py --list split    # filter by type
+  # 拆分内规（Excel 批量）
+  python run.py --pre-split --file 内规库.xlsx --output-dir outputs/internal
+
+  # 拆分外规（单个文件）
+  python run.py --split --file 外规.docx --output-dir outputs/external
+
+  # 比对 + 报告（外规 vs 内规库）
+  python run.py --summary-comparison --external-files outputs/external/外规/外规_split_result.json --internal-dir outputs/internal/
+
+  # 一键流水线
+  python run.py --pipeline --file 外规.docx --internal-dir outputs/internal/ --output-dir outputs/external
+
+  python run.py --list          # show all tasks
         """,
     )
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--split", action="store_true", help="📝  Clause splitting only")
+    mode.add_argument("--pre-split", action="store_true", help="📑  Pre-split large multi-doc Excel by document name, then split each")
     mode.add_argument("--summary-comparison", action="store_true", help="📋  Compare + Gap analysis report (one call)")
     mode.add_argument("--pipeline", action="store_true", help="🚀  Full pipeline — server-side (split → compare → report)")
     mode.add_argument("--chain", action="store_true", help="🔗  Chain mode — client-side orchestration, shows intermediate results")
@@ -783,6 +1136,8 @@ Examples:
     parser.add_argument("--internal-files", default="", help="📦  Internal obligation JSON file(s) for --compare/--summary/--chain/--pipeline (comma-sep)")
     parser.add_argument("--internal-dir", default="", help="📁  Directory of internal *_split_result.json files (alternative to --internal-files)")
 
+    parser.add_argument("--output-dir", default="", help="📁  Output directory for split results (default: outputs/)")
+    parser.add_argument("--force", action="store_true", help="💪  Force re-process all documents (ignore existing results)")
     parser.add_argument("--external-text", default="", help="External regulation raw text (for --summary)")
     parser.add_argument("--internal-text", default="", help="Internal regulation raw text (for --summary)")
 
@@ -813,7 +1168,7 @@ Examples:
 
     internal_files = _resolve_internal_files(args.internal_files, args.internal_dir)
 
-    if not any([args.split, getattr(args, 'summary_comparison', False), args.pipeline, args.chain, args.list is not None]):
+    if not any([args.split, getattr(args, 'pre_split', False), getattr(args, 'summary_comparison', False), args.pipeline, args.chain, args.list is not None]):
         if args.file:
             args.split = True
         else:
@@ -825,11 +1180,16 @@ Examples:
 
     if args.list is not None:
         run_list(task_type=args.list)
+    elif getattr(args, 'pre_split', False):
+        if not args.file:
+            console.print(f"\n  ❌ [red]--file is required for --pre-split[/]")
+            sys.exit(1)
+        run_pre_split(args.file, output_dir=args.output_dir, force=args.force)
     elif args.split:
         if not args.file:
             console.print(f"\n  ❌ [red]--file is required for --split[/]")
             sys.exit(1)
-        run_split(args.file)
+        run_split(args.file, output_dir=args.output_dir)
     elif getattr(args, 'summary_comparison', False):
         if not args.external_files or not internal_files:
             console.print(f"\n  ❌ [red]--external-files and (--internal-files or --internal-dir) are required[/]")
@@ -847,7 +1207,7 @@ Examples:
             console.print(f"\n  ❌ [red]--file and (--internal-files or --internal-dir) are required[/]")
             sys.exit(1)
         run_chain(args.file, internal_files, args.internal_text,
-                  args.document_name)
+                  args.document_name, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

@@ -648,6 +648,7 @@ async def _run_summary_comparison(
         )
 
         # Use new BM25 + ReAct ComparePipeline for scalable many-to-many
+        from pipeline.compare_pipeline import ComparePipeline  # lazy import (PySerini)
         compare_pipeline = ComparePipeline(llm=llm)
         compare_result = await compare_pipeline.run(
             external_obligations=external_obligations,
@@ -811,6 +812,7 @@ async def _run_full_pipeline(
                                          f"{len(internal_obligations)} internal obligations...",
                             pipeline_phase="comparing")
 
+        from pipeline.compare_pipeline import ComparePipeline  # lazy import (PySerini)
         compare_pipeline = ComparePipeline(llm=llm)
         compare_result = await compare_pipeline.run(
             external_obligations=all_ext_obligations,
