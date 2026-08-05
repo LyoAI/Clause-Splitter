@@ -764,14 +764,15 @@ def run_build_index(internal_dir: str, force: bool = False) -> None:
         console.print(f"  💡  Run [bold]--pre-split[/] or [bold]--split[/] first to generate split results.")
         sys.exit(1)
 
-    # Show existing index info
+    # Show existing index info — read manifest ONLY (never open the index here,
+    # because opening it right before building can cause Windows lock conflicts)
     if index_exists and not force:
-        info = IndexManager.get_index_info(index_dir)
         manifest = IndexManager._read_manifest(index_dir)
         existing_doc_count = len(manifest.get("documents", {}))
-        console.print(f"\n  📊  Existing index: [bold cyan]{info['num_docs']}[/] obligations, "
+        existing_obls = manifest.get("total_obligations", "?")
+        console.print(f"\n  📊  Existing index: [bold cyan]{existing_obls}[/] obligations, "
                       f"[bold cyan]{existing_doc_count}[/] documents")
-        console.print(f"      Size: [dim]{info['size_mb']} MB[/]")
+        console.print(f"      Path: [dim]{index_dir}[/]")
     else:
         existing_doc_count = 0
 

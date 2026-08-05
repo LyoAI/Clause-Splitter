@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -120,23 +121,41 @@ class IndexManager:
                 len(obligations), self._index_path, prev_total,
             )
             # Don't clear the store — extend it
+            # Append must write in place (cannot swap) — requires a working lock
+            build_target = self._index_path
+            swap_after = False
         else:
             if append and not exists:
                 logger.info(
                     "Append requested but index doesn't exist — creating new: %s",
                     self._index_path,
                 )
-            Path(self._index_path).mkdir(parents=True, exist_ok=True)
-            logger.info(
-                "Building BM25 index at %s from %d obligations...",
-                self._index_path, len(obligations),
-            )
             # Fresh build → clear the store
             self._obligation_store = {}
             old_manifest = {}
             prev_total = 0
 
-        indexer = LuceneIndexer(self._index_path, append=actual_append)
+            # If a specific persistent path was given, build in a LOCAL temp dir
+            # first, then swap into place. This sidesteps Lucene's OS file locks
+            # on network drives (SMB/NAS) and makes the swap atomic.
+            if index_path:
+                build_target = tempfile.mkdtemp(prefix="bm25_build_")
+                swap_after = True
+                logger.info(
+                    "Building BM25 index for %s at local temp %s "
+                    "(swap into place when done)...",
+                    self._index_path, build_target,
+                )
+            else:
+                # Random temp path under base_dir — build in place
+                build_target = self._index_path
+                swap_after = False
+                logger.info(
+                    "Building BM25 index at %s from %d obligations...",
+                    self._index_path, len(obligations),
+                )
+
+        indexer = self._create_indexer(build_target, actual_append)
         indexed_count = 0
 
         for obl in obligations:
@@ -156,6 +175,12 @@ class IndexManager:
                 )
 
         indexer.close()
+
+        # ── Swap temp build into final location ─────────────────────────
+        if swap_after:
+            self._swap_index(build_target, self._index_path)
+            logger.info("Index ready at %s", self._index_path)
+
         self._num_docs = prev_total + indexed_count
 
         # ── Update manifest ────────────────────────────────────────────
@@ -181,6 +206,39 @@ class IndexManager:
                 indexed_count, len(obligations), len(self._obligation_store),
             )
         return self._index_path
+
+    def _swap_index(self, build_dir: str, target: str) -> None:
+        """Move a fully-built index from a local temp dir into its final location.
+
+        Args:
+            build_dir: Directory with the freshly-built index (local disk).
+            target: Final index path (may be on a network drive).
+
+        Raises:
+            RuntimeError: If the swap fails (e.g. target is locked by another
+                          process on Windows).
+        """
+        target_path = Path(target)
+        build_path = Path(build_dir)
+
+        try:
+            # Remove any stale index at the target first
+            if target_path.exists():
+                shutil.rmtree(target_path)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(build_path), str(target_path))
+        except OSError as e:
+            # Clean up the temp dir on failure
+            try:
+                shutil.rmtree(build_dir)
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"Index built successfully in temp ({build_dir}) but could not "
+                f"move it to {target}. This usually means another process has "
+                f"the target folder open (API server running, or another build "
+                f"in progress). Stop it and retry.\nOriginal error: {e}"
+            ) from e
 
     def append_obligations(
         self, obligations: list[dict[str, Any]],
@@ -209,6 +267,79 @@ class IndexManager:
                 "Call build() first to create it."
             )
         return self.build(obligations, index_path=self._index_path, append=True)
+
+    @staticmethod
+    def _create_indexer(index_path: str, append: bool) -> LuceneIndexer:
+        """Create a LuceneIndexer with retry + stale-lock recovery.
+
+        Lucene needs an exclusive write lock on the index directory. The
+        ``No locks available`` IOException occurs when:
+          1. A crashed/interrupted run left a stale ``write.lock`` file.
+          2. Another process is actively using the index (API server running,
+             another --build-index in parallel).
+          3. The index sits on a network drive (SMB/NFS) where Lucene's native
+             OS file locks are not supported.
+
+        Strategy: retry briefly (transient contention), then remove a stale
+        lock file as a last resort, then raise a clear actionable error.
+
+        Args:
+            index_path: Lucene index directory.
+            append: Whether to open in append mode.
+
+        Returns:
+            An open LuceneIndexer.
+
+        Raises:
+            RuntimeError: With a human-readable diagnosis if the lock can't
+                          be acquired.
+        """
+        max_retries = 3
+        lock_file = Path(index_path) / "write.lock"
+
+        for attempt in range(max_retries):
+            try:
+                return LuceneIndexer(index_path, append=append)
+            except Exception as e:
+                msg = str(e)
+                is_lock_issue = ("No locks available" in msg
+                                 or "locked by another process" in msg.lower()
+                                 or "LockObtainFailed" in msg)
+                if not is_lock_issue:
+                    raise  # not a lock problem — surface the real error
+
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        "Lock contention on %s (attempt %d/%d), retrying...",
+                        index_path, attempt + 1, max_retries,
+                    )
+                    time.sleep(1.0)
+                    continue
+
+                # Last resort: remove stale lock file left by a crashed run
+                if lock_file.exists():
+                    logger.warning(
+                        "Removing stale lock file after retries: %s", lock_file,
+                    )
+                    try:
+                        lock_file.unlink()
+                    except OSError as unlink_err:
+                        logger.warning("Could not remove lock file: %s", unlink_err)
+                try:
+                    return LuceneIndexer(index_path, append=append)
+                except Exception as e2:
+                    raise RuntimeError(
+                        f"Cannot lock Lucene index directory: {index_path}\n"
+                        "Possible causes:\n"
+                        "  1. Another process is using this index (the API server "
+                        "main.py is running, or another --build-index is active). "
+                        "Stop it and retry.\n"
+                        "  2. A crashed run left a lock. Delete the folder and rebuild.\n"
+                        "  3. The path is on a network drive (SMB/NAS) that does not "
+                        "support file locks. Move outputs/ to a local disk and retry."
+                    ) from e2
+
+        raise RuntimeError(f"Failed to create indexer for: {index_path}")
 
     def _obligation_to_index_doc(
         self, obl: dict[str, Any],
@@ -457,13 +588,13 @@ class IndexManager:
                 "size_mb": 0,
             }
 
-        # Count docs by opening briefly
+        # Count docs by opening a READ-ONLY searcher (never a writer!)
         num_docs = 0
         try:
-            searcher = LuceneIndexer(index_path)  # type: ignore[attr-defined]
-            # PySerini doesn't expose num_docs directly on indexer,
-            # so we estimate from segment files
-            searcher.close()
+            from pyserini.search.lucene import LuceneSearcher
+            s = LuceneSearcher(str(path))
+            num_docs = s.num_docs
+            s.close()
         except Exception:
             pass
 
@@ -472,15 +603,6 @@ class IndexManager:
         for f in path.rglob("*"):
             if f.is_file():
                 total_size += f.stat().st_size
-
-        # Try to get doc count via a quick searcher open
-        try:
-            from pyserini.search.lucene import LuceneSearcher
-            s = LuceneSearcher(str(path))
-            num_docs = s.num_docs
-            s.close()
-        except Exception:
-            pass
 
         return {
             "exists": True,
