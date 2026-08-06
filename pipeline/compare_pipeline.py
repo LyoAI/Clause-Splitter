@@ -1,10 +1,10 @@
-"""Compare Pipeline — BM25 index + ReAct agent parallel batch matching.
+"""Compare Pipeline — retrieve-then-judge many-to-many matching.
 
-Orchestrates the many-to-many comparison flow:
-1. Build Lucene BM25 index from all internal obligations (once)
-2. Split external obligations into batches
-3. Run ReAct compare agent per batch in parallel (asyncio.gather)
-4. Merge results into CompareResult
+Orchestrates the comparison flow:
+1. Open/build Lucene BM25 index over the internal obligations
+2. For each external obligation in parallel: deterministic BM25 recall of
+   top-K internal candidates → one focused LLM judgment → evidence grounding
+3. Assemble MatchResults into CompareResult
 """
 
 from __future__ import annotations
@@ -17,20 +17,50 @@ from typing import Any
 
 from config.settings import get_settings
 from tools.search.index_manager import IndexManager
-from operators.compare.compare_agent import run_compare_batch
-from models.compare import CompareResult, MatchResult, CoverageStatus
+from operators.compare.retrieval import retrieve_candidates
+from operators.compare.judge import judge_obligation
+from operators.compare.validation import ground_match
+from models.compare import CompareResult, MatchResult
 from utils import get_logger
 
 logger = get_logger()
 
 
-class ComparePipeline:
-    """Many-to-many comparison pipeline with BM25 retrieval.
+def _obligation_fingerprint(obl: dict[str, Any]) -> str:
+    """Identity + a bounded content hash — detects both a different library
+    AND a re-split of the same doc (same doc::index, changed source text)."""
+    oid = IndexManager.make_obligation_id(obl)
+    src = str(obl.get("source_text", "") or "")[:200]
+    return f"{oid}|{src}"
 
-    Replaces the old CompareService with a scalable architecture:
-    - BM25 index for fast candidate retrieval (handles 10K+ obligations)
-    - ReAct agent per batch (LLM searches, reviews, matches)
-    - Parallel batch execution (asyncio.gather)
+
+def _index_matches_library(
+    index_dir: str,
+    internal_obligations: list[dict[str, Any]],
+) -> bool:
+    """True if the persistent index's store is EXACTLY the caller's library.
+
+    The persistent index is only an accelerator: it may be reused as the
+    search space only when it holds precisely the obligations the caller
+    wants to compare against. Any difference — a different/subset library, a
+    re-split doc, or a stale sidecar — means the caller's set must be indexed.
+    """
+    disk_store = IndexManager.load_store_from_disk(index_dir)
+    if disk_store is None:
+        return False
+    passed = {_obligation_fingerprint(o) for o in internal_obligations}
+    stored = {_obligation_fingerprint(o) for o in disk_store.values()}
+    return bool(passed) and passed == stored
+
+
+class ComparePipeline:
+    """Many-to-many comparison pipeline with retrieve-then-judge.
+
+    Per external obligation (parallel, semaphore-bounded):
+    - recall: deterministic BM25 top-K candidates (no LLM)
+    - judge: one focused LLM call (candidate table → row number)
+    - ground: validation maps the row to real evidence, downgrades ungroundable
+      coverage claims to 缺失 (hallucination guard)
 
     Usage:
         pipeline = ComparePipeline(llm=llm)
@@ -131,28 +161,46 @@ class ComparePipeline:
         need_build = True
 
         if persistent and not rebuild_index and IndexManager.index_exists(index_dir):
-            # ── FAST PATH: index already built offline ─────────────────
+            # ── Persistent index is only an ACCELERATOR, not a hard override ──
+            # The caller's internal_obligations ARE the comparison library. Reuse
+            # the persistent index ONLY when the two are exactly the same set;
+            # otherwise honor the caller's library by building a temp index.
             info = IndexManager.get_index_info(index_dir)
-            logger.info(
-                "ComparePipeline Phase 1: Reusing existing BM25 index at %s "
-                "(%d docs, %.1f MB)",
-                index_dir, info.get("num_docs", 0), info.get("size_mb", 0),
-            )
-            need_build = False
-            index_mgr._index_path = index_dir
-            # Load obligation store from passed obligations (always fresh)
-            index_mgr.load_obligation_store(internal_obligations)
+            disk_store = IndexManager.load_store_from_disk(index_dir)
 
-            # Warn if store size significantly differs from index doc count
-            index_docs = info.get("num_docs", 0)
-            store_docs = len(internal_obligations)
-            if index_docs > 0 and abs(index_docs - store_docs) / max(index_docs, 1) > 0.15:
-                logger.warning(
-                    "Index has %d docs but store has %d obligations (%.0f%% difference). "
-                    "Consider rebuilding with --build-index or --rebuild-index.",
-                    index_docs, store_docs,
-                    abs(index_docs - store_docs) / max(index_docs, 1) * 100,
+            if _index_matches_library(index_dir, internal_obligations):
+                # ── FAST PATH ── caller's library IS the indexed library ──
+                need_build = False
+                index_mgr._index_path = index_dir
+                index_mgr._obligation_store = disk_store
+                index_mgr._num_docs = len(disk_store)
+                logger.info(
+                    "ComparePipeline Phase 1: reusing persistent index at %s "
+                    "(%d docs, %.1f MB) — caller library matches",
+                    index_dir, info.get("num_docs", 0), info.get("size_mb", 0),
                 )
+                # Sanity: the persisted store should equal the Lucene doc count
+                index_docs = info.get("num_docs", 0)
+                if index_docs > 0 and abs(index_docs - len(disk_store)) / max(index_docs, 1) > 0.15:
+                    logger.warning(
+                        "Index has %d docs but store has %d obligations — "
+                        "consider --build-index --force to realign.",
+                        index_docs, len(disk_store),
+                    )
+            else:
+                # ── Caller provided a different / partial library ──
+                # Honor it: build a TEMP index from the passed set. Never clobber
+                # the persistent index with a one-off comparison library.
+                logger.warning(
+                    "ComparePipeline Phase 1: caller's library differs from the "
+                    "persistent index (%d obligations) — building a temp index "
+                    "from the passed set for this comparison. If this is the "
+                    "intended default library, rebuild the persistent index: "
+                    "--build-index --internal-dir outputs/internal/ --force.",
+                    len(internal_obligations),
+                )
+                index_mgr = IndexManager()
+                persistent = False
 
         if need_build:
             if persistent:
@@ -201,82 +249,63 @@ class ComparePipeline:
             )
 
         # ═══════════════════════════════════════════════════════════
-        # Phase 2: Split into batches + parallel compare
+        # Phase 2: per-obligation retrieve → judge → ground (parallel)
         # ═══════════════════════════════════════════════════════════
-        batch_size = settings.compare_batch_size
-        batches = [
-            external_obligations[i:i + batch_size]
-            for i in range(0, ext_count, batch_size)
-        ]
-        total_batches = len(batches)
-
-        logger.info(
-            "ComparePipeline Phase 2: %d batches (size=%d), "
-            "parallel workers=%d",
-            total_batches, batch_size, settings.llm_max_workers,
-        )
-
-        async def _process_batch(idx: int) -> list[dict[str, Any]]:
-            batch = batches[idx]
-            logger.debug(
-                "Batch %d/%d: %d external obligations",
-                idx + 1, total_batches, len(batch),
-            )
-            return await run_compare_batch(
-                external_batch=batch,
-                searcher=searcher,
-                llm=self.llm,
-                batch_index=idx,
-                total_batches=total_batches,
-            )
-
-        # Run batches in parallel with concurrency control
+        #
+        # Each external obligation runs independently:
+        #   1. RETRIEVE — deterministic BM25, top-K candidates (no LLM)
+        #   2. JUDGE — one focused LLM call: the obligation + its candidates
+        #   3. GROUND — validation maps the candidate row to real evidence
+        # This replaces the old ReAct batch agent, which exceeded its iteration
+        # budget on larger batches and fabricated matches during the forced
+        # synthesis pass (root cause of the mass-0% coverage bug).
         semaphore = asyncio.Semaphore(settings.llm_max_workers)
 
-        async def _bounded_process(idx: int) -> list[dict[str, Any]]:
+        async def _process_one(index: int) -> dict[str, Any]:
+            obl = external_obligations[index]
             async with semaphore:
-                return await _process_batch(idx)
+                candidates = retrieve_candidates(
+                    searcher, obl, top_k=settings.compare_candidate_k,
+                )
+                if not candidates:
+                    logger.info(
+                        "External #%s: no candidates retrieved → 缺失",
+                        obl.get("index"),
+                    )
+                    return ground_match(
+                        obl,
+                        {
+                            "status": "缺失",
+                            "matched_candidate_index": None,
+                            "analysis": "内规库中未检索到语义相关的候选条款。",
+                            "remedy_suggestion": (
+                                "待人工复核：确认是否需要新增或修订内规条款以承接该外部义务。"
+                            ),
+                        },
+                        [],
+                    )
+                judge_result = await judge_obligation(self.llm, obl, candidates)
+                return ground_match(obl, judge_result, candidates)
 
         try:
-            batch_results = await asyncio.gather(*[
-                _bounded_process(i) for i in range(total_batches)
+            match_dicts = await asyncio.gather(*[
+                _process_one(i) for i in range(ext_count)
             ])
         except Exception as e:
-            logger.error("ComparePipeline batch processing failed: %s", e)
-            batch_results = []
+            logger.error("ComparePipeline per-obligation processing failed: %s", e)
+            match_dicts = []
 
         # ═══════════════════════════════════════════════════════════
-        # Phase 3: Merge results
+        # Phase 3: assemble MatchResults (grounding done in Phase 2)
         # ═══════════════════════════════════════════════════════════
         all_matches: list[MatchResult] = []
-        for batch_result in batch_results:
-            if not batch_result:
+        for m_dict in match_dicts:
+            if not m_dict:
                 continue
-            for m_dict in batch_result:
-                try:
-                    match = MatchResult(**m_dict)
-                except Exception as e:
-                    logger.warning("Skipping invalid MatchResult: %s", e)
-                    continue
-                # Backfill provenance
-                if not match.external_document_name:
-                    for obl in external_obligations:
-                        if str(obl.get("index", "")) == match.external_clause_id:
-                            match.external_document_name = obl.get(
-                                "document_name", "",
-                            )
-                            match.external_article_id = obl.get(
-                                "clause_number", "",
-                            )
-                            break
-                if match.matched_internal_id and not match.matched_internal_document_name:  # noqa: E501
-                    for obl in internal_obligations:
-                        if str(obl.get("index", "")) == match.matched_internal_id:
-                            match.matched_internal_document_name = obl.get(
-                                "document_name", "",
-                            )
-                            break
-                all_matches.append(match)
+            try:
+                all_matches.append(MatchResult(**m_dict))
+            except Exception as e:
+                logger.warning("Skipping invalid MatchResult: %s", e)
 
         # ═══════════════════════════════════════════════════════════
         # Cleanup + build result

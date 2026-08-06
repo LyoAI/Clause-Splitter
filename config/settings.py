@@ -62,11 +62,8 @@ class Settings:
     excel_max_react_iterations: int = 3      # ReAct retries for Excel schema detection
     max_excel_rows_per_document: int = 5000  # safety cap for very large Excel files
 
-    # ── Compare Agent (BM25 + ReAct) ────────────────────────────────────
-    compare_batch_size: int = 15             # ext obligations per ReAct batch
-    compare_bm25_top_k: int = 20             # default BM25 search results per query
-    compare_max_react_iterations: int = 5    # max ReAct loops per batch
-    compare_bm25_fallback_threshold: int = 30  # int obls below this → no BM25, full send
+    # ── Compare (retrieve → judge) ─────────────────────────────────────
+    compare_candidate_k: int = 12            # BM25 candidates retrieved per external obligation
 
     # ── LLM ─────────────────────────────────────────────────────────────
     default_model: str = "qwen3-max"

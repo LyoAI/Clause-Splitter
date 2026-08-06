@@ -10,16 +10,17 @@ Usage:
     python run.py --build-index --internal-dir outputs/internal/
 
     # ── Online: Compare external vs internal (every new external doc) ──
-    python run.py --pipeline --file 外规.docx --internal-dir outputs/internal/ --output-dir outputs/external
+    python run.py --compare --external 外规.docx --internal-dir outputs/internal/
+    python run.py --compare --external 外规_split_result.json
 
     # ── Index management ──
     python run.py --index-info --internal-dir outputs/internal/
     python run.py --build-index --internal-dir outputs/internal/ --force   # rebuild
+    python run.py --analyze "建立数据安全管理制度"          # show jieba tokens of a query
+    python run.py --analyze-index --internal-dir outputs/internal/   # how the index tokenizes
 
     # ── Other modes ──
     python run.py --split --file document.pdf
-    python run.py --summary-comparison --external-files 外规.json --internal-files 内规.json
-    python run.py --chain --file 外规.docx --internal-files 内规.json
     python run.py --list
 """
 
@@ -32,6 +33,14 @@ import re
 import sys
 import time
 from pathlib import Path
+
+# Load .env (JAVA_HOME, API keys) so CLI commands get the same env as the server.
+# Must run before any pyserini/jnius import — jnius needs JAVA_HOME at import time.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
 import requests
 from rich.console import Console
@@ -76,6 +85,7 @@ ICONS = {
     "search": "🔎",
     "stats": "📈",
     "folder": "📁",
+    "database": "🗄️",
 }
 
 STATUS_ICONS = {
@@ -241,7 +251,11 @@ def save_binary(content: bytes, output_dir: Path, filename: str) -> Path:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run_split(file_path: str, output_dir: str = "") -> str:
-    """Upload document, poll until split complete, download results."""
+    """Upload document, poll until split complete, download results.
+
+    Returns the absolute path of the saved ``*_split_result.json`` so callers
+    (e.g. --compare) can feed it directly into the comparison step.
+    """
     if not Path(file_path).exists():
         console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {file_path}")
         sys.exit(1)
@@ -269,7 +283,7 @@ def run_split(file_path: str, output_dir: str = "") -> str:
     console.print(f"\n  {ICONS['download']}  [bold]Saving results →[/] [dim]{out_dir}/[/]")
 
     json_data = _get(f"/result/{task_id}/json")
-    save_json(json_data, out_dir, f"{Path(doc_name).stem}_split_result.json")
+    split_path = save_json(json_data, out_dir, f"{Path(doc_name).stem}_split_result.json")
 
     try:
         excel_bytes = _get_raw(f"/result/{task_id}/excel")
@@ -280,7 +294,7 @@ def run_split(file_path: str, output_dir: str = "") -> str:
     _print_split_summary(json_data)
 
     console.print(f"\n  {ICONS['check']}  [green bold]Split done.[/] [dim]task_id={task_id}[/]")
-    return task_id
+    return str(split_path)
 
 
 def _print_split_summary(data: dict) -> None:
@@ -820,7 +834,7 @@ def run_build_index(internal_dir: str, force: bool = False) -> None:
         console.print(f"      Time: [dim]{elapsed:.1f}s[/]")
 
         console.print(f"\n  🚀  [green]Ready for comparison![/] "
-                      f"Use [bold]--pipeline[/] or [bold]--summary-comparison[/] "
+                      f"Use [bold]--compare --external 外规.docx[/] "
                       f"with [bold]--internal-dir {scan_dir}/[/]")
     except Exception as e:
         console.print(f"\n  ❌ [red]Index build failed: {e}[/]")
@@ -874,36 +888,142 @@ def run_index_info(internal_dir: str) -> None:
     console.print(f"\n  💡  To rebuild: [bold]python run.py --build-index --internal-dir {internal_dir} --force[/]")
 
 
+def run_analyze(text: str) -> None:
+    """Show jieba word-level tokenization for arbitrary text.
+
+    Displays exactly how a query / obligation is split before it enters the
+    BM25 index — useful for debugging why a query does/doesn't match. No Java
+    needed; jieba is pure Python.
+
+    Args:
+        text: Text to tokenize.
+    """
+    from tools.search.tokenizer import ANALYZER_VERSION, tokenize, to_pretokenized
+
+    _banner("🔤", "ANALYZE TOKENIZATION", "jieba word-level (what the BM25 index stores)", color="cyan")
+
+    if not text or not text.strip():
+        console.print('\n  ❌ [red]No text provided. Usage: --analyze "文本"[/]')
+        return
+
+    words = tokenize(text)
+    console.print(f"\n  📝 [bold]Original:[/] [dim]{text}[/]")
+    console.print(f"\n  🔤 [bold]Tokens ({len(words)}):[/] [cyan]{' | '.join(words)}[/]")
+    console.print(f"  ✂️   Pretokenized: [dim]{to_pretokenized(text)}[/]")
+    console.print(f"\n  ℹ️   Analyzer version: [bold]{ANALYZER_VERSION}[/] — "
+                  "查询与索引必须用同一种分词，否则检索会 0 结果")
+
+
+def run_analyze_index(internal_dir: str) -> None:
+    """Show how an existing BM25 index tokenizes its documents.
+
+    Reads the analyzer version recorded in the index manifest and samples the
+    indexed terms by jieba-cutting the first few split-result obligations —
+    the same transformation the indexer applied at build time.
+
+    Args:
+        internal_dir: Directory containing **/*_split_result.json and .bm25_index.
+    """
+    from tools.search.index_manager import IndexManager
+    from tools.search.tokenizer import ANALYZER_VERSION, tokenize
+
+    scan_dir = Path(internal_dir)
+    index_dir = str(scan_dir / ".bm25_index")
+
+    _banner("🔍", "ANALYZE INDEX TOKENIZATION", f"📁  {index_dir}", color="cyan")
+
+    if not IndexManager.index_exists(index_dir):
+        console.print(f"\n  ⚠️   [yellow]No index found at:[/] {index_dir}")
+        console.print(f"  💡  Run [bold]--build-index --internal-dir {internal_dir}[/] first.")
+        return
+
+    info = IndexManager.get_index_info(index_dir)
+    manifest_analyzer = info.get("analyzer")
+    consistent = manifest_analyzer == ANALYZER_VERSION
+
+    console.print(f"\n  📦  Index: [bold cyan]{info['num_docs']}[/] obligations, "
+                  f"[dim]{info['size_mb']} MB[/]")
+    console.print(f"  🔤  Recorded analyzer: [bold]{manifest_analyzer or '(legacy / none)'}[/]")
+    console.print(f"  ℹ️   Current analyzer:  [bold]{ANALYZER_VERSION}[/]")
+    if consistent:
+        console.print("  ✅  [green]Match — index is consistent with the current tokenizer[/]")
+    else:
+        console.print("  ⚠️   [yellow]Mismatch — run --build-index --force to rebuild with the current tokenizer[/]")
+
+    # Sample indexed terms: jieba-cut the same fields the indexer concatenates.
+    console.print("\n  📑  Term samples (words only, from split results):")
+    shown = 0
+    for fpath in sorted(scan_dir.glob("**/*_split_result.json"))[:3]:
+        try:
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+            obls = data if isinstance(data, list) else data.get("obligations", [])
+        except Exception:
+            continue
+        for obl in obls[:3]:
+            parts = [
+                str(obl.get(f, "")).strip()
+                for f in ("subject", "action_verb", "action_target", "source_text")
+                if str(obl.get(f, "")).strip() and str(obl.get(f, "")).strip() != "/"
+            ]
+            words = [w for w in tokenize(" ".join(parts)) if len(w) > 1]
+            if not words:
+                continue
+            rel = fpath.relative_to(scan_dir)
+            console.print(f"    [dim]{rel.name[:18]} · 条款{obl.get('index')}[/]  "
+                          f"[cyan]{' '.join(words[:8])}[/]")
+            shown += 1
+        if shown >= 5:
+            break
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run_summary_comparison(
-    external_files: str = "",
+def run_compare(
+    external: str,
     internal_files: str = "",
     external_raw_text: str = "",
     internal_raw_text: str = "",
     doc_name: str = "",
     output_dir: str = "",
 ) -> str:
-    """Compare + report in one API call (POST /summary_comparison).
+    """Unified compare: split raw externals, then compare + gap report.
 
-    No intermediate task IDs — one call, one result: compare data + Markdown report.
+    One command for the whole "外规 → 差距分析报告" flow:
+
+    - ``external``: comma-separated paths. Each may be a raw document
+      (PDF/DOCX/DOC/TXT/XLSX → split via /split first) or a
+      ``*_split_result.json`` (compared directly).
+    - ``internal_files``: comma-separated internal split JSONs. Empty → the
+      server serves the internal library from the offline-built persistent
+      index (build once → analyze many).
     """
-    ext_paths = [f.strip() for f in external_files.split(",") if f.strip()]
+    RAW_EXTS = {".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls"}
+    ext_paths = [f.strip() for f in external.split(",") if f.strip()]
     int_paths = [f.strip() for f in internal_files.split(",") if f.strip()]
 
-    if not ext_paths or not int_paths:
-        console.print(f"\n  {ICONS['cross']} [red]--external-files and --internal-files are required[/]")
+    if not ext_paths:
+        console.print(f"\n  {ICONS['cross']} [red]--external is required[/]")
         sys.exit(1)
 
-    for f in ext_paths + int_paths:
+    # ── Phase A: split raw external documents first ──────────────────
+    split_files: list[str] = []
+    for fpath in ext_paths:
+        if Path(fpath).suffix.lower() in RAW_EXTS:
+            console.print(f"\n  {ICONS['split']}  [bold]Raw external → splitting first:[/] "
+                          f"[cyan]{Path(fpath).name}[/]")
+            split_files.append(run_split(fpath, output_dir=output_dir))
+        else:
+            split_files.append(fpath)
+
+    for f in split_files + int_paths:
         if not Path(f).exists():
             console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
             sys.exit(1)
 
-    ext_display = ", ".join(Path(f).name for f in ext_paths)
-    int_display = ", ".join(Path(f).name for f in int_paths)
+    ext_display = ", ".join(Path(f).name for f in split_files)
+    int_display = ", ".join(Path(f).name for f in int_paths) or "内规索引库 (持久化索引)"
 
     _banner(ICONS["summary"], "Compare + Gap Analysis Report",
             f"{ICONS['link']}  external={ext_display}  |  internal={int_display}",
@@ -913,9 +1033,10 @@ def run_summary_comparison(
     console.print(f"  {ICONS['bullet']}  External: [cyan]{ext_display}[/]")
     console.print(f"  {ICONS['bullet']}  Internal: [yellow]{int_display}[/]")
 
-    # Build multipart form
+    # internal_files is OPTIONAL — the server serves the internal library from
+    # the offline-built persistent index when omitted (build once → analyze many).
     files_payload: list[tuple] = []
-    for fpath in ext_paths:
+    for fpath in split_files:
         files_payload.append(("external_files", (Path(fpath).name, open(fpath, "rb"), "application/json")))
     for fpath in int_paths:
         files_payload.append(("internal_files", (Path(fpath).name, open(fpath, "rb"), "application/json")))
@@ -923,7 +1044,7 @@ def run_summary_comparison(
     data_payload = {
         "external_raw_text": external_raw_text,
         "internal_raw_text": internal_raw_text,
-        "document_name": doc_name or _clean_doc_name(ext_paths[0]),
+        "document_name": doc_name or _clean_doc_name(split_files[0]),
     }
 
     try:
@@ -935,8 +1056,8 @@ def run_summary_comparison(
     task_id = resp["task_id"]
     console.print(f"  {ICONS['check']}  Task: [bold magenta]{task_id}[/]")
 
-    out_label = _clean_doc_name(ext_paths[0]) if len(ext_paths) == 1 else "comparison"
-    final = poll_task(task_id, label=f"comparison:{out_label}")
+    out_label = _clean_doc_name(split_files[0]) if len(split_files) == 1 else "comparison"
+    poll_task(task_id, label=f"comparison:{out_label}")
 
     # Download results
     base = Path(output_dir) if output_dir else OUTPUT_ROOT
@@ -971,122 +1092,6 @@ def run_summary_comparison(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Pipeline
-# ═══════════════════════════════════════════════════════════════════════════
-
-def run_pipeline(
-    file_path: str,
-    internal_files: str,
-    internal_raw_text: str = "",
-    doc_name: str = "",
-    output_dir: str = "",
-) -> None:
-    """Run full pipeline: split → compare → summary (supports multi-file).
-
-    Args:
-        file_path: Comma-separated external regulation file paths.
-        internal_files: Comma-separated internal obligation JSON paths.
-        output_dir: Base directory for saving results (default: outputs/).
-    """
-    ext_files = [f.strip() for f in file_path.split(",") if f.strip()]
-    int_files = [f.strip() for f in internal_files.split(",") if f.strip()]
-
-    for f in ext_files:
-        if not Path(f).exists():
-            console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
-            sys.exit(1)
-    for f in int_files:
-        if not Path(f).exists():
-            console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
-            sys.exit(1)
-
-    fext_icon = _file_icon(ext_files[0])
-    fint_icon = _file_icon(int_files[0])
-
-    ext_display = ", ".join(Path(f).name for f in ext_files)
-    int_display = ", ".join(Path(f).name for f in int_files)
-
-    _banner(ICONS["pipeline"], "FULL PIPELINE  —  Split → Compare → Report",
-            f"{fext_icon}  external={ext_display}  |  {fint_icon}  internal={int_display}",
-            color="green")
-
-    console.print(f"\n  {ICONS['rocket']}  [bold]Launching pipeline...[/]")
-
-    # Build multipart form
-    files_payload: list[tuple] = []
-    for fpath in ext_files:
-        files_payload.append(("files", (Path(fpath).name, open(fpath, "rb"), "application/octet-stream")))
-    for fpath in int_files:
-        files_payload.append(("internal_files", (Path(fpath).name, open(fpath, "rb"), "application/json")))
-
-    data_payload = {
-        "document_name": doc_name or Path(ext_files[0]).stem,
-        "internal_raw_text": internal_raw_text,
-    }
-
-    try:
-        resp = _post("/pipeline", data=data_payload, files=files_payload)
-    finally:
-        for _, (_, f, _) in files_payload:
-            f.close()
-
-    task_id = resp["task_id"]
-    console.print(f"  {ICONS['check']}  Pipeline task: [bold green]{task_id}[/]")
-    console.print(f"  {ICONS['bullet']}  [dim]{resp['message']}[/]")
-
-    final = poll_task(task_id, label=f"pipeline:{Path(ext_files[0]).stem}")
-    doc_name_final = final.get("document_name", Path(ext_files[0]).stem)
-
-    base = Path(output_dir) if output_dir else OUTPUT_ROOT
-    out_dir = base / Path(doc_name_final).stem
-    console.print(f"\n  {ICONS['download']}  [bold]Saving results →[/] [dim]{out_dir}/[/]")
-
-    json_data = _get(f"/result/{task_id}/json")
-    save_json(json_data, out_dir, f"{Path(doc_name_final).stem}_pipeline_result.json")
-
-    try:
-        excel_bytes = _get_raw(f"/result/{task_id}/excel")
-        save_binary(excel_bytes, out_dir, f"{Path(doc_name_final).stem}_条款拆分结果.xlsx")
-    except Exception:
-        pass
-
-    try:
-        report_bytes = _get_raw(f"/result/{task_id}/report")
-        save_binary(report_bytes, out_dir, f"{Path(doc_name_final).stem}_差距分析报告.md")
-    except Exception:
-        pass
-
-    _print_pipeline_summary(json_data)
-    console.print(f"\n  {ICONS['star']}  [green bold]Pipeline complete![/] [dim]All files → {out_dir}[/]")
-
-
-def _print_pipeline_summary(data: dict) -> None:
-    split = data.get("split_result", {})
-    compare = data.get("compare_result", {})
-    report = data.get("summary_report", "")
-
-    matches = compare.get("matches", [])
-    fully = sum(1 for m in matches if m.get("status") == "完全覆盖")
-    not_cov = sum(1 for m in matches if m.get("status") == "缺失")
-
-    table = Table(title=f"{ICONS['rocket']}  Pipeline Results", border_style="green",
-                  title_style="bold green")
-    table.add_column("", width=3, no_wrap=True)
-    table.add_column("Phase", style="white")
-    table.add_column("Result", style="bold")
-
-    table.add_row("📝", "Split",
-                  f"{split.get('total_articles', 0)} articles → [green]{split.get('total_obligations', 0)}[/] obligations")
-    table.add_row("🔍", "Compare",
-                  f"{len(matches)} matched — [green]{fully} covered[/], [red]{not_cov} missing[/]")
-    table.add_row("📋", "Report",
-                  f"[cyan]{len(report):,}[/] chars generated")
-
-    console.print()
-    console.print(table)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # List tasks
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1100,7 +1105,7 @@ def run_list(task_type: str = "") -> None:
     tasks = data.get("tasks", [])
 
     if not tasks:
-        console.print(f"\n  {ICONS['folder']}  [dim]No tasks yet. Run --split or --pipeline first.[/]\n")
+        console.print(f"\n  {ICONS['folder']}  [dim]No tasks yet. Run --split or --compare first.[/]\n")
         return
 
     table = Table(title=f"{ICONS['folder']}  All Tasks", border_style="blue",
@@ -1165,102 +1170,6 @@ def run_list(task_type: str = "") -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Chain (client-side orchestration: split → compare → summary)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def run_chain(
-    file_path: str,
-    internal_files: str,
-    internal_raw_text: str = "",
-    doc_name: str = "",
-    output_dir: str = "",
-) -> None:
-    """Run split → compare → summary on the client side (file-based, no task IDs).
-
-    1. Split raw doc → download split result JSON
-    2. Compare using the downloaded JSON as --external-files
-    3. Summary using the compare result
-
-    Contrast with --pipeline:
-      - --chain: 3 API calls, intermediate results visible, can resume
-      - --pipeline: 1 API call, results only at the end
-    """
-    if not Path(file_path).exists():
-        console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {file_path}")
-        sys.exit(1)
-
-    int_paths = [f.strip() for f in internal_files.split(",") if f.strip()]
-    for f in int_paths:
-        if not Path(f).exists():
-            console.print(f"\n  {ICONS['cross']} [red]File not found:[/] {f}")
-            sys.exit(1)
-
-    _banner(ICONS["rocket"], "CHAIN MODE — Client-Side Orchestration",
-            f"Split → Compare → Summary  |  {_file_icon(file_path)}  {Path(file_path).name}  |  "
-            f"{_file_icon(int_paths[0])}  {len(int_paths)} internal file(s)",
-            color="green")
-
-    chain_failed = False
-    ext_split_file = ""  # path to downloaded split result JSON
-
-    # ── Phase 1: Split ──────────────────────────────────────────────────
-    split_id = ""
-    try:
-        console.print(f"\n  {ICONS['star']}  [bold cyan]Phase 1/3: Splitting...[/]")
-        split_id = run_split(file_path, output_dir=output_dir)
-
-        # Download split result for next phase
-        json_data = _get(f"/result/{split_id}/json")
-        base = Path(output_dir) if output_dir else OUTPUT_ROOT
-        out_dir = base / Path(file_path).stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ext_split_file = str(out_dir / f"{Path(file_path).stem}_split_result.json")
-        Path(ext_split_file).write_text(json.dumps(json_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        console.print(f"  {ICONS['check']}  Split complete, result saved → [dim]{ext_split_file}[/]")
-    except SystemExit:
-        split_id = ""
-    except Exception as e:
-        console.print(f"  {ICONS['cross']}  [red]Split failed: {e}[/]")
-        chain_failed = True
-
-    if not ext_split_file or chain_failed:
-        console.print(f"\n  {ICONS['cross']}  [red bold]Chain stopped at Phase 1 (Split).[/]")
-        sys.exit(1)
-
-    # ── Phase 2+3: Summary Comparison (compare + report in one call) ──
-    compare_id = ""
-    try:
-        console.print(f"\n  {ICONS['star']}  [bold yellow]Phase 2/3: Compare + Report...[/]")
-        compare_id = run_summary_comparison(
-            external_files=ext_split_file,
-            internal_files=internal_files,
-            external_raw_text="",
-            internal_raw_text=internal_raw_text or "",
-            doc_name=doc_name or Path(file_path).stem,
-            output_dir=output_dir,
-        )
-    except SystemExit:
-        compare_id = ""
-    except Exception as e:
-        console.print(f"  {ICONS['cross']}  [red]Summary comparison failed: {e}[/]")
-        chain_failed = True
-
-    if not compare_id or chain_failed:
-        console.print(f"\n  {ICONS['cross']}  [red bold]Chain stopped at Phase 2 (Summary Comparison).[/]")
-        console.print(f"  💡  Split result saved at: {ext_split_file}")
-        console.print(f"      Resume: python test_app.py --summary-comparison --external-files {ext_split_file} --internal-files {internal_files}")
-        sys.exit(1)
-
-    # ── Done ─────────────────────────────────────────────────────────────
-    console.print()
-    console.print(Panel(
-        Text(f"All phases completed successfully!\n\n"
-             f"  Results:  outputs/{Path(file_path).stem}/",
-             style="green"),
-        title="✅  CHAIN COMPLETE", border_style="green",
-    ))
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1278,11 +1187,13 @@ Examples:
   python run.py --build-index --internal-dir outputs/internal/
 
   # ── Online: Compare external vs internal ───────────────
-  python run.py --pipeline --file 外规.docx --internal-dir outputs/internal/ --output-dir outputs/external
+  python run.py --compare --external 外规.docx --internal-dir outputs/internal/
 
   # ── Index management ───────────────────────────────────
   python run.py --index-info --internal-dir outputs/internal/
   python run.py --build-index --internal-dir outputs/internal/ --force   # rebuild
+  python run.py --analyze "建立数据安全管理制度"         # show jieba tokens (query debug)
+  python run.py --analyze-index --internal-dir outputs/internal/  # index tokenization
 
   python run.py --list          # show all tasks
         """,
@@ -1291,27 +1202,27 @@ Examples:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--split", action="store_true", help="📝  Clause splitting only")
     mode.add_argument("--pre-split", action="store_true", help="📑  Pre-split large multi-doc Excel by document name, then split each")
-    mode.add_argument("--summary-comparison", action="store_true", help="📋  Compare + Gap analysis report (one call)")
-    mode.add_argument("--pipeline", action="store_true", help="🚀  Full pipeline — server-side (split → compare → report)")
-    mode.add_argument("--chain", action="store_true", help="🔗  Chain mode — client-side orchestration, shows intermediate results")
+    mode.add_argument("--compare", action="store_true", help="🔗  Compare external vs internal + gap report (auto-splits raw docs)")
     mode.add_argument("--list", nargs="?", const="", metavar="TYPE",
                       help="📋  List all tasks (optional: filter by type)")
     mode.add_argument("--clear", action="store_true", help="🗑️   Clear all task records")
     mode.add_argument("--build-index", action="store_true", help="🔧  Build persistent BM25 index from internal split results (offline, run once)")
     mode.add_argument("--index-info", action="store_true", help="ℹ️   Show BM25 index status and statistics")
+    mode.add_argument("--analyze", metavar="TEXT", help="🔤  Show jieba word-level tokenization of a text (debug query/index matching)")
+    mode.add_argument("--analyze-index", action="store_true", help="🔍  Show how the existing BM25 index tokenizes (analyzer version + term samples)")
 
     parser.add_argument("--base-url", default=BASE_URL, help=f"API base URL (default: {BASE_URL})")
-    parser.add_argument("--file", help="📄  Raw regulation file for --split/--chain/--pipeline (comma-sep for multi)")
+    parser.add_argument("--file", help="📄  Raw regulation file for --split/--pre-split (comma-sep for multi)")
     parser.add_argument("--document-name", default="", help="Override document name")
 
-    parser.add_argument("--external-files", help="📦  External obligation JSON file(s) for --compare/--summary (comma-sep)")
-    parser.add_argument("--internal-files", default="", help="📦  Internal obligation JSON file(s) for --compare/--summary/--chain/--pipeline (comma-sep)")
+    parser.add_argument("--external", help="📦  External regulation: raw doc (auto-split) or *_split_result.json (comma-sep)")
+    parser.add_argument("--internal-files", default="", help="📦  Internal obligation JSON file(s) for --compare (comma-sep)")
     parser.add_argument("--internal-dir", default="", help="📁  Directory of internal *_split_result.json files (alternative to --internal-files)")
 
     parser.add_argument("--output-dir", default="", help="📁  Output directory for split results (default: outputs/)")
     parser.add_argument("--force", action="store_true", help="💪  Force re-process all documents (ignore existing results)")
-    parser.add_argument("--external-text", default="", help="External regulation raw text (for --summary)")
-    parser.add_argument("--internal-text", default="", help="Internal regulation raw text (for --summary)")
+    parser.add_argument("--external-text", default="", help="External regulation raw text (for --compare)")
+    parser.add_argument("--internal-text", default="", help="Internal regulation raw text (for --compare)")
 
     args = parser.parse_args()
     BASE_URL = args.base_url
@@ -1344,7 +1255,7 @@ Examples:
     _resolved_output = Path(args.output_dir) if args.output_dir else OUTPUT_ROOT
     console.print(f"  📁  Output dir: [cyan]{_resolved_output}[/]")
 
-    if not any([args.split, getattr(args, 'pre_split', False), getattr(args, 'summary_comparison', False), args.pipeline, args.chain, args.list is not None, args.build_index, args.index_info]):
+    if not any([args.split, getattr(args, 'pre_split', False), args.compare, args.list is not None, args.build_index, args.index_info, args.analyze is not None, args.analyze_index]):
         if args.file:
             args.split = True
         else:
@@ -1371,30 +1282,25 @@ Examples:
             console.print(f"\n  ❌ [red]--internal-dir is required for --index-info[/]")
             sys.exit(1)
         run_index_info(args.internal_dir)
+    elif args.analyze is not None:
+        run_analyze(args.analyze)
+    elif args.analyze_index:
+        if not args.internal_dir:
+            console.print(f"\n  ❌ [red]--internal-dir is required for --analyze-index[/]")
+            sys.exit(1)
+        run_analyze_index(args.internal_dir)
     elif args.split:
         if not args.file:
             console.print(f"\n  ❌ [red]--file is required for --split[/]")
             sys.exit(1)
         run_split(args.file, output_dir=args.output_dir)
-    elif getattr(args, 'summary_comparison', False):
-        if not args.external_files or not internal_files:
-            console.print(f"\n  ❌ [red]--external-files and (--internal-files or --internal-dir) are required[/]")
+    elif args.compare:
+        if not args.external:
+            console.print(f"\n  ❌ [red]--external is required[/]")
             sys.exit(1)
-        run_summary_comparison(args.external_files, internal_files,
-                               args.external_text, args.internal_text, args.document_name,
-                               output_dir=args.output_dir)
-    elif args.pipeline:
-        if not args.file or not internal_files:
-            console.print(f"\n  ❌ [red]--file and (--internal-files or --internal-dir) are required[/]")
-            sys.exit(1)
-        run_pipeline(args.file, internal_files, args.internal_text,
-                    args.document_name, output_dir=args.output_dir)
-    elif args.chain:
-        if not args.file or not internal_files:
-            console.print(f"\n  ❌ [red]--file and (--internal-files or --internal-dir) are required[/]")
-            sys.exit(1)
-        run_chain(args.file, internal_files, args.internal_text,
-                  args.document_name, output_dir=args.output_dir)
+        run_compare(args.external, internal_files, args.external_text,
+                    args.internal_text, args.document_name,
+                    output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

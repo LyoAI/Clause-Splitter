@@ -48,6 +48,10 @@ class MatchResult(BaseModel):
         default="",
         description="Original article reference, e.g. '第十四条'",
     )
+    external_source_text: str = Field(
+        default="",
+        description="Full source text of the external obligation — quoted in the report",
+    )
     status: CoverageStatus = Field(
         ...,
         description="Coverage status",
@@ -59,6 +63,14 @@ class MatchResult(BaseModel):
     matched_internal_document_name: str | None = Field(
         default=None,
         description="Source internal policy document name that matched",
+    )
+    matched_internal_clause_number: str = Field(
+        default="",
+        description="Clause reference of the matched internal obligation, e.g. '第十四条'",
+    )
+    matched_internal_source_text: str = Field(
+        default="",
+        description="Full source text of the matched internal obligation — evidence for the gap analysis report",
     )
     analysis: str = Field(
         ...,

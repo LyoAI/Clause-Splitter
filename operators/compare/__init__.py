@@ -1,1 +1,1 @@
-"""Compare operators — BM25 indexing + ReAct agent matching."""
+"""Compare operators — deterministic BM25 recall → per-obligation LLM judge → evidence grounding."""

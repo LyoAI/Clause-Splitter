@@ -39,6 +39,40 @@ def _get_persistent_index_dir() -> str:
     return str(Path(get_settings().project_root) / "outputs" / "internal" / ".bm25_index")
 
 
+def _load_internal_library_from_index() -> tuple[list[dict], list[str]]:
+    """Load the internal obligation library from the persistent index.
+
+    Enables "build once → analyze many": the caller omits internal_files and
+    the whole library (incl. 原文) is served from the index's persisted
+    obligation store. Raises 400 with actionable guidance if unavailable.
+    """
+    from tools.search.index_manager import IndexManager
+
+    index_dir = _get_persistent_index_dir()
+    if not IndexManager.index_exists(index_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "未上传 internal_files 且未找到已构建的内规索引。"
+                "请先运行 `python run.py --build-index --internal-dir outputs/internal/`，"
+                "或直接上传内部条款 JSON。"
+            ),
+        )
+    obligations = IndexManager.load_obligations_from_index(index_dir)
+    if not obligations:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "内规索引缺少持久化义务数据（obligations.json）。"
+                "请运行 `python run.py --build-index --internal-dir outputs/internal/ --force` 重建后重试。"
+            ),
+        )
+    doc_names = sorted({
+        str(o.get("document_name", "")) for o in obligations if o.get("document_name")
+    })
+    return obligations, doc_names
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # POST /api/v1/split  — 条款拆分
 # ═══════════════════════════════════════════════════════════════════════════
@@ -121,7 +155,7 @@ async def submit_split_task(
 async def submit_summary_comparison(
     background_tasks: BackgroundTasks,
     external_files: list[UploadFile] = File(..., description="外规拆分 JSON 文件（支持多个）"),
-    internal_files: list[UploadFile] = File(..., description="内规拆分 JSON 文件（支持多个）"),
+    internal_files: list[UploadFile] = File(default_factory=list, description="内规拆分 JSON 文件（支持多个）；省略时使用已构建的内规索引库"),
     external_raw_text: str = Form(default="", description="外规原文（Markdown，用于报告引用）"),
     internal_raw_text: str = Form(default="", description="内规原文（Markdown，用于报告引用）"),
     document_name: str = Form(default="", description="文档名称（用于报告标题）"),
@@ -175,6 +209,11 @@ async def submit_summary_comparison(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+    # If no internal files were uploaded, resolve the library from the
+    # persistent index built offline (build once → analyze many).
+    if not all_internal:
+        all_internal, int_doc_names = _load_internal_library_from_index()
+
     if not all_external or not all_internal:
         raise HTTPException(status_code=400, detail="外规或内规条款为空")
 
@@ -223,7 +262,7 @@ async def submit_summary_comparison(
 async def submit_pipeline_task(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(..., description="待拆分的外部法律文件（PDF/DOCX/DOC/TXT/XLSX/XLS），支持多个"),
-    internal_files: list[UploadFile] = File(..., description="预拆分的内部规章制度 JSON 文件，支持多个"),
+    internal_files: list[UploadFile] = File(default_factory=list, description="预拆分的内部规章制度 JSON 文件，支持多个；省略时使用已构建的内规索引库"),
     internal_raw_text: str = Form(default="", description="内规条款原文（Markdown格式，用于报告引用）"),
     document_name: str = Form(default="", description="可选：文档名称（合并多个外规时使用）"),
     task_manager: TaskManager = Depends(get_task_manager),
@@ -279,6 +318,10 @@ async def submit_pipeline_task(
             raise HTTPException(status_code=400, detail=f"内部条款 JSON 解析失败 ({int_file.filename}): {e}")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    # No internal files uploaded → resolve the library from the persistent index.
+    if not all_internal_obligations:
+        all_internal_obligations, int_doc_names = _load_internal_library_from_index()
 
     if not all_internal_obligations:
         raise HTTPException(status_code=400, detail="内部条款为空")
@@ -651,7 +694,7 @@ async def _run_summary_comparison(
     int_doc_list = list(internal_document_names or [])
 
     try:
-        # ── Phase 1: Compare (BM25 + ReAct Agent) ──────────────────────
+        # ── Phase 1: Compare (retrieve-then-judge) ─────────────────────
         task_manager.update(
             task_id,
             status=TaskStatusEnum.DECOMPOSING,
@@ -660,7 +703,7 @@ async def _run_summary_comparison(
             pipeline_phase="comparing",
         )
 
-        # Use new BM25 + ReAct ComparePipeline for scalable many-to-many
+        # Use the retrieve-then-judge ComparePipeline for scalable many-to-many
         from pipeline.compare_pipeline import ComparePipeline  # lazy import (PySerini)
         compare_pipeline = ComparePipeline(llm=llm)
         compare_result = await compare_pipeline.run(
