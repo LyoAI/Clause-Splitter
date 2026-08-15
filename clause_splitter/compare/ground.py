@@ -145,14 +145,15 @@ def ground_episode(
         }
 
     # 用第一承接条款回填 MatchResult 的内规侧字段(报告展示用)。
+    # 内规 chunk 来自 mineru 层级分块:制度名取 chunk.doc_id,条款/段落标识
+    # 取 section 路径的末级标题(如 "第二十条"),无标题文档回退到序号。
     head = store.get_chunk(grounded[0])
-    head_meta = head.meta if head else {}
     return {
         **base,
         "status": status,
         "matched_internal_id": grounded[0],
-        "matched_internal_document_name": head_meta.get("doc", "") if head else None,
-        "matched_internal_clause_number": head_meta.get("clause_number", "") if head else "",
+        "matched_internal_document_name": head.doc_id if head else None,
+        "matched_internal_clause_number": _segment_label(head) if head else "",
         "matched_internal_source_text": head.text if head else "",
         "analysis": _merge_analysis(analysis, grounded, evidence),
     }
@@ -182,6 +183,22 @@ def _norm_claimed_ids(value: Any) -> list[str]:
     if isinstance(value, str):
         return [x.strip() for x in value.split(",") if x.strip()]
     return []
+
+
+def _segment_label(chunk) -> str:
+    """内规 chunk 的条款/段落标识。
+
+    优先取 ``meta.section`` 路径的末级标题(如 "第三章 数据安全 > 第二十条"
+    → "第二十条");无标题文档回退到 ``chunk_id`` 的序号段(``doc#N`` → "N")。
+    """
+    section = str(chunk.meta.get("section", "") or "").strip() if chunk.meta else ""
+    if " > " in section:
+        leaf = section.split(" > ")[-1].strip()
+        if leaf:
+            return leaf
+    if "#" in chunk.chunk_id:
+        return chunk.chunk_id.split("#")[-1]
+    return ""
 
 
 def _merge_analysis(

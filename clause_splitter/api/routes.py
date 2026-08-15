@@ -114,17 +114,17 @@ async def submit_compare_task(
     src = _save_upload(external_file)
     task = manager.create("compare", document_name=external_file.filename or src.name)
     background_tasks.add_task(
-        _run_compare, task.task_id, src, internal_dir, searcher, llm, manager
+        _run_compare, task.task_id, src, internal_dir, searcher, model, provider, llm, manager
     )
     return {"task_id": task.task_id}
 
 
 async def _run_compare(
     task_id: str, src: Path, internal_dir: str, searcher: str,
-    llm, manager: TaskManager,
+    model: str, provider: str, llm, manager: TaskManager,
 ) -> None:
     from clause_splitter.compare.aggregate import run_compare
-    from clause_splitter.compare.index import build_all_indexes, build_clause_store
+    from clause_splitter.compare.index import prepare_docs
     from clause_splitter.compare.loader import load_external_clauses
     from clause_splitter.compare.report import generate_gap_report
 
@@ -135,8 +135,8 @@ async def _run_compare(
     try:
         task.update(status="processing", current_step="构建内规索引")
 
-        store = build_clause_store(internal_dir, name="internal")
-        build_all_indexes(store)
+        # 内规库原始文档 → mineru 解析 + 层级分块 → store + 三种索引(幂等)。
+        store = prepare_docs(internal_dir, name="internal")
 
         clauses = load_external_clauses(str(src), str(out_dir), llm)
         task.update(current_step=f"比对 {len(clauses)} 条外规条款")

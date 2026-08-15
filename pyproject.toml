@@ -17,6 +17,8 @@ dependencies = [
     "pycryptodome==3.23.0",
     "json-repair==0.60.1",
     "requests==2.34.2",
+    # Parsing
+    "mineru[pipeline]>=3.4.4",   # local document parser (PDF / docx / pptx / xlsx / images)
     # Retrieval
     "pyserini>=0.44.0",          # BM25 (Lucene) — requires JDK 21 (JAVA_HOME in .env)
     "pyjnius>=1.7.0",            # pyserini's JVM bridge

@@ -1,17 +1,16 @@
 #!/usr/bin/env python
-"""入口② —— 内规库条款索引构建 CLI(离线步骤).
+"""入口② —— 内规库索引 / embedding 构建 CLI(离线步骤).
 
 用法:
     python run_index.py [--internal-dir outputs/internal/] [--name internal] \\
            [--embed-model ~/Models/Qwen3-Embedding-0.6B] [--rebuild]
 
-流程:
-    扫描 ``--internal-dir`` 下每份制度的 structure.json / 拆分结果 JSON →
-    ``build_clause_store``(每条条款一个 Chunk)→ 构建三种索引
-    (grep/bm25/faiss)→ 持久化 store 到 ``.cache/<name>/``。
+流程(模仿 ``run_prepare_docs.py``):
+    扫描 ``--internal-dir`` 下的内规原始文档(pdf / docx / pptx / xlsx / 图片)
+    → MinerU 本地解析 → 层级感知分块 → DocumentStore → faiss 向量索引
+    → BM25 Lucene 索引。粒度按章节/条款标题,不做逐条义务拆分。
 
-索引按 ``corpus_signature``(内容 hash)缓存 —— 内容不变即复用,重跑幂等;
-``--rebuild`` 强制全部重建。
+索引幂等:内容不变即复用缓存,重跑不重复解析/embedding;``--rebuild`` 强制重建。
 """
 
 from __future__ import annotations
@@ -25,9 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="内规库条款索引构建")
-    parser.add_argument("--internal-dir", default="outputs/internal/",
-                        help="内规库目录(含 *_structure.json / 拆分结果 JSON)")
+    parser = argparse.ArgumentParser(description="内规库索引/embedding 构建")
+    parser.add_argument("--internal-dir", default="upload_materials/internal/",
+                        help="内规库原始文档目录(pdf/docx/pptx/xlsx/图片)")
     parser.add_argument("--name", default="internal",
                         help="store 名,决定缓存目录 .cache/<name>/")
     parser.add_argument("--embed-model", default="",
@@ -35,35 +34,32 @@ def main() -> None:
     parser.add_argument("--rebuild", action="store_true",
                         help="强制重建全部索引")
     parser.add_argument("--list", action="store_true",
-                        help="仅列出待索引的条款来源文件,不构建")
+                        help="仅列出待索引的文档,不构建")
     args = parser.parse_args()
 
-    from clause_splitter.compare.index import build_clause_store, build_all_indexes
-    from clause_splitter.compare._sources import scan_clause_source_files
+    from clause_splitter.compare.index import prepare_docs
+    from clause_splitter.tools.parser.ingest import scan_supported_docs
 
     if args.list:
-        files = scan_clause_source_files(Path(args.internal_dir))
-        print(f"发现 {len(files)} 份条款来源文件:")
+        try:
+            files = scan_supported_docs(Path(args.internal_dir))
+        except FileNotFoundError as e:
+            print(f"✗ {e}")
+            sys.exit(1)
+        print(f"发现 {len(files)} 份内规文档:")
         for f in files:
             print(f"  - {f}")
         return
 
-    store = build_clause_store(internal_dir=args.internal_dir, name=args.name)
-    if len(store.all_chunks()) == 0:
-        print(f"✗ 内规库为空: {args.internal_dir} 下未找到条款来源。")
-        sys.exit(1)
-
-    print(f"条款级 store: {len(store.docs)} 制度 / {len(store.all_chunks())} 条款")
-
-    summary = build_all_indexes(
-        store, embed_model=args.embed_model or None, rebuild=args.rebuild,
+    store = prepare_docs(
+        args.internal_dir,
+        name=args.name,
+        embed_model=args.embed_model or None,
+        rebuild=args.rebuild,
     )
-    print("\n═══ 索引构建完成 ═══")
-    print(f"cache_key : {summary['cache_key']}")
-    print(f"grep 目录 : {summary['chunks']}")
-    print(f"bm25 目录 : {summary['bm25']}")
-    print(f"faiss 目录: {summary['faiss'] or '(跳过 — embedding 不可用)'}")
-    print(f"store 目录: {summary['store']}")
+    print(f"\n═══ 索引构建完成 ═══")
+    print(f"{len(store.docs)} 份文档 → {len(store.all_chunks())} 个检索单元 ({args.name})")
+    print(f"缓存目录: .cache/{args.name}/{{store, chunks, bm25, faiss, md}}")
 
 
 if __name__ == "__main__":

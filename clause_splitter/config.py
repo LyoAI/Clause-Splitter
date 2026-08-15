@@ -68,13 +68,29 @@ EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
 # OOM during long batch encodes; set "cuda" (or "auto") on GPU servers.
 EMBED_DEVICE = os.getenv("EMBED_DEVICE", "cpu")
 
+# ── Parsing & chunking (MinerU) ───────────────────────────────────────
+# MinerU local backend ("pipeline" | "vlm" | "hybrid"); the CLI picks the device.
+MINERU_BACKEND = os.getenv("MINERU_BACKEND", "pipeline")
+# Directory name under ``doc_cache_dir(name)`` holding MinerU's output.
+MINERU_MD_DIRNAME = "md"
+# Structure chunking: a ``title`` block with level <= CHUNK_LEVEL opens a new
+# chunk; deeper sub-headings stay inside the current chunk. Coarse by design:
+# internal-regulation corpora are indexed at chapter/section granularity, not
+# per-clause.
+CHUNK_LEVEL = int(os.getenv("CHUNK_LEVEL", "3"))
+# Soft token budget per chunk (oversized sections are split, tables kept whole).
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
+# Adjacent chunks smaller than this many tokens merge into the previous one
+# when the section path matches. 0 = strict section boundaries, no merging.
+CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", "50"))
+
 # ── Index cache ────────────────────────────────────────────────────────
 # Derived per-corpus cache root: .cache/<store_name>/{store, chunks, bm25, faiss}.
 CACHE_DIR = REPO_ROOT / ".cache"
 
 
 def doc_cache_dir(store_name: str) -> Path:
-    """Root for one corpus's derived artifacts: materialized clause txt,
+    """Root for one corpus's derived artifacts: materialized chunk txt,
     the BM25 Lucene index, the faiss vector db, and the serialized store."""
     return CACHE_DIR / store_name
 

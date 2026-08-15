@@ -43,22 +43,15 @@ def _build_llm(args: argparse.Namespace):
 
 async def _run(args: argparse.Namespace) -> None:
     from clause_splitter.compare.aggregate import run_compare
-    from clause_splitter.compare.index import build_all_indexes, build_clause_store
+    from clause_splitter.compare.index import prepare_docs
     from clause_splitter.compare.loader import load_external_clauses
     from clause_splitter.models import CompareResult
 
     llm = _build_llm(args)
 
-    # 1) 内规库 → 条款级 store + 三种索引(幂等,内容不变即复用)。
-    store = build_clause_store(args.internal_dir, name="internal")
-    print(f"内规库: {len(store.docs)} 制度 / {len(store.all_chunks())} 条款")
-    index_summary = build_all_indexes(store)
-    print(
-        "索引: bm25={bm25} faiss={faiss}".format(
-            bm25="✓" if Path(index_summary["bm25"]).exists() else "✗",
-            faiss="✓" if index_summary["faiss"] else "✗",
-        )
-    )
+    # 1) 内规库原始文档 → mineru 解析 + 层级分块 → store + 三种索引(幂等)。
+    store = prepare_docs(args.internal_dir, name="internal")
+    print(f"内规库: {len(store.docs)} 份文档 / {len(store.all_chunks())} 个检索单元")
 
     # 2) 装载外规条款。
     clauses = load_external_clauses(args.external, args.output_dir or "", llm)
