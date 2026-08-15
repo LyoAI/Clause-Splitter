@@ -196,7 +196,8 @@ def _parse_doc(path: Path, max_chars: int) -> str:
 def _parse_xlsx(path: Path, max_chars: int) -> str:
     """openpyxl 抽取 Excel 文本(所有 sheet,tab 分隔)。"""
     import openpyxl
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    # 与 parse.py 同理:系统导出文件 dimension 不完整,read_only 流式会漏行。
+    wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
     lines: list[str] = []
     for sheet in wb.sheetnames:
         ws = wb[sheet]

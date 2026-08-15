@@ -609,7 +609,9 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
         return result
 
     try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        # 系统导出的 xlsx 常带不完整的 <dimension> 元数据,read_only=True 流式只吐
+        # A1 一格(真实表头/数据全读不到);普通模式物化全部行才可靠。
+        wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
     except Exception as e:
         result["error"] = f"无法打开 Excel 文件: {e}"
         return result
@@ -698,7 +700,9 @@ def extract_excel_articles(
     norm_mapping = _normalize_mapping(column_mapping)
 
     try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        # 系统导出的 xlsx 常带不完整的 <dimension> 元数据,read_only=True 流式只吐
+        # A1 一格(真实表头/数据全读不到);普通模式物化全部行才可靠。
+        wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
     except Exception as e:
         result["error"] = f"无法打开 Excel 文件: {e}"
         return result

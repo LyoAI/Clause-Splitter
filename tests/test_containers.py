@@ -16,6 +16,8 @@ Covers:
 
 from __future__ import annotations
 
+import re
+import zipfile
 from pathlib import Path
 
 import openpyxl
@@ -25,6 +27,23 @@ from clause_splitter.tools.parser import chunk_doc
 from clause_splitter.tools.parser.containers import split_workbook
 from clause_splitter.tools.parser.headings import infer_regulation_headings
 from clause_splitter.tools.parser.ingest import ingest
+
+
+def _break_dimension_ref(path: Path) -> None:
+    """把首个 worksheet 的 <dimension> 改成 A1,复现系统导出文件的 read_only 漏行坑。"""
+    zpath = Path(path)
+    tmp = zpath.with_suffix(".dim.tmp.xlsx")
+    with zipfile.ZipFile(zpath) as zin:
+        names = zin.namelist()
+        data = {n: zin.read(n) for n in names}
+    sheet = next(n for n in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n))
+    xml = data[sheet].decode("utf-8")
+    xml = re.sub(r"<dimension[^>]*/>", '<dimension ref="A1"/>', xml, count=1)
+    data[sheet] = xml.encode("utf-8")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n in names:
+            zout.writestr(n, data[n])
+    tmp.replace(zpath)
 
 
 def _write_workbook(path: Path, rows: list[dict]) -> None:
@@ -200,6 +219,30 @@ def test_real_layout_ignores_full_doc_text_column(tmp_path: Path) -> None:
     assert all("【完整制度全文】" not in c.text for c in chunks)
     assert chunks[0].text == "第一条\n\n外包人员的准入条件…"
     assert chunks[1].text == "第二条\n\n外包人员须签署保密协议…"
+
+
+def test_broken_dimension_still_reads_all_columns(tmp_path: Path) -> None:
+    """系统导出的 xlsx 常带不完整的 <dimension>;read_only=True 流式只吐 A1 一格。
+
+    回归:预览与抽取都必须用 read_only=False 物化全部行,否则表头/数据读不全,
+    直接报"可用表头:内部制度名称"。
+    """
+    wb_path = tmp_path / "内规库.xlsx"
+    _write_workbook(
+        wb_path,
+        [
+            {"doc": "网络数据安全管理条例", "id": "第一条", "text": "为了规范网络数据处理活动。"},
+            {"doc": "网络数据安全管理条例", "id": "第二条", "text": "适用对象为本公司。"},
+        ],
+    )
+    _break_dimension_ref(wb_path)
+
+    docs = split_workbook(wb_path)
+    assert [d.doc_id for d in docs] == ["网络数据安全管理条例"]
+    assert [(b.type, b.text) for b in docs[0].blocks] == [
+        ("title", "第一条"), ("paragraph", "为了规范网络数据处理活动。"),
+        ("title", "第二条"), ("paragraph", "适用对象为本公司。"),
+    ]
 
 
 def test_blank_article_id_inferred_from_text(tmp_path: Path) -> None:
