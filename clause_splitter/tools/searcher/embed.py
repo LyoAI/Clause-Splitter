@@ -70,6 +70,7 @@ def embed_store(
     embedder,
     index_dir: str | Path | None = None,
     rebuild: bool = False,
+    append_new: bool = False,
 ) -> Path:
     """Embed all chunks and persist a flat faiss index (cosine similarity).
 
@@ -78,6 +79,14 @@ def embed_store(
     half-written index is never treated as a hit). Corpus vectors are
     L2-normalized before storage, so inner-product search equals cosine.
 
+    Incremental modes:
+    - ``rebuild=True`` — full re-embed of every chunk.
+    - ``append_new=True`` (and not rebuild) — only chunks whose id is missing
+      from ``vector_ids.json`` are embedded and appended; existing rows stay.
+      **Only safe when the change is a pure addition** (no modified / removed
+      documents): a modified doc can shift its chunk ids, leaving stale rows
+      that must be rebuilt, not appended to. The caller decides.
+
     Args:
         store: The corpus store; vectors are computed from each chunk's text.
         embedder: Object with ``encode_batch(texts) -> (n, dim)`` — e.g. an
@@ -85,6 +94,7 @@ def embed_store(
         index_dir: Where to write the index. Defaults to the store's per-corpus
             cache: ``.cache/<store.cache_key()>/faiss``.
         rebuild: Force a re-embed even when a cached index exists.
+        append_new: Embed and append only new chunks (pure-addition updates).
 
     Returns:
         ``index_dir``, ready to pass to ``FaissSearcher(index_dir=...)``.
@@ -115,6 +125,31 @@ def embed_store(
             "Faiss index persisted (%d vectors, dim=%d) in %.1fs at %s",
             index.ntotal, index.d, perf_counter() - t0, index_dir,
         )
-    else:
-        logger.info("Reusing cached faiss index at %s", index_dir)
+        return index_dir
+
+    if append_new:
+        import faiss  # noqa: F401 — only on the append path
+
+        existing_ids = json.loads(ids_file.read_text(encoding="utf-8"))
+        known = set(existing_ids)
+        new_chunks = [c for c in store.all_chunks() if c.chunk_id not in known]
+        if not new_chunks:
+            logger.info("Faiss index up-to-date (%d vectors) at %s", len(existing_ids), index_dir)
+            return index_dir
+        index = faiss.read_index(str(index_file))
+        t0 = perf_counter()
+        vectors = embedder.encode_batch([c.text for c in new_chunks])
+        index.add(np.ascontiguousarray(vectors, dtype=np.float32))
+        faiss.write_index(index, str(index_file))
+        ids_file.write_text(
+            json.dumps(existing_ids + [c.chunk_id for c in new_chunks], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        logger.info(
+            "Faiss index appended %d new vectors → %d total in %.1fs at %s",
+            len(new_chunks), index.ntotal, perf_counter() - t0, index_dir,
+        )
+        return index_dir
+
+    logger.info("Reusing cached faiss index at %s", index_dir)
     return index_dir

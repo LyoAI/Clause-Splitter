@@ -24,6 +24,35 @@ class CoverageStatus(str, Enum):
     NOT_COVERED = "缺失"
 
 
+# ── Retrieved candidate (HTML 复核展示) ──────────────────────────────────
+
+class RetrievedCandidate(BaseModel):
+    """One top-k internal clause retrieved for an external clause.
+
+    Display-only evidence for the 作业人员 review page: the deterministic batch
+    pre-retrieval that produced it never changes the episode semantics — it just
+    shows what was recalled so the operator can judge relevance / trust.
+    """
+
+    chunk_id: str = Field(..., description="Internal chunk id (doc_id#order)")
+    doc_name: str = Field(default="", description="Internal regulation name (doc_id)")
+    clause_label: str = Field(
+        default="",
+        description="Section leaf of the chunk — e.g. '第一条' or '第一章　总则'",
+    )
+    backend: str = Field(
+        default="", description="Which searcher(s) recalled it: grep|bm25|faiss (comma-joined)",
+    )
+    score: float | None = Field(default=None, description="Best score across searchers (nullable)")
+    query: str = Field(default="", description="The external clause text used as the query")
+    snippet: str = Field(default="", description="Truncated, keyword-highlighted snippet")
+    full_text: str = Field(default="", description="Full chunk text (expandable in the HTML)")
+    adopted: bool = Field(
+        default=False,
+        description="True when the episode's grounding adopted this chunk as the match",
+    )
+
+
 # ── Match result ──────────────────────────────────────────────────────────
 
 class MatchResult(BaseModel):
@@ -80,6 +109,11 @@ class MatchResult(BaseModel):
     remedy_suggestion: str = Field(
         default="",
         description="Suggested fix for gap or partial coverage",
+    )
+    retrieved_candidates: list[RetrievedCandidate] = Field(
+        default_factory=list,
+        description="Top-k internal clauses batch-pre-retrieved for this external "
+                    "clause (display-only review evidence, not part of the episode)",
     )
 
 

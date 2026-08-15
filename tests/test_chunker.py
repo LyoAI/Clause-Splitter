@@ -1,7 +1,8 @@
 """Tests for hierarchy-aware chunking (``chunker.chunk_doc``).
 
-Covers the approved design: level-≤3 headings open chunks and drive the section
-path; deeper sub-headings stay in the chunk; tables stay embedded in their
+Covers the approved design: level-≤4 headings open chunks and drive the section
+path (default 4 = the deepest regulation marker level, so per-条 chunking
+works); deeper sub-headings stay in the chunk; tables stay embedded in their
 section and are never split; page furniture goes to ``meta``, never text; the
 resulting ``meta`` carries page / pages / section / table_ids.
 """
@@ -73,14 +74,14 @@ def test_sub_heading_below_level_stays_in_chunk() -> None:
     blocks = [
         h(1, "财务报告"),
         h(3, "合并资产负债表"),
-        h(4, "流动资产"),
+        h(5, "流动资产"),
         p("货币资金余额较高。"),
-        h(4, "非流动资产"),
+        h(5, "非流动资产"),
         p("固定资产占比低。"),
     ]
     chunks = chunk_doc("doc.pdf", blocks)
-    # level-4 subtitles are not boundaries: heading + subtitle + paragraph live
-    # in one chunk so the granularity never gets too fine.
+    # level-5 subtitles are not boundaries (CHUNK_LEVEL=4): heading + subtitle +
+    # paragraph live in one chunk so the granularity never gets too fine.
     assert len(chunks) == 1
     assert chunks[0].meta["section"] == "财务报告 > 合并资产负债表"
     assert "流动资产" in chunks[0].text and "非流动资产" in chunks[0].text
@@ -97,7 +98,7 @@ def test_bare_heading_without_body_is_not_emitted() -> None:
 def test_doc_sections_emits_toc_for_boundary_headings() -> None:
     blocks = [
         h(1, "财务报告", page=40),
-        h(4, "流动资产"),  # below CHUNK_LEVEL → not a TOC entry
+        h(5, "流动资产"),  # below CHUNK_LEVEL → not a TOC entry
         p("货币资金余额较高。"),
         h(3, "合并资产负债表", page=41),
         p("以下为期末资产情况。"),

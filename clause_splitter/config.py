@@ -47,6 +47,9 @@ PROMPT_LANG = os.getenv("PROMPT_LANG", "zh")
 SEARCHER_TYPE = os.getenv("SEARCHER_TYPE", "hybrid")
 # Fixed number of hits every search tool returns.
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "10"))
+# Top-k internal clauses surfaced on the HTML review page for each external
+# clause (deterministic batch pre-retrieval, display-only).
+REVIEW_TOP_K = int(os.getenv("REVIEW_TOP_K", "10"))
 # Max tokens per search snippet exposed to the LLM (truncated once, in the registry).
 SNIPPET_MAX_TOKENS = int(os.getenv("SNIPPET_MAX_TOKENS", "512"))
 # Max span (inclusive offsets) of a get_context window.
@@ -74,10 +77,14 @@ MINERU_BACKEND = os.getenv("MINERU_BACKEND", "pipeline")
 # Directory name under ``doc_cache_dir(name)`` holding MinerU's output.
 MINERU_MD_DIRNAME = "md"
 # Structure chunking: a ``title`` block with level <= CHUNK_LEVEL opens a new
-# chunk; deeper sub-headings stay inside the current chunk. Coarse by design:
-# internal-regulation corpora are indexed at chapter/section granularity, not
-# per-clause.
-CHUNK_LEVEL = int(os.getenv("CHUNK_LEVEL", "3"))
+# chunk; deeper sub-headings stay inside the current chunk.
+# Default 4 = the deepest regulation marker level (编=1, 章=2, 节=3, 条=4) as
+# assigned by ``headings.infer_regulation_headings`` — so every 第X条 opens its
+# own retrieval unit (unified per-article granularity), with chapters kept as
+# ``meta.section`` context. Non-regulation documents (no markers) still use
+# MinerU's own heading levels. Set 3 (or lower) to go back to coarse
+# chapter-level chunks.
+CHUNK_LEVEL = int(os.getenv("CHUNK_LEVEL", "4"))
 # Soft token budget per chunk (oversized sections are split, tables kept whole).
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
 # Adjacent chunks smaller than this many tokens merge into the previous one
@@ -86,13 +93,23 @@ CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", "50"))
 
 # ── Index cache ────────────────────────────────────────────────────────
 # Derived per-corpus cache root: .cache/<store_name>/{store, chunks, bm25, faiss}.
+# ``INDEX_CACHE_DIR`` relocates it (e.g. a shared network volume); ``--index-dir``
+# on run_index.py / run_compare.py wins over this env var.
 CACHE_DIR = REPO_ROOT / ".cache"
+INDEX_CACHE_DIR = os.getenv("INDEX_CACHE_DIR", "")
 
 
-def doc_cache_dir(store_name: str) -> Path:
+def doc_cache_dir(store_name: str, root: str | Path | None = None) -> Path:
     """Root for one corpus's derived artifacts: materialized chunk txt,
-    the BM25 Lucene index, the faiss vector db, and the serialized store."""
-    return CACHE_DIR / store_name
+    the BM25 Lucene index, the faiss vector db, and the serialized store.
+
+    Args:
+        store_name: Corpus identity (e.g. "internal" → ``<root>/internal/``).
+        root: Override the cache parent; default ``INDEX_CACHE_DIR`` env var,
+            then ``CACHE_DIR``.
+    """
+    base = Path(root) if root else (Path(INDEX_CACHE_DIR) if INDEX_CACHE_DIR else CACHE_DIR)
+    return base / store_name
 
 
 # ── Split-pipeline thresholds (legacy Settings) ────────────────────────

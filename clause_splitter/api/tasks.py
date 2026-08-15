@@ -28,6 +28,7 @@ class TaskState:
     result_json_path: str = ""
     result_excel_path: str = ""
     result_report_path: str = ""
+    result_review_path: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 

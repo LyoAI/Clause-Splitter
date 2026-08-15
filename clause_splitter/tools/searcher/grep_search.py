@@ -53,12 +53,13 @@ class GrepSearcher(BaseSearcher):
             )
 
     def search(self, query: str, k: int) -> list[Hit]:
-        # -F: literal match (no regex), -g '*.txt': skip manifest.json.
+        # -F: literal match (no regex), -U: allow literal newlines (clause text is
+        # multi-paragraph), -g '*.txt': skip manifest.json.
         t0 = perf_counter()
         try:
             proc = subprocess.run(
                 [
-                    "rg", "-c", "--count-matches", "-F", "--no-heading",
+                    "rg", "-c", "--count-matches", "-F", "-U", "--no-heading",
                     "-g", "*.txt", query, str(self.rg_dir),
                 ],
                 capture_output=True,

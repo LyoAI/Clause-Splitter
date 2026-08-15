@@ -127,6 +127,7 @@ async def _run_compare(
     from clause_splitter.compare.index import prepare_docs
     from clause_splitter.compare.loader import load_external_clauses
     from clause_splitter.compare.report import generate_gap_report
+    from clause_splitter.compare.review import render_review_html
 
     task = manager.get(task_id)
     if task is None:
@@ -150,12 +151,14 @@ async def _run_compare(
             result.model_dump_json(indent=2, ensure_ascii=False), encoding="utf-8"
         )
         rep = generate_gap_report(result, store, llm, output_dir=str(out_dir))
+        review_path = render_review_html(result, out_dir / "内规检索复核.html", store_name="internal")
 
         task.update(
             status="completed", progress=100.0, current_step="比对完成",
             total_obligations=result.total_external_obligations,
             result_json_path=str(out_dir / "compare_result.json"),
             result_report_path=rep["report_path"],
+            result_review_path=str(review_path),
         )
         logger.info("任务 %s 比对完成: 覆盖 %.1f%%", task_id, result.coverage_rate * 100)
     except Exception as e:  # noqa: BLE001
@@ -205,6 +208,16 @@ async def download_report(task_id: str, manager: TaskManager = Depends(get_task_
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="差距分析报告不存在")
     return _file_response(path, "内外规合规差距分析报告.md")
+
+
+@router.get("/result/{task_id}/review")
+async def download_review(task_id: str, manager: TaskManager = Depends(get_task_manager)):
+    """下载内规检索复核页(自包含 HTML,浏览器打开)。"""
+    task = _task_or_404(manager, task_id)
+    path = task.result_review_path or ""
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="内规检索复核页不存在")
+    return _file_response(path, "内规检索复核.html")
 
 
 def _file_response(path: str, filename: str):

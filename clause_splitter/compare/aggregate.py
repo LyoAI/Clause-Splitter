@@ -24,6 +24,7 @@ from clause_splitter.config import (
     EMBED_MODEL,
     EPISODE_TIMEOUT_S,
     MAX_TOOL_CALLS,
+    REVIEW_TOP_K,
     SEARCH_TOP_K,
     SNIPPET_MAX_TOKENS,
     doc_cache_dir,
@@ -34,6 +35,7 @@ from clause_splitter.tools.searcher.store import DocumentStore
 from clause_splitter.utils import get_logger
 from .episode import ExternalClause, run_clause_episode
 from .ground import ground_episode, parse_answer_json
+from .retrieve import pre_retrieve
 
 logger = get_logger()
 
@@ -56,7 +58,8 @@ def _build_registry(
     faiss 后端依赖 embedding 模型 + 持久化索引;两者任一不可用时降级跳过,
     不阻塞 hybrid(grep+bm25 仍可用)。
     """
-    cache_root = doc_cache_dir(store.cache_key())
+    # 与索引构建同址:store 记录了自己落在哪个 cache root(自定义位置)。
+    cache_root = doc_cache_dir(store.cache_key(), root=store.index_root or None)
     chunks_dir = str(cache_root / "chunks")
     faiss_dir = cache_root / "faiss"
 
@@ -125,6 +128,7 @@ async def run_compare(
     model: str = "",
     provider: str = "",
     company: str = "",
+    review_top_k: int = REVIEW_TOP_K,
 ) -> CompareResult:
     """跑全部外规条款的比对 episode,聚合为 CompareResult。
 
@@ -135,6 +139,8 @@ async def run_compare(
         searcher: grep / bm25 / faiss / hybrid(默认 hybrid 三工具全绑)。
         persist_dir: 非空则把每条 episode 轨迹落盘到该目录。
         model/provider/company: 落盘元数据。
+        review_top_k: 每条外规条款附带展示的确定性批量预召回候选数
+            (纯展示证据,不参与 episode;grounding 采用的条目打「✓ 采用」)。
 
     Returns:
         CompareResult;matches 与 external_clauses 一一对应(顺序一致)。
@@ -160,6 +166,20 @@ async def run_compare(
     )
     sem = asyncio.Semaphore(concurrency)
 
+    def _attach_candidates(match: MatchResult, ext: ExternalClause) -> None:
+        """附上批量预召回候选(复核页展示用),并标记 grounding 采用的条目。"""
+        try:
+            candidates = pre_retrieve(
+                store, list(registry.searchers.values()),
+                ext.full_text, top_k=review_top_k,
+            )
+            adopted = match.matched_internal_id
+            for cand in candidates:
+                cand.adopted = adopted is not None and cand.chunk_id == adopted
+            match.retrieved_candidates = candidates
+        except Exception as e:  # noqa: BLE001 — 展示数据失败不拖垮批量
+            logger.warning("pre_retrieve 失败(%s),复核页该条无候选: %s", ext.clause_id, e)
+
     async def _run_one(ext: ExternalClause) -> MatchResult:
         async with sem:
             try:
@@ -168,10 +188,14 @@ async def run_compare(
                 )
             except asyncio.TimeoutError:
                 logger.warning("episode 超时(%.0fs): %s", episode_timeout, ext.clause_id)
-                return _timeout_match(ext, episode_timeout)
+                match = _timeout_match(ext, episode_timeout)
+                _attach_candidates(match, ext)
+                return match
             except Exception as e:  # noqa: BLE001 — 单条失败不拖垮整批
                 logger.error("episode 失败 %s: %s", ext.clause_id, e)
-                return _timeout_match(ext, episode_timeout)
+                match = _timeout_match(ext, episode_timeout)
+                _attach_candidates(match, ext)
+                return match
 
             if persist_dir:
                 persist_result(
@@ -179,7 +203,9 @@ async def run_compare(
                     model=model, provider=provider, company=company,
                     searcher=searcher, query_id=ext.clause_id,
                 )
-            return MatchResult(**ground_episode(result, store, ext))
+            match = MatchResult(**ground_episode(result, store, ext))
+            _attach_candidates(match, ext)
+            return match
 
     matches = await asyncio.gather(*(_run_one(c) for c in external_clauses))
 

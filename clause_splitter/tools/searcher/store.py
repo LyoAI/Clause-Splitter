@@ -102,6 +102,12 @@ class DocumentStore:
         self.vector_ids: list[str] = []
         # filename -> chunk_id map, populated by ``materialize``
         self.manifest: dict[str, str] = {}
+        # doc_id -> {"path", "sha256", "kind", "source_file"} provenance, filled
+        # by ``ingest``; the basis for incremental index updates (Part B).
+        self.sources: dict[str, dict] = {}
+        # Cache root the store was persisted under ('' = default CACHE_DIR);
+        # persisted in meta.json so a later compare run locates the indexes.
+        self.index_root: str = ""
 
     # ------------------------------------------------------------------ add --
 
@@ -222,9 +228,13 @@ class DocumentStore:
                     f.write(
                         json.dumps({"doc_id": doc_id, **asdict(s)}, ensure_ascii=False) + "\n"
                     )
-        # 持久化 name → cache_key() 往返一致(索引目录名复用)。
+        # 持久化 name → cache_key() 往返一致(索引目录名复用);
+        # index_root → 之后比对/更新能定位同一组索引(自定义存储位置)。
         with (out_dir / "meta.json").open("w", encoding="utf-8") as f:
-            json.dump({"name": self.name}, f, ensure_ascii=False)
+            json.dump({"name": self.name, "index_root": self.index_root}, f, ensure_ascii=False)
+        # 源文件清单 —— 增量更新的差分基础。
+        with (out_dir / "sources.json").open("w", encoding="utf-8") as f:
+            json.dump(self.sources, f, ensure_ascii=False, indent=2)
 
     @classmethod
     def load_from_jsonl(cls, in_dir: str | Path) -> "DocumentStore":
@@ -233,7 +243,9 @@ class DocumentStore:
         store = cls()
         meta_file = in_dir / "meta.json"
         if meta_file.exists():
-            store.name = json.loads(meta_file.read_text(encoding="utf-8")).get("name")
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            store.name = meta.get("name")
+            store.index_root = str(meta.get("index_root", "") or "")
         for line in (in_dir / "chunks.jsonl").read_text(encoding="utf-8").splitlines():
             store.add_chunk(Chunk(**json.loads(line)))
         sections_file = in_dir / "sections.jsonl"
@@ -241,4 +253,7 @@ class DocumentStore:
             for line in sections_file.read_text(encoding="utf-8").splitlines():
                 rec = json.loads(line)
                 store.add_section(rec.pop("doc_id"), Section(**rec))
+        sources_file = in_dir / "sources.json"
+        if sources_file.exists():
+            store.sources = json.loads(sources_file.read_text(encoding="utf-8"))
         return store
