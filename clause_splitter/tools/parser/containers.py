@@ -36,6 +36,17 @@ logger = get_logger()
 _UNNAMED_DOC = "_未命名文档_"
 
 
+def _strip_doc_title_brackets(name: str) -> str:
+    """去掉制度名外层的一对书名号(内部制度名称常直接写成《XX办法》)。
+
+    否则 doc_id 会变成《《XX办法》》的双书名号。只剥最外层一对,保留中间内容。
+    """
+    name = name.strip()
+    if len(name) > 2 and name.startswith("《") and name.endswith("》"):
+        return name[1:-1].strip()
+    return name
+
+
 @dataclass
 class RegulationDoc:
     """One regulation extracted from a container workbook."""
@@ -87,7 +98,7 @@ def split_workbook(path: str | Path) -> list[RegulationDoc]:
 
     docs: list[RegulationDoc] = []
     for doc_name, articles in groups.items():
-        doc_id = (doc_name or "").strip() or _UNNAMED_DOC
+        doc_id = _strip_doc_title_brackets(doc_name) or _UNNAMED_DOC
         blocks: list[Block] = []
         order = 0
         for art in articles:

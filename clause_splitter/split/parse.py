@@ -349,15 +349,24 @@ _DOC_NAME_KEYWORDS = [
     "document_name", "regulation_name",
 ]
 _SECTION_KEYWORDS = ["章节", "所属章节", "章", "节", "section", "chapter"]
+# 整篇制度全文列:内网模板常见的「制度内容」列,每行重复同一篇制度的完整内容。
+# 这种列不能进 chunk —— 否则每个检索单元都≈整篇制度,检索失去区分度;也不能当
+# additional_context(会被拼到每一行条款前面)。检测到即整列跳过。
+_FULL_TEXT_KEYWORDS = [
+    "制度内容", "制度全文", "全文内容", "完整内容", "整篇内容",
+    "full_document",
+]
+# 真正"每行一条的补充上下文"列(适用条件 / 备注 等),会拼在条款内容之前。
 _CONTEXT_KEYWORDS = [
-    "制度内容", "外规内容", "法规内容", "全文",
-    "document_content", "full_text",
+    "适用条件", "适用范围", "适用对象", "备注",
+    "document_context", "context",
 ]
 _HEADER_KEYWORDS = (
     *_ARTICLE_TEXT_KEYWORDS,
     *_ARTICLE_ID_KEYWORDS,
     *_DOC_NAME_KEYWORDS,
     *_SECTION_KEYWORDS,
+    *_FULL_TEXT_KEYWORDS,
     *_CONTEXT_KEYWORDS,
 )
 
@@ -404,19 +413,24 @@ def _find_header_row(ws, max_scan: int = 5) -> int:
     return best_row
 
 
+def _match(col_name: str, keywords: list[str]) -> bool:
+    """表头名(任意大小写/空格/括注)是否包含任一关键词。"""
+    norm = _normalize_column_header(col_name).lower()
+    return any(kw.lower() in norm for kw in keywords)
+
+
 def _heuristic_column_detection(preview: dict) -> dict[str, str] | None:
     """无 LLM 时按关键词匹配表头(带内容兜底 + 制度名内容推断)。"""
     headers = preview.get("column_headers", {})
     if not headers:
         return None
 
-    def _match(col_name: str, keywords: list[str]) -> bool:
-        norm = _normalize_column_header(col_name).lower()
-        return any(kw.lower() in norm for kw in keywords)
-
     mapping: dict[str, str] = {}
     for col_letter, col_name in sorted(headers.items()):
         if not col_name:
+            continue
+        if _match(col_name, _FULL_TEXT_KEYWORDS):
+            # 整篇制度全文列(每行同一篇完整内容)→ 整列跳过,不进 chunk。
             continue
         if not mapping.get("article_text") and _match(col_name, _ARTICLE_TEXT_KEYWORDS):
             mapping["article_text"] = col_name
@@ -471,6 +485,9 @@ def _find_text_column_by_content(preview: dict) -> dict[str, str] | None:
     best_col = None
     best_avg = 0
     for col_letter, lengths in col_lengths.items():
+        if _match(headers.get(col_letter, ""), _FULL_TEXT_KEYWORDS):
+            # 整篇制度全文列(每行同一篇完整内容)→ 兜底也不选它当条款内容。
+            continue
         avg = sum(lengths) / len(lengths) if lengths else 0
         if avg > best_avg and avg > 20:
             best_avg = avg

@@ -167,6 +167,41 @@ def test_custom_doc_name_header_detected_by_content(tmp_path: Path) -> None:
     assert len(docs[1].blocks) == 2
 
 
+def test_real_layout_ignores_full_doc_text_column(tmp_path: Path) -> None:
+    """内网真实模板:每行含「制度内容」(整篇全文,每行重复)+「条款内容」。
+
+    期望:「制度内容」不进任何 chunk(否则每块都≈整篇制度),doc_id 不带双重《》,
+    检索标签用「条款名称」(第一节/第二节),每行 = 一条。
+    """
+    wb_path = tmp_path / "内规库.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["内部制度名称", "制度内容", "IOBS_KEY", "章节", "条款名称", "条款内容"])
+    full_a = "【完整制度全文】第一条　外包人员的准入条件…第二条　须签署保密协议…（整篇重复）"
+    full_b = "【完整制度全文】第一条　数据分级分类…（整篇重复）"
+    ws.append(["《IT人力外包管理办法》", full_a, "K001", "第一章", "第一节", "第一条　外包人员的准入条件…"])
+    ws.append(["《IT人力外包管理办法》", full_a, "K002", "第一章", "第二节", "第二条　外包人员须签署保密协议…"])
+    ws.append(["《数据安全管理细则》", full_b, "K003", "第一章", "第一节", "第一条　数据分级分类…"])
+    wb.save(wb_path)
+
+    docs = split_workbook(wb_path)
+    # doc_id 不再出现《《…》》双书名号。
+    assert [d.doc_id for d in docs] == ["IT人力外包管理办法", "数据安全管理细则"]
+
+    reg = docs[0]
+    assert [(b.type, b.text) for b in reg.blocks] == [
+        ("title", "第一节"), ("paragraph", "第一条　外包人员的准入条件…"),
+        ("title", "第二节"), ("paragraph", "第二条　外包人员须签署保密协议…"),
+    ]
+    chunks = chunk_doc(reg.doc_id, infer_regulation_headings(reg.blocks), min_tokens=0)
+    # 条款名称(节)作为 section 父级,正文里的真实条号(第一条)作为叶子。
+    assert [c.meta["section"] for c in chunks] == ["第一节 > 第一条", "第二节 > 第二条"]
+    # 制度内容(整篇全文)绝不能进 chunk。
+    assert all("【完整制度全文】" not in c.text for c in chunks)
+    assert chunks[0].text == "第一条\n\n外包人员的准入条件…"
+    assert chunks[1].text == "第二条\n\n外包人员须签署保密协议…"
+
+
 def test_blank_article_id_inferred_from_text(tmp_path: Path) -> None:
     wb_path = tmp_path / "内规库.xlsx"
     _write_workbook(
