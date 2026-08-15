@@ -1,0 +1,7 @@
+# Copy to pingan-qwen.yaml and fill credentials via env — never commit real keys.
+pingan:
+  api_base: ${PINGAN_API_BASE}
+  appKey: ${PINGAN_APP_KEY}
+  appSecret: ${PINGAN_APP_SECRET}
+  sceneId: ${PINGAN_SCENE_ID}
+  model_name: qwen2.5-72b

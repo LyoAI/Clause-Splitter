@@ -1,0 +1,193 @@
+"""Grounding —— 把 agent 判定落到可核实的 MatchResult,防幻觉.
+
+历史教训:"批量 0% 覆盖" bug —— agent 声称已覆盖,但引用的内规 ID 不在
+检索结果里。三道防线:
+1. 答案契约只允许引用轨迹内 chunk_id(agent/prompts.py 铁律)。
+2. ``ground_episode`` 硬校验:每个 claimed id 必须 ∈ seen 集 且 ∈ store。
+   不落地的 claim 一律去掉。
+3. 覆盖性判定(完全覆盖/部分覆盖)若没有任何可接地 claim → 降级为 缺失,
+   analysis 整体替换为降级文案,防止编造的引用混进差距报告。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from clause_splitter.agent import AgentResult, AgentTurn
+from clause_splitter.models import CoverageStatus
+from clause_splitter.utils import get_logger
+from .episode import ExternalClause
+from ..tools.searcher.store import DocumentStore
+
+logger = get_logger()
+
+_DOWNGRADE_ANALYSIS = (
+    "内规库中未检索到可承接的候选条款。判定声称已覆盖，但引用的内规条款 ID "
+    "无法对应到任何检索结果（疑似幻觉），已降级为缺失。请人工复核该外规义务是否确有内规承接。"
+)
+_DOWNGRADE_REMEDY = "待人工复核：确认是否需要新增或修订内规条款以承接该外部义务。"
+
+_ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+
+
+def parse_answer_json(raw_answer: str) -> dict[str, Any] | None:
+    """从 agent 最终消息的 ``<answer>…</answer>`` 中提取 JSON。
+
+    提取失败返回 None(由调用方决定降级)。
+    """
+    m = _ANSWER_RE.search(raw_answer)
+    body = m.group(1).strip() if m else raw_answer.strip()
+    if not body:
+        return None
+    try:
+        parsed = json.loads(body)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def collect_seen_chunk_ids(trajectory: list[AgentTurn]) -> set[str]:
+    """Union 所有 ``*_search`` / ``get_context`` 工具结果里的 chunk_id。
+
+    这是 grounding 的候选全集 —— 任何未被工具返回过的 chunk_id 一律视为幻觉。
+    """
+    seen: set[str] = set()
+    for turn in trajectory:
+        if not turn.tool_name.endswith("_search") and turn.tool_name != "get_context":
+            continue
+        try:
+            rows = json.loads(turn.tool_result)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict) and row.get("chunk_id"):
+                seen.add(str(row["chunk_id"]))
+    return seen
+
+
+def ground_episode(
+    result: AgentResult,
+    store: DocumentStore,
+    ext: ExternalClause,
+) -> dict[str, Any]:
+    """把一条 episode 的 AgentResult 转成可核实的 MatchResult dict。
+
+    Args:
+        result: 已完成的 episode。
+        store: 内规条款库(唯一文本来源)。
+        ext: 外规条款(回填外规出处与原文)。
+
+    Returns:
+        MatchResult 字段 dict。覆盖性 claim 无法落地时降级为 缺失。
+    """
+    # agent 若配置了 answer_parser=parse_answer_json,parsed_answer 已是 dict,
+    # 直接用;否则回退到从 raw_answer 提取。
+    parsed = result.parsed_answer if isinstance(result.parsed_answer, dict) else parse_answer_json(result.raw_answer)
+    status = _norm_status(parsed.get("status") if parsed else None)
+    claimed_ids = _norm_claimed_ids(parsed.get("matched_internal_clause_ids") if parsed else None)
+    analysis = str(parsed.get("analysis") or "") if parsed else ""
+    remedy = str(parsed.get("remedy_suggestion") or "") if parsed else ""
+
+    base = {
+        "external_clause_id": ext.clause_id,
+        "external_document_name": ext.document_name,
+        "external_article_id": ext.clause_number,
+        "external_source_text": ext.full_text,
+        "status": status,
+        "matched_internal_id": None,
+        "matched_internal_document_name": None,
+        "matched_internal_clause_number": "",
+        "matched_internal_source_text": "",
+        "analysis": analysis,
+        "remedy_suggestion": remedy,
+    }
+
+    # 缺失:无承接 —— 直接返回(claimed ids 即使有也不落地)。
+    if status == CoverageStatus.NOT_COVERED:
+        if not base["remedy_suggestion"]:
+            base["remedy_suggestion"] = _DOWNGRADE_REMEDY
+        return base
+
+    # 覆盖性判定 → 必须 grounding。
+    seen = collect_seen_chunk_ids(result.trajectory)
+    grounded: list[str] = []
+    evidence: dict[str, str] = {}
+    for cid in claimed_ids:
+        # 双硬校验:∈ seen 集 且 ∈ store。任一不过即丢弃该 claim。
+        if cid not in seen:
+            logger.warning("claim %r 不在检索轨迹内,丢弃", cid)
+            continue
+        chunk = store.get_chunk(cid)
+        if chunk is None:
+            logger.warning("claim %r 不在 store 中,丢弃", cid)
+            continue
+        grounded.append(cid)
+        # evidence 以 store 原文为准,不回读 agent 输出的改写文本。
+        ev = None
+        if parsed:
+            ev = parsed.get("evidence", {}).get(cid)
+        evidence[cid] = str(ev or chunk.text[:200])
+
+    if not grounded:
+        logger.warning(
+            "ext=%s status=%s 但无可接地 claim,降级为缺失",
+            ext.clause_id, status,
+        )
+        return {
+            **base,
+            "status": CoverageStatus.NOT_COVERED,
+            "analysis": _DOWNGRADE_ANALYSIS,
+            "remedy_suggestion": base["remedy_suggestion"] or _DOWNGRADE_REMEDY,
+        }
+
+    # 用第一承接条款回填 MatchResult 的内规侧字段(报告展示用)。
+    head = store.get_chunk(grounded[0])
+    head_meta = head.meta if head else {}
+    return {
+        **base,
+        "status": status,
+        "matched_internal_id": grounded[0],
+        "matched_internal_document_name": head_meta.get("doc", "") if head else None,
+        "matched_internal_clause_number": head_meta.get("clause_number", "") if head else "",
+        "matched_internal_source_text": head.text if head else "",
+        "analysis": _merge_analysis(analysis, grounded, evidence),
+    }
+
+
+# ── 归一化辅助 ─────────────────────────────────────────────────────────
+
+
+def _norm_status(value: Any) -> CoverageStatus:
+    """把 agent 输出的状态串归一到 CoverageStatus 枚举。"""
+    if value is None:
+        return CoverageStatus.NOT_COVERED
+    s = str(value).strip()
+    for status in CoverageStatus:
+        if s in (status.value, status.name):
+            return status
+    logger.warning("未知覆盖状态 %r,按缺失处理", value)
+    return CoverageStatus.NOT_COVERED
+
+
+def _norm_claimed_ids(value: Any) -> list[str]:
+    """归一化 claimed ids(兼容逗号分隔串 / 数组)。"""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, str):
+        return [x.strip() for x in value.split(",") if x.strip()]
+    return []
+
+
+def _merge_analysis(
+    analysis: str, grounded: list[str], evidence: dict[str, str]
+) -> str:
+    """把 grounding 结果附加到 analysis 后,标注承接条款。"""
+    lines = [analysis] if analysis else []
+    lines.append("承接内规条款: " + ", ".join(grounded))
+    return "\n".join(lines)

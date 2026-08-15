@@ -12,3 +12,12 @@ outputs/
 upload_materials/
 .cache/
 *.DS_Store
+
+# Secrets — never commit real API keys / credentials
+.env
+.env.*
+!.env.example
+
+# Per-model LLM credentials (yaml) — commit only *.example templates
+config/llm/*
+!config/llm/*.example
