@@ -193,7 +193,7 @@ class CompareResult(BaseModel):
         total = len(self.matches)
         if total == 0:
             return 0.0
-        return self.fully_covered_count / total
+        return (self.fully_covered_count + self.partially_covered_count) / total
 
     def to_summary_dict(self) -> dict:
         """Return a dict suitable for LLM consumption in summary report."""
@@ -202,10 +202,6 @@ class CompareResult(BaseModel):
             "internal_documents": self.internal_documents,
             "total_external_obligations": self.total_external_obligations,
             "total_internal_obligations": self.total_internal_obligations,
-            "fully_covered": self.fully_covered_count,
-            "partially_covered": self.partially_covered_count,
-            "not_covered": self.not_covered_count,
-            "coverage_rate": f"{self.coverage_rate:.1%}",
             "details": [m.model_dump() for m in self.matches],
         }
 

@@ -197,7 +197,6 @@ def _template_report(result: CompareResult) -> str:
 ## 摘要
 
 - **{scope}**
-- **核心发现**：完全覆盖 {result.fully_covered_count} 条、部分覆盖 {result.partially_covered_count} 条、缺失 {result.not_covered_count} 条（覆盖率 {result.coverage_rate:.1%}）。
 - **关键风险点**：
 {risk_lines}
 

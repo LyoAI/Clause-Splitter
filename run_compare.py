@@ -106,8 +106,7 @@ async def _run(args: argparse.Namespace) -> None:
     # 7) 打印统计。
     print("\n═══ 比对完成 ═══")
     print(f"外规条款: {result.total_external_obligations} | 内规条款: {result.total_internal_obligations}")
-    print(f"完全覆盖: {result.fully_covered_count} | 部分覆盖: {result.partially_covered_count} | 缺失: {result.not_covered_count}")
-    print(f"覆盖率(完全覆盖占比): {result.coverage_rate:.1%}")
+    print(f"覆盖率: {result.coverage_rate:.1%}")
     print(f"报告: {rep['report_path'] or '(未写盘)'} [模式: {rep['mode']}]")
     print(f"结果: {result_path}")
     print(f"复核页: {review_path} (浏览器打开)")
