@@ -105,6 +105,68 @@ def test_unrecognizable_workbook_raises(tmp_path: Path) -> None:
         split_workbook(wb_path)
 
 
+# ------------------------------------------------- internal-network layouts ---
+# 内网模板的常见错位:表头不在第 1 行、数据不在第一个 sheet、制度名列的表头
+# 用自定义名字(关键词覆盖不到)→ 这些用例保证 split_workbook 仍能按制度分组。
+
+
+def test_header_row_after_title_rows(tmp_path: Path) -> None:
+    """表头在第 3 行(前面是合并标题 + 编制信息行)也能被定位。"""
+    wb_path = tmp_path / "内规库.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["XX公司内部制度汇编"])            # row 1: 合并标题
+    ws.append(["编制部门:合规部  日期:2026-01-01"])  # row 2: 说明行
+    ws.append(["制度名称", "条款名称", "条款内容"])  # row 3: 真实表头
+    ws.append(["网络数据安全管理条例", "第一条", "为了规范网络数据处理活动。"])
+    ws.append(["网络数据安全管理条例", "第二条", "适用对象为本公司。"])
+    ws.append(["个人信息保护办法", "第一条", "个人信息处理应当遵循合法原则。"])
+    wb.save(wb_path)
+
+    docs = split_workbook(wb_path)
+    assert [d.doc_id for d in docs] == ["网络数据安全管理条例", "个人信息保护办法"]
+    assert [(b.type, b.text) for b in docs[0].blocks] == [
+        ("title", "第一条"), ("paragraph", "为了规范网络数据处理活动。"),
+        ("title", "第二条"), ("paragraph", "适用对象为本公司。"),
+    ]
+
+
+def test_data_on_second_sheet_skips_cover(tmp_path: Path) -> None:
+    """第一个 sheet 是封面(无表头关键词),第二个 sheet 才是数据表 → 自动选数据 sheet。"""
+    wb_path = tmp_path / "内规库.xlsx"
+    wb = openpyxl.Workbook()
+    cover = wb.active
+    cover.title = "封面"
+    cover.append(["XX公司制度汇编说明"])
+    cover.append(["仅供内部使用"])
+    data = wb.create_sheet("制度明细")
+    data.append(["内部制度名称", "条款内容"])
+    data.append(["数据安全管理办法", "第一条　数据分类分级。"])
+    data.append(["数据安全管理办法", "第二条　数据由专人管理。"])
+    wb.save(wb_path)
+
+    docs = split_workbook(wb_path)
+    assert [d.doc_id for d in docs] == ["数据安全管理办法"]
+    assert len(docs[0].blocks) == 4  # 条号 title + body × 2 条
+
+
+def test_custom_doc_name_header_detected_by_content(tmp_path: Path) -> None:
+    """制度名列表头叫「归属制度」(关键词未覆盖)→ 按"短值重复"从内容推断分组。"""
+    wb_path = tmp_path / "内规库.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["归属制度", "条款内容"])
+    ws.append(["制度甲", "第一条　甲内容一。"])
+    ws.append(["制度甲", "第二条　甲内容二。"])
+    ws.append(["制度乙", "第一条　乙内容一。"])
+    wb.save(wb_path)
+
+    docs = split_workbook(wb_path)
+    assert [d.doc_id for d in docs] == ["制度甲", "制度乙"]
+    assert len(docs[0].blocks) == 4
+    assert len(docs[1].blocks) == 2
+
+
 def test_blank_article_id_inferred_from_text(tmp_path: Path) -> None:
     wb_path = tmp_path / "内规库.xlsx"
     _write_workbook(

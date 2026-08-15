@@ -65,11 +65,14 @@ def split_workbook(path: str | Path) -> list[RegulationDoc]:
     if not mapping:
         headers = [h for h in preview.get("column_headers", {}).values() if h]
         raise ValueError(
-            f"无法识别 {path.name} 的条款内容列(表头: {headers});"
-            "请确认含「条款内容 / 制度名称」等列,或将 .xls 转为 .xlsx"
+            f"无法识别 {path.name} 的条款内容列(在 sheet「{preview.get('active_sheet', '?')}」"
+            f"检测到的表头: {headers});"
+            "请确认该表含「条款内容 / 制度名称」等列,或将 .xls 转为 .xlsx"
         )
 
-    extracted = extract_excel_articles(path, mapping)
+    extracted = extract_excel_articles(
+        path, mapping, sheet_name=preview.get("active_sheet"),
+    )
     if extracted.get("error"):
         raise ValueError(f"Excel 内规库抽取失败 {path.name}: {extracted['error']}")
 

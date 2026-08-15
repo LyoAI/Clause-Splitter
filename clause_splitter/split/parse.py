@@ -146,8 +146,8 @@ def parse_excel(
 
     if column_mapping is None or not column_mapping.get("article_text"):
         return _fail(
-            "无法识别 Excel 的列结构。请确保 Excel 第一行是表头，且包含条款内容列"
-            f"（如'条款内容'、'法规内容'等）。检测到的表头: "
+            "无法识别 Excel 的列结构。请确保表格包含条款内容列（如'条款内容'、"
+            "'法规内容'等；表头行和所在 sheet 会自动定位）。检测到的表头: "
             f"{list(preview.get('column_headers', {}).values())}"
         )
 
@@ -333,30 +333,82 @@ def _parse_llm_excel_output(content: str) -> dict | None:
 
 # ── 启发式列检测 ───────────────────────────────────────────────────────
 
+# 表头关键词族(模块级,供启发式列映射与表头行定位共用)。
+# 公司内网模板的表头五花八门(「内部制度名称」「制度条款内容」「条文」…),
+# 关键词用"包含"匹配,归一化去掉括号注释/空白后再比。
+_ARTICLE_TEXT_KEYWORDS = [
+    "条款内容", "法规条款", "制度条款", "条文内容", "具体条款", "条款正文",
+    "clause", "article_text", "content",
+]
+_ARTICLE_ID_KEYWORDS = [
+    "条款名称", "条款编号", "条款标题", "条目名称", "条文号",
+    "clause_name", "article_id", "title",
+]
+_DOC_NAME_KEYWORDS = [
+    "内部制度名称", "制度名称", "外规名称", "法规名称", "文档名称", "文件名称",
+    "document_name", "regulation_name",
+]
+_SECTION_KEYWORDS = ["章节", "所属章节", "章", "节", "section", "chapter"]
+_CONTEXT_KEYWORDS = [
+    "制度内容", "外规内容", "法规内容", "全文",
+    "document_content", "full_text",
+]
+_HEADER_KEYWORDS = (
+    *_ARTICLE_TEXT_KEYWORDS,
+    *_ARTICLE_ID_KEYWORDS,
+    *_DOC_NAME_KEYWORDS,
+    *_SECTION_KEYWORDS,
+    *_CONTEXT_KEYWORDS,
+)
+
+
+def _header_row_hits(cells: list[Any]) -> tuple[int, int]:
+    """(表头关键词命中数, 非空去重单元格数) —— 用于定位真实表头行。"""
+    kw_hits = 0
+    seen: set[str] = set()
+    for val in cells:
+        if val is None:
+            continue
+        norm = _normalize_column_header(str(val))
+        if not norm:
+            continue
+        seen.add(norm)
+        low = norm.lower()
+        if any(kw.lower() in low for kw in _HEADER_KEYWORDS):
+            kw_hits += 1
+    return kw_hits, len(seen)
+
+
+def _find_header_row(ws, max_scan: int = 5) -> int:
+    """返回真实表头行(1-based)。
+
+    公司内网模板常在第 1 行前有若干合并标题/格式行(旧 split 模板
+    ``header_rows=4 / data_start_row=5``)。逐行扫描前 ``max_scan`` 行,
+    取"表头关键词命中数最多、非空去重单元格最多"的行作为表头;完全找不到
+    关键词(裸表)时回退到行 1。
+    """
+    best_row = 1
+    best_score = (-1, -1)
+    for idx in range(1, max_scan + 1):
+        values = next(ws.iter_rows(min_row=idx, max_row=idx, values_only=True), None)
+        if values is None:
+            break
+        kw_hits, non_empty = _header_row_hits(values)
+        score = (kw_hits, non_empty)
+        if score > best_score:
+            best_score = score
+            best_row = idx
+    # 整个扫描区间都没有"表头样"的行(单个合并标题也算不上表头)→ 回退行 1。
+    if best_score == (0, 1) or best_score == (0, 0):
+        return 1
+    return best_row
+
 
 def _heuristic_column_detection(preview: dict) -> dict[str, str] | None:
-    """无 LLM 时按关键词匹配表头(带内容长度兜底)。"""
+    """无 LLM 时按关键词匹配表头(带内容兜底 + 制度名内容推断)。"""
     headers = preview.get("column_headers", {})
     if not headers:
         return None
-
-    ARTICLE_TEXT_KEYWORDS = [
-        "条款内容", "法规条款", "制度条款", "条文内容",
-        "clause", "article_text", "content",
-    ]
-    ARTICLE_ID_KEYWORDS = [
-        "条款名称", "条款编号", "条款标题", "条目名称",
-        "clause_name", "article_id", "title",
-    ]
-    DOC_NAME_KEYWORDS = [
-        "内部制度名称", "外规名称", "法规名称", "制度名称", "文档名称", "文件名称",
-        "document_name", "regulation_name",
-    ]
-    SECTION_KEYWORDS = ["章节", "所属章节", "章", "节", "section", "chapter"]
-    CONTEXT_KEYWORDS = [
-        "制度内容", "外规内容", "法规内容", "全文",
-        "document_content", "full_text",
-    ]
 
     def _match(col_name: str, keywords: list[str]) -> bool:
         norm = _normalize_column_header(col_name).lower()
@@ -366,18 +418,27 @@ def _heuristic_column_detection(preview: dict) -> dict[str, str] | None:
     for col_letter, col_name in sorted(headers.items()):
         if not col_name:
             continue
-        if not mapping.get("article_text") and _match(col_name, ARTICLE_TEXT_KEYWORDS):
+        if not mapping.get("article_text") and _match(col_name, _ARTICLE_TEXT_KEYWORDS):
             mapping["article_text"] = col_name
-        elif not mapping.get("article_id") and _match(col_name, ARTICLE_ID_KEYWORDS):
+        elif not mapping.get("article_id") and _match(col_name, _ARTICLE_ID_KEYWORDS):
             mapping["article_id"] = col_name
-        elif not mapping.get("document_name") and _match(col_name, DOC_NAME_KEYWORDS):
+        elif not mapping.get("document_name") and _match(col_name, _DOC_NAME_KEYWORDS):
             mapping["document_name"] = col_name
-        elif not mapping.get("section") and _match(col_name, SECTION_KEYWORDS):
+        elif not mapping.get("section") and _match(col_name, _SECTION_KEYWORDS):
             mapping["section"] = col_name
-        elif not mapping.get("additional_context") and _match(col_name, CONTEXT_KEYWORDS):
+        elif not mapping.get("additional_context") and _match(col_name, _CONTEXT_KEYWORDS):
             mapping["additional_context"] = col_name
 
     if mapping.get("article_text"):
+        # 有内容列但没匹配到制度名列 → 用"重复短值"从内容推断(常见:表头叫
+        # 「归属制度」「所在制度」等关键词没覆盖到的名字)。
+        if not mapping.get("document_name"):
+            doc_col = _find_document_column_by_content(
+                preview, exclude={_col_name_to_letter(headers, mapping["article_text"])}
+            )
+            if doc_col:
+                mapping["document_name"] = doc_col
+                logger.info("制度名列按内容推断: '%s' → document_name", doc_col)
         logger.info(
             "启发式列检测: article_text='%s', mapping=%s",
             mapping["article_text"], {k: v for k, v in mapping.items() if k != "article_text"},
@@ -387,8 +448,16 @@ def _heuristic_column_detection(preview: dict) -> dict[str, str] | None:
     return _find_text_column_by_content(preview)
 
 
+def _col_name_to_letter(headers: dict[str, str], col_name: str) -> str:
+    """表头名 → 列字母(反向查找)。"""
+    for letter, name in headers.items():
+        if name == col_name:
+            return letter
+    return ""
+
+
 def _find_text_column_by_content(preview: dict) -> dict[str, str] | None:
-    """兜底:平均文本长度最长的列(>20 字符)当作条款内容列。"""
+    """兜底 1:平均文本长度最长的列(>20 字符)当作条款内容列。"""
     samples = preview.get("samples", [])
     headers = preview.get("column_headers", {})
     if not samples or not headers:
@@ -408,12 +477,56 @@ def _find_text_column_by_content(preview: dict) -> dict[str, str] | None:
             best_col = col_letter
 
     if best_col and best_col in headers:
-        col_name = headers[best_col]
+        mapping: dict[str, str] = {"article_text": headers[best_col]}
+        doc_col = _find_document_column_by_content(preview, exclude={best_col})
+        if doc_col:
+            mapping["document_name"] = doc_col
+            logger.info("制度名列按内容推断: '%s' → document_name", doc_col)
         logger.info(
             "内容分析回退: 最长平均文本列 '%s' (%s) → article_text (avg %d chars)",
-            best_col, col_name, int(best_avg),
+            best_col, headers[best_col], int(best_avg),
         )
-        return {"article_text": col_name}
+        return mapping
+    return None
+
+
+def _find_document_column_by_content(
+    preview: dict, exclude: set[str] | None = None,
+) -> str | None:
+    """兜底 2:从内容推断"制度名"列 —— 短值、且在多行重复出现的列。
+
+    关键词匹配不到(表头叫「归属制度」「所在制度」等)时,制度名列的特征是:
+    值都很短(制度名 <40 字)、同一个制度名对应多行条款(重复率高),而条款内容
+    列基本不重复。取 (重复率 × 短值权重) 最高的未用列。
+    """
+    samples = preview.get("samples", [])
+    headers = preview.get("column_headers", {})
+    if not samples or not headers:
+        return None
+    exclude = exclude or set()
+
+    stats: dict[str, dict] = {}
+    for s in samples:
+        for col_letter, value in s.get("columns", {}).items():
+            if not value or col_letter in exclude:
+                continue
+            st = stats.setdefault(col_letter, {"rows": 0, "vals": set(), "max_len": 0})
+            st["rows"] += 1
+            st["vals"].add(value)
+            st["max_len"] = max(st["max_len"], len(value))
+
+    best_letter, best_score = None, 0.0
+    for col_letter, st in stats.items():
+        if st["rows"] < 3 or len(st["vals"]) <= 1:
+            continue
+        repetition = st["rows"] / len(st["vals"])
+        length_weight = 1.0 if 2 <= st["max_len"] <= 40 else 0.1
+        score = repetition * length_weight
+        if score > best_score:
+            best_score, best_letter = score, col_letter
+
+    if best_letter and best_letter in headers:
+        return headers[best_letter]
     return None
 
 
@@ -459,7 +572,13 @@ def _infer_article_id_from_text(text: str) -> str:
 
 
 def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, Any]:
-    """读 Excel 表头 + 样本行,供 LLM 分析列结构。"""
+    """读 Excel 表头 + 样本行,供 LLM / 启发式分析列结构。
+
+    自动处理两类内网模板的常见错位:
+    - 表头不在第 1 行(前面有合并标题/格式行)→ ``_find_header_row`` 定位真实表头行;
+    - 数据不在第一个 sheet(首 sheet 是封面/说明)→ 逐 sheet 比较表头关键词命中数,
+      选最像数据表的 sheet,记入 ``active_sheet`` 供抽取阶段复用。
+    """
     import openpyxl
 
     path = Path(file_path)
@@ -484,11 +603,24 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
         wb.close()
         return result
 
-    sheet_name = wb.sheetnames[0]
-    result["active_sheet"] = sheet_name
-    ws = wb[sheet_name]
+    # ── 选数据 sheet:表头关键词命中最多者;全都不像则取第一个 sheet ──
+    best_sheet = wb.sheetnames[0]
+    best_score = (-1, -1)
+    for sheet in wb.sheetnames:
+        ws = wb[sheet]
+        hr = _find_header_row(ws)
+        header_values = next(ws.iter_rows(min_row=hr, max_row=hr, values_only=True), ())
+        score = _header_row_hits(header_values)
+        if score > best_score:
+            best_sheet, best_score = sheet, score
 
-    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    result["active_sheet"] = best_sheet
+    ws = wb[best_sheet]
+
+    header_row_idx = _find_header_row(ws)
+    header_row = next(
+        ws.iter_rows(min_row=header_row_idx, max_row=header_row_idx, values_only=True), None
+    )
     col_letters: dict[int, str] = {}
     if header_row:
         for idx, val in enumerate(header_row):
@@ -496,7 +628,10 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
             result["column_headers"][col_letters[idx]] = str(val).strip() if val is not None else ""
 
     sample_count = 0
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+    data_start = header_row_idx + 1
+    for row_idx, row in enumerate(
+        ws.iter_rows(min_row=data_start, values_only=True), start=data_start
+    ):
         if sample_count >= max_rows:
             break
         if all(v is None or str(v).strip() == "" for v in row):
@@ -509,7 +644,7 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
         sample_count += 1
 
     total = 0
-    for row in ws.iter_rows(min_row=2, values_only=True):
+    for row in ws.iter_rows(min_row=data_start, values_only=True):
         if any(v is not None and str(v).strip() != "" for v in row):
             total += 1
         if total >= 5000:
@@ -518,8 +653,8 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
 
     wb.close()
     logger.info(
-        "Excel preview: %s [%s] — %d samples / ~%d total rows, %d headers",
-        path.name, sheet_name, sample_count, total, len(result["column_headers"]),
+        "Excel preview: %s [%s] header_row=%d — %d samples / ~%d total rows, %d headers",
+        path.name, best_sheet, header_row_idx, sample_count, total, len(result["column_headers"]),
     )
     return result
 
@@ -558,9 +693,13 @@ def extract_excel_articles(
         return result
     ws = wb[target_sheet]
 
-    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    # 与 preview 同一套表头行定位:前面可能有合并标题/格式行。
+    header_row_idx = _find_header_row(ws)
+    header_row = next(
+        ws.iter_rows(min_row=header_row_idx, max_row=header_row_idx, values_only=True), None
+    )
     if not header_row:
-        result["error"] = "Excel 文件第一行为空（需要表头行）"
+        result["error"] = f"Excel 第 {header_row_idx} 行为空（需要表头行）"
         wb.close()
         return result
 
@@ -603,7 +742,10 @@ def extract_excel_articles(
     row_count = 0
     document_groups: dict[str, list[dict[str, Any]]] = {}
 
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+    data_start = header_row_idx + 1
+    for row_idx, row in enumerate(
+        ws.iter_rows(min_row=data_start, values_only=True), start=data_start
+    ):
         if row_count >= max_rows:
             logger.warning("Reached max_rows limit (%d) for Excel extraction", max_rows)
             break
