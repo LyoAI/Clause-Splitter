@@ -28,6 +28,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 # 保证从任意 cwd 运行都能导入 clause_splitter
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -115,6 +116,39 @@ async def _run(args: argparse.Namespace) -> None:
     print(f"episode 轨迹: {persist_dir}")
 
 
+def _run_blocking(coro: Any) -> None:
+    """在任意环境(普通终端 / Jupyter / IPython / IDE 控制台)跑完一个协程。
+
+    原因:``asyncio.run()`` 要求当前线程**没有**运行中的事件循环;Jupyter /
+    IPython 等环境自带一个运行中的 loop,直接调用会抛
+    "asyncio.run() cannot be called from a running event loop"。
+    这里检测到已有 loop 时,把协程放进一个独立的 daemon 线程里用 ``asyncio.run``
+    执行(线程内没有 loop,允许),并把异常抛回主线程。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # 干净环境(普通终端)→ 常规路径。
+        asyncio.run(coro)
+        return
+
+    import threading
+
+    box: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            box["result"] = asyncio.run(coro)
+        except BaseException as e:  # noqa: BLE001 协程内的异常要抛回主线程
+            box["error"] = e
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="内外规比对 CLI(条款级 + 可插拔检索)")
     parser.add_argument("--external", required=True, help="外规来源:目录 / *_structure.json / 拆分结果 JSON / docx/pdf/txt")
@@ -151,7 +185,7 @@ def main() -> None:
     args.episode_timeout = args.episode_timeout or EPISODE_TIMEOUT_S
 
     try:
-        asyncio.run(_run(args))
+        _run_blocking(_run(args))
     except KeyboardInterrupt:
         print("\n已中断")
         sys.exit(130)
