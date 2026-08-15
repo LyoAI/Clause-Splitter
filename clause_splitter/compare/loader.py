@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -69,7 +68,7 @@ def external_clauses_from_file(path: Path) -> list[ExternalClause]:
     return clauses
 
 
-def load_external_clauses(external: str, output_dir: str, llm) -> list[ExternalClause]:
+async def load_external_clauses(external: str, output_dir: str, llm) -> list[ExternalClause]:
     """装载外规条款列表(目录 / JSON / 文本文档三种来源)。
 
     Args:
@@ -77,6 +76,12 @@ def load_external_clauses(external: str, output_dir: str, llm) -> list[ExternalC
             拆分结果 JSON / docx/pdf/txt(自动先拆分)。
         output_dir: 自动拆分时的产物目录。
         llm: ``LLM`` facade(自动拆分用)。
+
+    注意:async 函数。调用方必须在 async 上下文里 ``await``(两个调用方
+    ``run_compare._run`` 与 FastAPI ``_run_compare`` 均为 async)。
+    docx/pdf/txt 的自动拆分(``SplitPipeline.run``)在此被 await,而不是用
+    ``asyncio.run`` 新起 loop —— 否则在已有运行中 loop 的环境(Jupyter /
+    FastAPI / ``run_compare`` 入口)会抛 "cannot be called from a running event loop"。
     """
     path = Path(external)
     if path.is_dir():
@@ -102,8 +107,8 @@ def load_external_clauses(external: str, output_dir: str, llm) -> list[ExternalC
         print(f"[{p:5.1f}%] {step}")
 
     print(f"═══ 外规自动拆分: {path.name} ═══")
-    result = asyncio.run(
-        pipeline.run(path, document_name=path.name, output_dir=str(out_dir), progress=_progress)
+    result = await pipeline.run(
+        path, document_name=path.name, output_dir=str(out_dir), progress=_progress
     )
     print(f"拆分完成: {result.total_articles} 条款 → {result.total_obligations} 义务\n")
 

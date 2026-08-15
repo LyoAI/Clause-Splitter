@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Callable
 
+from clause_splitter.utils.async_util import run_coro
+
 from clause_splitter.llm import LLM, LLMResponse, ToolCallRequest
 from clause_splitter.tools import ToolRegistry
 from clause_splitter.utils import get_logger
@@ -119,8 +121,13 @@ class ReActAgent:
         self.force_answer_msg = get_force_answer_msg()
 
     def run(self, question: str) -> AgentResult:
-        """Sync convenience wrapper around the async loop."""
-        return asyncio.run(self.arun(question))
+        """Sync convenience wrapper around the async loop.
+
+        循环感知:已有运行中 loop(Jupyter / IPython / FastAPI)时在独立线程执行,
+        避免 "asyncio.run() cannot be called from a running event loop"。
+        对比流程内部走 ``arun``(async),此方法仅供外部同步调用方使用。
+        """
+        return run_coro(self.arun(question))
 
     async def arun(self, question: str) -> AgentResult:
         """Run one episode for ``question``.

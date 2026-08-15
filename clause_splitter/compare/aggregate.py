@@ -203,7 +203,19 @@ async def run_compare(
                     model=model, provider=provider, company=company,
                     searcher=searcher, query_id=ext.clause_id,
                 )
-            match = MatchResult(**ground_episode(result, store, ext))
+            try:
+                match = MatchResult(**ground_episode(result, store, ext))
+            except Exception as e:  # noqa: BLE001 — grounding/校验失败降级为缺失,不拖垮整批
+                logger.error("grounding 校验失败 %s: %s", ext.clause_id, e)
+                match = MatchResult(
+                    external_clause_id=ext.clause_id,
+                    external_document_name=ext.document_name,
+                    external_article_id=ext.clause_number,
+                    external_source_text=ext.full_text,
+                    status=CoverageStatus.NOT_COVERED,
+                    analysis="该条款比对结果无法落地(grounding 校验失败),已降级为缺失,需人工复核。",
+                    remedy_suggestion="待人工复核:确认该外规条款是否确有内规承接。",
+                )
             _attach_candidates(match, ext)
             return match
 

@@ -28,6 +28,8 @@ _DOWNGRADE_ANALYSIS = (
     "无法对应到任何检索结果（疑似幻觉），已降级为缺失。请人工复核该外规义务是否确有内规承接。"
 )
 _DOWNGRADE_REMEDY = "待人工复核：确认是否需要新增或修订内规条款以承接该外部义务。"
+#: agent 未给出分析文案时的缺省说明(MatchResult.analysis 要求非空)。
+_NOT_COVERED_ANALYSIS = "内规库中未检索到承接该外规义务的条款，判定为缺失。"
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 
@@ -110,6 +112,8 @@ def ground_episode(
     if status == CoverageStatus.NOT_COVERED:
         if not base["remedy_suggestion"]:
             base["remedy_suggestion"] = _DOWNGRADE_REMEDY
+        if not base["analysis"].strip():
+            base["analysis"] = _NOT_COVERED_ANALYSIS
         return base
 
     # 覆盖性判定 → 必须 grounding。
@@ -207,4 +211,5 @@ def _merge_analysis(
     """把 grounding 结果附加到 analysis 后,标注承接条款。"""
     lines = [analysis] if analysis else []
     lines.append("承接内规条款: " + ", ".join(grounded))
-    return "\n".join(lines)
+    # 过滤空行,避免 analysis 为空时结果以换行开头。
+    return "\n".join(line for line in lines if line.strip())

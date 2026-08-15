@@ -39,7 +39,7 @@ def _mini_store() -> DocumentStore:
     return store
 
 
-def _mk_result(status, claimed_ids, evidence, seen_chunk_ids) -> AgentResult:
+def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试", remedy="测试") -> AgentResult:
     """构造一个 agent episode:轨迹只返回 seen_chunk_ids,答案声称 claimed_ids。"""
     trajectory = [
         AgentTurn(
@@ -56,8 +56,8 @@ def _mk_result(status, claimed_ids, evidence, seen_chunk_ids) -> AgentResult:
             "status": status,
             "matched_internal_clause_ids": claimed_ids,
             "evidence": {k: v for k, v in evidence.items()},
-            "analysis": "测试",
-            "remedy_suggestion": "测试",
+            "analysis": analysis,
+            "remedy_suggestion": remedy,
         },
         ensure_ascii=False,
     )
@@ -100,3 +100,33 @@ def test_missing_status_passes_through():
     r = ground_episode(_mk_result("缺失", [], {}, [REAL_ID]), store, EXT)
     assert r["status"] == CoverageStatus.NOT_COVERED
     assert r["matched_internal_id"] is None
+
+
+def test_not_covered_empty_analysis_falls_back():
+    """agent 判定缺失但 analysis 为空 → 回填缺省文案,MatchResult 校验不炸。
+
+    历史 bug:MatchResult.analysis 要求 min_length=1,空串直接 ValidationError,
+    且该异常发生在 aggregate 的 try/except 之外,拖垮整批比对。
+    """
+    store = _mini_store()
+
+    r = ground_episode(_mk_result("缺失", [], {}, [], analysis="", remedy=""), store, EXT)
+    assert r["status"] == CoverageStatus.NOT_COVERED
+    assert r["analysis"].strip()  # 回填缺省文案,非空
+
+    from clause_splitter.models import MatchResult
+
+    m = MatchResult(**r)  # 不再抛 validation error
+    assert m.analysis
+
+
+def test_grounded_empty_analysis_still_nonempty():
+    """真实承接但 analysis 为空 → 合并承接条款后非空,且不以换行开头。"""
+    store = _mini_store()
+
+    r = ground_episode(
+        _mk_result("完全覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID], analysis=""),
+        store, EXT,
+    )
+    assert r["analysis"].strip()
+    assert r["analysis"].startswith("承接内规条款:")

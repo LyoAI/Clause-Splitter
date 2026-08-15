@@ -139,7 +139,7 @@ async def _run_compare(
         # 内规库原始文档 → mineru 解析 + 层级分块 → store + 三种索引(幂等)。
         store = prepare_docs(internal_dir, name="internal")
 
-        clauses = load_external_clauses(str(src), str(out_dir), llm)
+        clauses = await load_external_clauses(str(src), str(out_dir), llm)
         task.update(current_step=f"比对 {len(clauses)} 条外规条款")
 
         result = await run_compare(
