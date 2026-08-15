@@ -666,7 +666,7 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
     for row in ws.iter_rows(min_row=data_start, values_only=True):
         if any(v is not None and str(v).strip() != "" for v in row):
             total += 1
-        if total >= 5000:
+        if total >= 20000:
             break
     result["total_rows"] = total
 
@@ -682,7 +682,7 @@ def extract_excel_articles(
     file_path: str | Path,
     column_mapping: dict[str, str],
     sheet_name: str | None = None,
-    max_rows: int = 5000,
+    max_rows: int = 20000,
 ) -> dict[str, Any]:
     """按列映射抽取 Excel 全部行,按 document_name 分组。"""
     import openpyxl

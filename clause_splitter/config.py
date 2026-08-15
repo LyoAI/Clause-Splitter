@@ -164,7 +164,7 @@ class Settings:
     # Excel clause parsing
     excel_max_sample_rows: int = 30          # rows sent to LLM for schema detection
     excel_max_react_iterations: int = 3      # ReAct retries for Excel schema detection
-    max_excel_rows_per_document: int = 5000  # safety cap for very large Excel files
+    max_excel_rows_per_document: int = 20000  # safety cap for very large Excel files
 
     # Compare (legacy field; the new compare agent picks top_k itself)
     compare_candidate_k: int = 12
