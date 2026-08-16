@@ -127,7 +127,8 @@ async def _run_compare(
     from clause_splitter.compare.index import prepare_docs
     from clause_splitter.compare.loader import load_external_clauses
     from clause_splitter.compare.report import generate_gap_report
-    from clause_splitter.compare.review import render_review_html
+    from clause_splitter.compare.review import filter_relevant_candidates, render_review_html
+    from clause_splitter.config import REVIEW_FILTER_RELEVANCE
 
     task = manager.get(task_id)
     if task is None:
@@ -150,6 +151,10 @@ async def _run_compare(
         (out_dir / "compare_result.json").write_text(
             result.model_dump_json(indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        # 复核页候选相关性过滤(仅展示层;compare_result.json 已落盘,保留原始候选)。
+        # 必须放在 json 落盘之后,否则会静默剥掉 json 里的候选。
+        if REVIEW_FILTER_RELEVANCE:
+            await filter_relevant_candidates(result, llm)
         rep = generate_gap_report(result, store, llm, output_dir=str(out_dir))
         review_path = render_review_html(result, out_dir / "内规检索复核.html", store_name="internal")
 

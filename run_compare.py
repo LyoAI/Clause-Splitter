@@ -98,6 +98,15 @@ async def _run(args: argparse.Namespace) -> None:
 
     rep = generate_gap_report(result, store, llm, output_dir=str(out_dir))
 
+    # 5.5) 复核页候选相关性过滤(LLM 剔除完全不相关候选,减少页面信息量)。
+    #      必须放在 compare_result.json 落盘(步骤 4)之后:过滤会原地改写
+    #      match.retrieved_candidates,若提前会静默剥掉 json 里的候选。
+    from clause_splitter.compare.review import filter_relevant_candidates
+    from clause_splitter.config import REVIEW_FILTER_RELEVANCE
+
+    if REVIEW_FILTER_RELEVANCE:
+        await filter_relevant_candidates(result, llm, concurrency=args.concurrency)
+
     # 6) 生成内规检索复核页(每条外规条款的 top-k 内规召回,自包含 HTML)。
     from clause_splitter.compare.review import render_review_html
 

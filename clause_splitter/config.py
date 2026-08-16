@@ -50,6 +50,13 @@ SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "10"))
 # Top-k internal clauses surfaced on the HTML review page for each external
 # clause (deterministic batch pre-retrieval, display-only).
 REVIEW_TOP_K = int(os.getenv("REVIEW_TOP_K", "10"))
+# LLM relevance filter on the review page: judge whether each top-k candidate has
+# any relation to the external clause and drop the unrelated ones (display-only;
+# compare_result.json keeps the raw candidates). 1 = on, 0 = off.
+REVIEW_FILTER_RELEVANCE = int(os.getenv("REVIEW_FILTER_RELEVANCE", "1"))
+# Truncation (chars) for the external clause / per candidate when judging relevance.
+REVIEW_FILTER_EXTERNAL_MAX_CHARS = int(os.getenv("REVIEW_FILTER_EXTERNAL_MAX_CHARS", "500"))
+REVIEW_FILTER_CANDIDATE_MAX_CHARS = int(os.getenv("REVIEW_FILTER_CANDIDATE_MAX_CHARS", "300"))
 # Max tokens per search snippet exposed to the LLM (truncated once, in the registry).
 SNIPPET_MAX_TOKENS = int(os.getenv("SNIPPET_MAX_TOKENS", "512"))
 # Max span (inclusive offsets) of a get_context window.

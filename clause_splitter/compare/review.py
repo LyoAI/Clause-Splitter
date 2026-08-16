@@ -17,12 +17,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 from datetime import datetime
 from pathlib import Path
 
-from clause_splitter.models.compare import CompareResult, CoverageStatus, MatchResult
+from clause_splitter.config import (
+    COMPARE_CONCURRENCY,
+    REVIEW_FILTER_CANDIDATE_MAX_CHARS,
+    REVIEW_FILTER_EXTERNAL_MAX_CHARS,
+)
+from clause_splitter.models.compare import (
+    CompareResult,
+    CoverageStatus,
+    MatchResult,
+    RetrievedCandidate,
+)
 from clause_splitter.utils import get_logger
+from clause_splitter.utils.file.json_utils import parse_json_from_text
 from .retrieve import highlight
 
 logger = get_logger()
@@ -102,9 +114,134 @@ _BADGE = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 候选相关性过滤 —— LLM 判断 top-k 候选是否与外规条款「有一点关联」
+# ═══════════════════════════════════════════════════════════════════════
+
+_RELEVANCE_SYSTEM = (
+    "你是一名合规比对审核助手。你会看到一条外规条款和若干候选内规条款,"
+    "请判断每个候选内规条款与外规条款是否「有一点关联」。\n"
+    "- 判定为相关:候选与外规属于同一监管主题或同一合规领域、内容相互呼应、可能承接该外规要求。\n"
+    "- 判定为不相关:候选与外规主体完全不同(例如外规是数据安全、候选是财务报销)、"
+    "主题完全无关、内容毫无承接关系。\n"
+    "宁可多留不可漏:只要有一点关联就保留,漏掉真正相关的候选比多显示一条不相关候选危害更大。\n"
+    '只输出 JSON,不要任何解释文字。格式:{"related": [候选编号...]},编号从 1 到候选总数;'
+    '没有相关的就输出 {"related": []}。'
+)
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    """按字符截断,并标注省略。"""
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "…"
+
+
+def _parse_related_indices(content: str, n: int) -> set[int] | None:
+    """从 LLM 输出解析 1 起始候选编号集合;任何非法 → None(触发 fail-open)。
+
+    注意:``parse_json_from_text`` 失败一律返回 ``{}``,所以 ``{}`` / 散文串 /
+    裸数组都落到这里:related 键缺失 → None(保留全部),绝不静默全删。这是唯一
+    可靠的兜底——PingAn provider 在 API 失败时返回**非空散文串**
+    ("Error: Failed to get response from LLM."),content 并不是 None。
+    """
+    if not content or not content.strip():
+        return None
+    try:
+        data = parse_json_from_text(content)
+    except Exception:  # noqa: BLE001
+        return None
+    related = data.get("related")
+    if not isinstance(related, list):
+        return None
+    indices: set[int] = set()
+    for v in related:
+        if not isinstance(v, int) or isinstance(v, bool) or v < 1 or v > n:
+            return None  # 0 / 越界 / 非整数 → fail-open,宁多勿少
+        indices.add(v)
+    return indices
+
+
+async def _judge_candidates(llm, match: MatchResult) -> list[RetrievedCandidate]:
+    """一次 LLM 调用判定该条外规的所有候选;失败则保留全部(fail-open)。
+
+    返回该条应展示的候选子集(原地改写由 ``filter_relevant_candidates`` 负责)。
+    """
+    cands = match.retrieved_candidates
+    lines = [
+        f"外规条款:\n{_truncate(match.external_source_text, REVIEW_FILTER_EXTERNAL_MAX_CHARS)}\n",
+        "候选内规条款:",
+    ]
+    for i, c in enumerate(cands, 1):
+        lines.append(
+            f"{i}. [{c.doc_name}] {c.clause_label or c.chunk_id}\n"
+            f"{_truncate(c.full_text, REVIEW_FILTER_CANDIDATE_MAX_CHARS)}"
+        )
+    user_prompt = "\n\n".join(lines) + "\n"
+
+    try:
+        resp = await llm.ainvoke([
+            {"role": "system", "content": _RELEVANCE_SYSTEM},
+            {"role": "user", "content": user_prompt},
+        ], temperature=0.0)
+    except Exception as e:  # noqa: BLE001 — 任何失败都 fail-open
+        logger.warning("候选相关性判定失败(保留全部): %s", e)
+        return cands
+
+    content = resp.content if hasattr(resp, "content") else str(resp)
+    kept = _parse_related_indices(content, len(cands))
+    if kept is None:
+        logger.warning("候选相关性判定输出不可解析(保留全部): %r", (content or "")[:80])
+        return cands
+
+    return [
+        c for i, c in enumerate(cands)
+        if (i + 1) in kept or c.adopted  # adopted(= grounding 采用)无条件保留
+    ]
+
+
+async def filter_relevant_candidates(
+    result: CompareResult,
+    llm,
+    *,
+    concurrency: int = COMPARE_CONCURRENCY,
+) -> int:
+    """LLM 过滤复核页候选:剔除与外规条款完全不相关的 top-k 候选(原地)。
+
+    只处理候选非空的 match;``adopted`` 候选(= grounding 采用的条款)无条件保留;
+    单条失败 → 该条保留全部(fail-open)。返回剔除的候选总数。
+
+    注意:调用方必须把它放在 ``compare_result.json`` 落盘**之后**——过滤会原地
+    改写 ``match.retrieved_candidates``,若在落盘前调用会静默剥掉 json 里的候选。
+    """
+    if llm is None:
+        return 0
+    targets = [m for m in result.matches if m.retrieved_candidates]
+    if not targets:
+        return 0
+
+    sem = asyncio.Semaphore(concurrency)
+    dropped = 0
+
+    async def _one(m: MatchResult) -> None:
+        nonlocal dropped
+        async with sem:
+            kept = await _judge_candidates(llm, m)
+            dropped += len(m.retrieved_candidates) - len(kept)
+            m.retrieved_candidates = kept
+
+    await asyncio.gather(*(_one(m) for m in targets))
+    logger.info(
+        "复核页相关性过滤完成:%d/%d 条外规条款参与判定,剔除 %d 条不相关候选",
+        len(targets), len(result.matches), dropped,
+    )
+    return dropped
+
+
 def _cand_html(m: MatchResult) -> str:
     if not m.retrieved_candidates:
-        return '<div class="empty">本条款没有可展示的检索召回(外规文本过短或检索不可用)。</div>'
+        return '<div class="empty">本条款没有可展示的检索召回(检索不可用,或全部召回经判定与本条款不相关)。</div>'
     parts = []
     for cand in m.retrieved_candidates:
         adopted = '<span class="adopted">✓ 采用</span>' if cand.adopted else ""
