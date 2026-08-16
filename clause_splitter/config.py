@@ -58,6 +58,8 @@ CONTEXT_SCOPE_MAX = int(os.getenv("CONTEXT_SCOPE_MAX", "8"))
 MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "15"))
 # Parallel clause episodes during a comparison run.
 COMPARE_CONCURRENCY = int(os.getenv("COMPARE_CONCURRENCY", "4"))
+# Gap-analysis report: external clauses per batch-summary sub-agent call.
+REPORT_BATCH_SIZE = int(os.getenv("REPORT_BATCH_SIZE", "20"))
 
 # ── Embedding (dense faiss index) ──────────────────────────────────────
 # Local models root (modelscope-downloaded models), e.g. ~/Models/... .

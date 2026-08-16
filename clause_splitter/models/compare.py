@@ -202,7 +202,7 @@ class CompareResult(BaseModel):
             "internal_documents": self.internal_documents,
             "total_external_obligations": self.total_external_obligations,
             "total_internal_obligations": self.total_internal_obligations,
-            "details": [m.model_dump() for m in self.matches],
+            "details": [m.model_dump(exclude={"retrieved_candidates"}) for m in self.matches],
         }
 
 

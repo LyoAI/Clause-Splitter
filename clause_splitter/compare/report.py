@@ -1,9 +1,11 @@
-"""差距分析报告生成 —— skills/summary/SKILL.md + LLM,失败时模板回退.
+"""差距分析报告生成 —— 子 agent 分 batch 总结 + skills/summary/SKILL.md + LLM。
 
-报告是比对的最后产物。``generate_gap_report`` 先尝试让 LLM 按
-``skills/summary/SKILL.md`` 撰写正式报告(语气专业、证据引用原文);
-LLM 失败或未注入时,回退到确定性的 ``_template_report`` —— 纯模板拼装,
-统计表 + 全部 MatchResult 逐行呈现,证据原文直接引用,绝不空谈。
+报告是比对的最后产物。``generate_gap_report`` 先让多个「子 agent」(每次
+``llm.invoke``,无工具)分 batch 总结比对结果 —— 每次调用只吃该批条款,单次
+输入远小于上下文窗口;再由最终模型按 ``skills/summary/SKILL.md`` 拿全部批次
+总结 + 确定性统计撰写正式报告(语气专业、证据引用承接内规原文)。LLM 失败或
+未注入时,回退到确定性的 ``_template_report`` —— 纯模板拼装,统计表 + 全部
+MatchResult 逐行呈现,证据原文直接引用,绝不空谈。
 
 两种路径都产出完整 Markdown,写入 ``{output_dir}/内外规合规差距分析报告.md``。
 """
@@ -14,8 +16,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from clause_splitter.config import REPO_ROOT
-from clause_splitter.models import CompareResult, CoverageStatus
+from clause_splitter.config import REPORT_BATCH_SIZE, REPO_ROOT
+from clause_splitter.models import CompareResult, CoverageStatus, MatchResult
 from clause_splitter.utils import get_logger
 from clause_splitter.utils.skill_loader import load_skill
 from ..tools.searcher.store import DocumentStore
@@ -34,14 +36,28 @@ _STATUS_LABEL = {
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# LLM 报告
+# LLM 报告 —— 子 agent 分 batch 总结,最终模型汇总
 # ═══════════════════════════════════════════════════════════════════════
 
+#: 批总结子 agent 的 system prompt:只产出该批条款的紧凑素材,不写整篇报告框架。
+_BATCH_SUMMARY_SYSTEM = (
+    "你是一名合规比对助手。你会收到一批「外规条款 vs 内规条款」的比对结果"
+    "(每条含 external_source_text / status / matched_internal_document_name / "
+    "matched_internal_clause_number / matched_internal_source_text / analysis / remedy_suggestion)。\n"
+    "请为这一批条款输出紧凑的中文总结,作为后续报告撰写者的素材:\n"
+    "- 逐条列出:外规出处+条款号 → 覆盖状态(完全覆盖/部分覆盖/缺失) → 承接内规"
+    "(制度名+条款号;缺失写「无」) → 一句话差距/整改建议。\n"
+    "- 凡被承接(完全/部分覆盖)的条目,必须用「>」引用 matched_internal_source_text 的关键句作证据,"
+    "证明承接成立;缺失的条目说明缺失原因。\n"
+    "- 只输出该批素材,不要输出报告标题/摘要/统计表/结论等整篇报告框架,不要重复外规原文全文。\n"
+    "- 保持精炼,每条尽量控制在 1-3 行。"
+)
 
-def _build_external_clause_md(result: CompareResult) -> str:
-    """外规条款原文(markdown),供 LLM 报告引用。"""
+
+def _build_external_clause_md(matches: list[MatchResult]) -> str:
+    """外规条款原文(markdown),供批总结子 agent 引用。"""
     lines = []
-    for m in result.matches:
+    for m in matches:
         lines.append(f"### {m.external_clause_id}")
         lines.append(f"出处: {m.external_document_name} {m.external_article_id or ''}".rstrip())
         lines.append(f"原文:\n\n{m.external_source_text}")
@@ -49,38 +65,76 @@ def _build_external_clause_md(result: CompareResult) -> str:
     return "\n".join(lines)
 
 
-def _build_internal_clause_md(store: DocumentStore) -> str:
-    """内规条款全文(markdown),供 LLM 报告建议新增/修订条款时参考。"""
-    lines = []
-    for chunk in store.all_chunks():
-        meta = chunk.meta or {}
-        lines.append(f"### {chunk.chunk_id}")
-        section = meta.get("section", "")
-        if section:
-            lines.append(f"章节: {section}")
-        lines.append(f"原文:\n\n{chunk.text}")
+def _build_matched_internal_md(matches: list[MatchResult]) -> str:
+    """只列该批 grounding 实际承接的内规条款(按 id 去重),不喂整个内规库。"""
+    seen: set[str] = set()
+    lines: list[str] = []
+    for m in matches:
+        cid = m.matched_internal_id
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        lines.append(f"### {cid}")
+        if m.matched_internal_clause_number:
+            lines.append(f"章节: {m.matched_internal_clause_number}")
+        lines.append(f"原文:\n\n{m.matched_internal_source_text}")
         lines.append("")
+    if not lines:
+        return "(本批无被承接的内规条款)"
     return "\n".join(lines)
 
 
-def _build_user_prompt(
-    result: CompareResult,
-    external_md: str,
-    internal_md: str,
-) -> str:
-    """把比对结果 + 内外规原文填进 summary SKILL 的用户输入槽位。"""
+def _batch_summary_dict(result: CompareResult, batch: list[MatchResult]) -> dict:
+    """单批摘要输入:与 to_summary_dict 同字段,但只含该批条款,且不带复核页候选全文。"""
+    return {
+        "external_documents": result.external_documents,
+        "internal_documents": result.internal_documents,
+        "total_external_obligations": len(batch),
+        "total_internal_obligations": result.total_internal_obligations,
+        "details": [m.model_dump(exclude={"retrieved_candidates"}) for m in batch],
+    }
+
+
+def _batches(rows: list, size: int) -> list[list]:
+    """把 matches 按 size 分块。"""
+    return [rows[i:i + size] for i in range(0, len(rows), size)]
+
+
+def _build_batch_prompt(result: CompareResult, batch: list[MatchResult]) -> str:
+    """单个批总结子 agent 的 user prompt:只装该批条款。"""
     return (
         "{clause_match_results}\n\n"
-        "### 外部规定条款\n\n"
+        "### 外部规定条款(本批)\n\n"
         "{external_clause_md}\n\n"
-        "### 内部规章制度\n\n"
+        "### 内部规章制度(本批承接条款)\n\n"
         "{internal_clause_md}\n"
     ).format(
         clause_match_results=json.dumps(
-            result.to_summary_dict(), ensure_ascii=False, indent=2
+            _batch_summary_dict(result, batch), ensure_ascii=False, indent=2
         ),
-        external_clause_md=external_md,
-        internal_clause_md=internal_md,
+        external_clause_md=_build_external_clause_md(batch),
+        internal_clause_md=_build_matched_internal_md(batch),
+    )
+
+
+def _build_final_prompt(result: CompareResult, summaries: list[str]) -> str:
+    """最终模型 user prompt:确定性统计 + 各批总结(不含原始 matches / 候选 / 整库)。"""
+    stats = (
+        f"- 外规制度:{', '.join(result.external_documents) or '—'}\n"
+        f"- 内规制度:{', '.join(result.internal_documents) or '—'}\n"
+        f"- 外规条款共 {result.total_external_obligations} 条:完全覆盖 {result.fully_covered_count} 条、"
+        f"部分覆盖 {result.partially_covered_count} 条、缺失 {result.not_covered_count} 条。"
+    )
+    sections = "\n\n".join(
+        f"## 批次 {i + 1} 总结\n\n{s}" for i, s in enumerate(summaries)
+    )
+    return (
+        "以下是该次内外规比对的整体统计与各批次总结。请据此按 Skill 的结构撰写完整报告,"
+        "凡被承接(完全/部分覆盖)的条目必须引用批次总结中的承接内规原文证据。\n\n"
+        "### 整体统计(确定性)\n\n"
+        f"{stats}\n\n"
+        "### 各批次总结\n\n"
+        f"{sections}\n"
     )
 
 
@@ -251,7 +305,7 @@ def generate_gap_report(
 
     Args:
         result: 比对结果。
-        store: 内规条款库(供 LLM 参考内规全文)。
+        store: 内规条款库 —— 兼容参数,批处理路径按批喂承接条款,不再喂整库全文。
         llm: ``LLM`` facade;None 或调用失败时用模板回退。
         output_dir: 非空则把报告写入该目录。
 
@@ -265,14 +319,21 @@ def generate_gap_report(
         try:
             skill = load_skill(_SKILLS_DIR / "summary" / "SKILL.md")
             skill = skill.replace("{datetime}", __import__("datetime").date.today().isoformat())
-            user_prompt = _build_user_prompt(
-                result,
-                _build_external_clause_md(result),
-                _build_internal_clause_md(store),
-            )
+            # 子 agent 分 batch 总结:每次调用只吃该批条款,单次输入远小于上下文窗口。
+            summaries: list[str] = []
+            for i, batch in enumerate(_batches(result.matches, REPORT_BATCH_SIZE), 1):
+                bresp = llm.invoke([
+                    {"role": "system", "content": _BATCH_SUMMARY_SYSTEM},
+                    {"role": "user", "content": _build_batch_prompt(result, batch)},
+                ])
+                btext = bresp.content if hasattr(bresp, "content") else str(bresp)
+                if not btext or not btext.strip():
+                    raise ValueError(f"批次 {i} 总结为空")
+                summaries.append(btext.strip())
+            # 最终模型拿批次总结 + 确定性统计写完整报告。
             resp = llm.invoke([
                 {"role": "system", "content": skill},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": _build_final_prompt(result, summaries)},
             ])
             content = resp.content if hasattr(resp, "content") else str(resp)
             if content and content.strip():
