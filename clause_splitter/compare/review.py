@@ -35,6 +35,7 @@ from clause_splitter.config import (
     COMPARE_CONCURRENCY,
     REVIEW_FILTER_CANDIDATE_MAX_CHARS,
     REVIEW_FILTER_EXTERNAL_MAX_CHARS,
+    REVIEW_MIN_CANDIDATES,
 )
 from clause_splitter.models.compare import (
     CompareResult,
@@ -111,13 +112,14 @@ mark{background:var(--mark-bg);padding:0 1px;border-radius:2px;font-weight:600}
 .no-intl summary{padding:2px 0}
 .no-intl .hint{color:var(--muted);font-weight:400;margin-left:10px;font-size:12px}
 .no-intl-rows{padding-top:2px}
-.no-intl-row{display:flex;align-items:baseline;gap:10px;padding:8px 2px;border-top:1px dashed var(--line);font-size:13px}
+.no-intl-row{padding:8px 2px;border-top:1px dashed var(--line);font-size:13px}
 .no-intl-row:first-child{border-top:none}
+.no-intl-row .row-main{display:flex;align-items:baseline;gap:10px}
 .no-intl-row .row-no{font-weight:700;white-space:nowrap}
 .no-intl-row .row-text{flex:1;color:#334155;overflow-wrap:anywhere}
-.no-intl-row .row-reason{color:var(--muted);font-size:12px;white-space:nowrap;max-width:45%;overflow:hidden;text-overflow:ellipsis}
+.no-intl-row .row-reason{color:var(--muted);font-size:12px;margin-top:3px;overflow-wrap:anywhere;line-height:1.6}
 footer{color:var(--muted);font-size:12px;text-align:center;margin-top:30px}
-@media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}.no-intl-row{flex-wrap:wrap}.no-intl-row .row-reason{max-width:100%;white-space:normal}}
+@media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}}
 """
 
 _JS = """
@@ -248,10 +250,33 @@ async def _judge_candidates(llm, match: MatchResult) -> list[RetrievedCandidate]
         logger.warning("候选相关性判定输出不可解析(保留全部): %r", (content or "")[:80])
         return cands
 
-    return [
+    relevant = [
         c for i, c in enumerate(cands)
         if (i + 1) in kept or c.adopted  # adopted(= grounding 采用)无条件保留
     ]
+    # 最少展示 REVIEW_MIN_CANDIDATES 条:不足时按得分降序从全部候选补齐(不论相关性),
+    # 避免严格过滤把召回清空、页面出现「没有可展示的检索召回」。
+    return _min_display_candidates(relevant, cands)
+
+
+def _min_display_candidates(
+    kept: list[RetrievedCandidate],
+    all_cands: list[RetrievedCandidate],
+    minimum: int = REVIEW_MIN_CANDIDATES,
+) -> list[RetrievedCandidate]:
+    """候选不足 minimum 条时,按得分降序从全部候选补齐(保留的在前)。
+
+    采用条款已在 kept 中(adopted 无条件保留);补齐只填得分最高的候选,确保
+    复核页始终能看到至少 minimum 条召回,除非原本就一条候选都没有。
+    """
+    if len(kept) >= minimum:
+        return kept
+    kept_ids = {c.chunk_id for c in kept}
+    topup = [
+        c for c in sorted(all_cands, key=lambda c: -(c.score or 0.0))
+        if c.chunk_id not in kept_ids
+    ]
+    return kept + topup[: minimum - len(kept)]
 
 
 async def filter_relevant_candidates(
@@ -263,7 +288,8 @@ async def filter_relevant_candidates(
     """LLM 过滤复核页候选:剔除与外规条款完全不相关的 top-k 候选(原地)。
 
     只处理候选非空的 match;``adopted`` 候选(= grounding 采用的条款)无条件保留;
-    单条失败 → 该条保留全部(fail-open)。返回剔除的候选总数。
+    单条失败 → 该条保留全部(fail-open)。每条最终至少展示 ``REVIEW_MIN_CANDIDATES``
+    条(不足时按得分补齐,不论相关性),故「净剔除」= 原始候选数 - 最终候选数。
 
     注意:调用方必须把它放在 ``compare_result.json`` 落盘**之后**——过滤会原地
     改写 ``match.retrieved_candidates``,若在落盘前调用会静默剥掉 json 里的候选。
@@ -286,8 +312,8 @@ async def filter_relevant_candidates(
 
     await asyncio.gather(*(_one(m) for m in targets))
     logger.info(
-        "复核页相关性过滤完成:%d/%d 条外规条款参与判定,剔除 %d 条不相关候选",
-        len(targets), len(result.matches), dropped,
+        "复核页相关性过滤完成:%d/%d 条外规条款参与判定,净剔除 %d 条候选(每条至少展示 %d 条)",
+        len(targets), len(result.matches), dropped, REVIEW_MIN_CANDIDATES,
     )
     return dropped
 
@@ -332,7 +358,7 @@ def _cand_html(m: MatchResult) -> str:
     避免页面堆叠同一段文字;被采用的候选行打「✓」并浅绿高亮。
     """
     if not m.retrieved_candidates:
-        return '<div class="empty">本条款没有可展示的检索召回(检索不可用,或全部召回经判定与本条款不相关)。</div>'
+        return '<div class="empty">本条款没有可展示的检索召回(检索不可用,未召回任何内规候选)。</div>'
     groups: dict[str, list] = {}
     seen: set[str] = set()
     for cand in sorted(m.retrieved_candidates, key=lambda c: (not c.adopted, -(c.score or 0.0))):
@@ -360,7 +386,8 @@ def _cand_row(cand: RetrievedCandidate) -> str:
     """表格一行:条款号(采用打勾)| 关键词高亮 snippet | 后端 | 得分。"""
     adopted = " adopted" if cand.adopted else ""
     mark = '<span class="adopted-mark">✓</span> ' if cand.adopted else ""
-    score = f"{cand.score:.4f}" if cand.score is not None else ""
+    # 补入的采用条款来自比对检索(episode),无批量召回得分 → 显示「—」。
+    score = f"{cand.score:.4f}" if cand.score is not None else "—"
     return (
         f'<tr class="cand-row{adopted}">'
         f'<td class="col-no">{mark}{html.escape(cand.clause_label or cand.chunk_id)}</td>'
@@ -391,7 +418,8 @@ def _matched_refs(m: MatchResult) -> list[str]:
 def _no_intl_html(matches: list[MatchResult]) -> str:
     """「无需内化」条款集中展示(默认折叠),不再按顺序混入卡片流。
 
-    每行:覆盖状态徽标 + 条款号 + 原文摘要 + 内化依据。不参与覆盖统计/整改。
+    每条**上下布局**:上一行 = 覆盖状态徽标 + 条款号 + 外规原文(完整);
+    下一行 = 判定依据(完整,不截断)。不参与覆盖统计/整改。
     """
     if not matches:
         return ""
@@ -399,15 +427,16 @@ def _no_intl_html(matches: list[MatchResult]) -> str:
     for m in matches:
         cls, status_text = _BADGE[m.status]
         clause_id = html.escape(m.external_article_id or m.external_clause_id)
-        src = m.external_source_text or ""
-        snippet = html.escape(src[:90]) + ("…" if len(src) > 90 else "")
+        src = html.escape(m.external_source_text or "")
         reason = html.escape((m.internalization_reason or "").strip())
         rows.append(
             '<div class="no-intl-row">'
+            '<div class="row-main">'
             f'<span class="badge {cls}">{status_text}</span>'
             f'<span class="row-no">{clause_id}</span>'
-            f'<span class="row-text">{snippet}</span>'
-            f'<span class="row-reason">{reason}</span>'
+            f'<span class="row-text">{src}</span>'
+            "</div>"
+            f'<div class="row-reason">💡 判定依据: {reason}</div>'
             "</div>"
         )
     return (

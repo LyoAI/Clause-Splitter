@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from clause_splitter.compare.retrieve import highlight, pre_retrieve
-from clause_splitter.compare.review import render_review_html
+from clause_splitter.compare.review import _min_display_candidates, render_review_html
 from clause_splitter.models.compare import (
     CompareResult,
     CoverageStatus,
@@ -373,3 +373,33 @@ def test_review_candidate_table_adopted_first_within_group(tmp_path):
     table = html_text[html_text.index('<table class="cand-table">'):]
     assert table.index("第二条") < table.index("第三条")  # 采用行优先
     assert ">5.0000<" in html_text and ">2.0000<" in html_text  # 得分独立列
+
+
+def test_min_display_candidates_topup_by_score():
+    """最少保留 3 条:过滤后不足时按得分降序补齐,已保留的在前且不重复。"""
+    cands = [
+        _cand("a#0", "A", "第一条", "一", score=1.0),
+        _cand("a#1", "A", "第二条", "二", score=9.0),
+        _cand("a#2", "A", "第三条", "三", score=8.0),
+        _cand("a#3", "A", "第四条", "四", score=7.0),
+    ]
+    # 严格过滤只留了 1 条 → 按分数补齐 2 条(9.0、8.0)。
+    kept = _min_display_candidates([cands[0]], cands)
+    assert [c.chunk_id for c in kept] == ["a#0", "a#1", "a#2"]
+    # 已 ≥ 3 条 → 原样返回,不重复不追加。
+    assert [c.chunk_id for c in _min_display_candidates(cands[:3], cands)] == ["a#0", "a#1", "a#2"]
+
+
+def test_review_no_intl_row_vertical_full_reason(tmp_path):
+    """无需内化行上下布局:上一行条款+原文,下一行判定依据完整不截断。"""
+    match = _no_intl_match()
+    long_reason = "宣示性/程序性条款(生效日期与解释机关)，" * 10  # 超长原因
+    match.internalization_reason = long_reason
+    html_text = _render_many(tmp_path, [match])
+    row = html_text[html_text.index('class="no-intl-row"'):]
+    assert 'class="row-main"' in row
+    assert 'class="row-reason"' in row
+    assert row.index("row-main") < row.index("row-reason")  # 上下,非左右
+    # 原因完整展示:完整字符串出现,未被省略号/截断。
+    assert long_reason in html_text
+    assert "判定依据: " + long_reason in html_text

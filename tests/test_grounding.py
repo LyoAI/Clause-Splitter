@@ -224,6 +224,40 @@ def test_ground_episode_missing_new_fields_defaults_empty():
     assert m.clause_type == "" and m.internalization_decision == "" and m.difference_analysis == ""
 
 
+def test_ensure_adopted_in_candidates_injects_grounded_chunks():
+    """采用条款不在批量预召回 top-k 里时,强制补入候选(adopted=True,不重复)。"""
+    from clause_splitter.compare.aggregate import _ensure_adopted_in_candidates
+    from clause_splitter.models import RetrievedCandidate
+
+    store = DocumentStore(name="inject-test")
+    store.add_chunk(Chunk(
+        chunk_id="办法#0", doc_id="数据安全管理办法", order=0,
+        text="第一条　本制度适用于数据分类分级。",
+        meta={"section": "第一章 总则 > 第一条"},
+    ))
+    # 批量预召回只有一条无关候选;采用条款「办法#0」不在其中。
+    candidates = [
+        RetrievedCandidate(
+            chunk_id="办法#1", doc_name="数据安全管理办法", clause_label="第二条",
+            backend="bm25", score=5.0, query="q",
+            snippet="第二条　重要数据加密。", full_text="第二条　重要数据加密。",
+        ),
+    ]
+    _ensure_adopted_in_candidates(candidates, {"办法#0"}, store, "q")
+    ids = [c.chunk_id for c in candidates]
+    assert "办法#0" in ids  # 强制补入
+    adopted = next(c for c in candidates if c.chunk_id == "办法#0")
+    assert adopted.adopted is True
+    assert adopted.backend == "episode"  # 来自比对检索而非批量预召回
+    assert adopted.score is None  # 无批量召回得分
+    assert adopted.doc_name == "数据安全管理办法"
+    assert adopted.clause_label == "第一条"  # 走 _segment_label 的 1 起始编号
+    # 已在候选列表里的采用条款不重复补入。
+    before = len(candidates)
+    _ensure_adopted_in_candidates(candidates, {"办法#0"}, store, "q")
+    assert len(candidates) == before
+
+
 def test_ground_episode_normalizes_preventive_to_need():
     """旧数据 ext 填了「预防性内化」→ 透传时两值化为「需要内化」。"""
     store = _mini_store()

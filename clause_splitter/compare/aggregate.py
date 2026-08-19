@@ -34,13 +34,14 @@ from clause_splitter.models import (
     CompareResult,
     CoverageStatus,
     MatchResult,
+    RetrievedCandidate,
     normalize_internalization_decision,
 )
 from clause_splitter.tools import ToolRegistry, build_searchers
 from clause_splitter.tools.searcher.store import DocumentStore
 from clause_splitter.utils import get_logger
 from .episode import ExternalClause, run_clause_episode
-from .ground import _norm_str, ground_episode, parse_answer_json
+from .ground import _norm_str, _segment_label, ground_episode, parse_answer_json
 from .retrieve import pre_retrieve
 
 logger = get_logger()
@@ -170,6 +171,38 @@ async def _pre_internalize(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _ensure_adopted_in_candidates(
+    candidates: list[RetrievedCandidate],
+    adopted_ids: set[str],
+    store: DocumentStore,
+    query: str,
+) -> None:
+    """把 grounding 采用的条款强制补进候选列表(即使不在批量预召回 top-k 里)。
+
+    部分覆盖/完全覆盖必须能在复核页看到承接条款:补入的候选标记 adopted=True,
+    后续相关性过滤无条件保留;backend 标注 episode(来自比对检索而非批量预召回),
+    score 为空。全量候选为空(检索不可用)时仍补入,保证承接条款一定展示。
+    """
+    present = {c.chunk_id for c in candidates}
+    for cid in adopted_ids:
+        if cid in present:
+            continue
+        chunk = store.get_chunk(cid)
+        if chunk is None:
+            continue
+        candidates.append(RetrievedCandidate(
+            chunk_id=cid,
+            doc_name=chunk.doc_id,
+            clause_label=_segment_label(chunk),
+            backend="episode",
+            score=None,
+            query=query,
+            snippet=(chunk.text or "")[:180],
+            full_text=chunk.text or "",
+            adopted=True,
+        ))
+
+
 async def run_compare(
     external_clauses: list[ExternalClause],
     store: DocumentStore,
@@ -241,20 +274,22 @@ async def run_compare(
     sem = asyncio.Semaphore(concurrency)
 
     def _attach_candidates(match: MatchResult, ext: ExternalClause) -> None:
-        """附上批量预召回候选(复核页展示用),并标记 grounding 采用的条目。"""
+        """附上批量预召回候选(复核页展示用),并强制补入 grounding 采用的条款。"""
+        candidates: list[RetrievedCandidate] = []
         try:
             candidates = pre_retrieve(
                 store, list(registry.searchers.values()),
                 ext.full_text, top_k=review_top_k,
             )
-            adopted_ids = set(match.matched_internal_clause_ids or ())
-            if not adopted_ids and match.matched_internal_id:
-                adopted_ids = {match.matched_internal_id}
-            for cand in candidates:
-                cand.adopted = cand.chunk_id in adopted_ids
-            match.retrieved_candidates = candidates
         except Exception as e:  # noqa: BLE001 — 展示数据失败不拖垮批量
             logger.warning("pre_retrieve 失败(%s),复核页该条无候选: %s", ext.clause_id, e)
+        adopted_ids = set(match.matched_internal_clause_ids or ())
+        if not adopted_ids and match.matched_internal_id:
+            adopted_ids = {match.matched_internal_id}
+        for cand in candidates:
+            cand.adopted = cand.chunk_id in adopted_ids
+        _ensure_adopted_in_candidates(candidates, adopted_ids, store, ext.full_text)
+        match.retrieved_candidates = candidates
 
     async def _run_one(ext: ExternalClause) -> MatchResult:
         # 无需内化条款:不检索、不跑 episode,直接给轻量结果(覆盖率不计)。

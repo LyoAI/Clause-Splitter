@@ -87,20 +87,21 @@ def _result(*matches: MatchResult) -> CompareResult:
 
 
 def test_judge_keeps_only_listed_indices():
-    """只保留 LLM 判定的编号(1 起始 → 0 起始)。"""
+    """LLM 判定的编号(1 起始 → 0 起始)在前;不足最少条数时按分数补齐。"""
     m = _match([_cand(0), _cand(1), _cand(2), _cand(3)])
     llm = _FakeLLM(['{"related": [2, 4]}'])
     kept = _run(_judge_candidates(llm, m))
-    assert [c.chunk_id for c in kept] == ["内规#第1条", "内规#第3条"]
+    # 判定保留 idx1/idx3;为凑满最少 3 条,按得分补齐 idx0(同分稳定序)。
+    assert [c.chunk_id for c in kept] == ["内规#第1条", "内规#第3条", "内规#第0条"]
 
 
 def test_judge_keeps_adopted_regardless():
-    """adopted(= grounding 采用)候选即使未被 LLM 列出也保留。"""
+    """adopted(= grounding 采用)候选即使未被 LLM 列出也保留,且不因补齐丢失。"""
     cands = [_cand(0), _cand(1, adopted=True), _cand(2)]
     m = _match(cands)
     llm = _FakeLLM(['{"related": [1]}'])
     kept = _run(_judge_candidates(llm, m))
-    assert [c.chunk_id for c in kept] == ["内规#第0条", "内规#第1条"]
+    assert [c.chunk_id for c in kept] == ["内规#第0条", "内规#第1条", "内规#第2条"]
 
 
 def test_judge_fail_open_on_none_content():
@@ -133,18 +134,19 @@ def test_judge_fail_open_on_missing_or_bad_indices():
 
 
 def test_filter_runs_per_clause_and_keeps_result():
-    """2 条外规条款 → 2 次判定调用;各自只保留判定相关项 + adopted;返回剔除数正确。"""
-    m1 = _match([_cand(0), _cand(1)])  # related:[2] → 保留 0-based idx1
-    m2 = _match([_cand(0), _cand(1, adopted=True), _cand(2)])  # related:[3] → idx2 + adopted idx1
+    """2 条外规条款 → 2 次判定调用;各自保留判定相关项 + adopted,并按最少条数补齐;剔除数正确。"""
+    m1 = _match([_cand(0), _cand(1)])  # related:[2] → idx1;补齐 idx0 → 2 条(全部候选)
+    m2 = _match([_cand(0), _cand(1, adopted=True), _cand(2)])  # related:[3] → idx2 + adopted idx1;补齐 idx0 → 3 条
     result = _result(m1, m2)
 
     llm = _FakeLLM(['{"related": [2]}', '{"related": [3]}'])
     dropped = _run(filter_relevant_candidates(result, llm, concurrency=2))
 
     assert len(llm.calls) == 2
-    assert [c.chunk_id for c in result.matches[0].retrieved_candidates] == ["内规#第1条"]
-    assert [c.chunk_id for c in result.matches[1].retrieved_candidates] == ["内规#第1条", "内规#第2条"]
-    assert dropped == 1 + 1
+    assert [c.chunk_id for c in result.matches[0].retrieved_candidates] == ["内规#第1条", "内规#第0条"]
+    assert [c.chunk_id for c in result.matches[1].retrieved_candidates] == ["内规#第1条", "内规#第2条", "内规#第0条"]
+    # 净剔除:候选不足最少条数被补齐,最终展示数未减少。
+    assert dropped == 0
 
 
 def test_filter_noop_without_candidates_or_llm():

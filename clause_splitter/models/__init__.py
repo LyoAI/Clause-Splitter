@@ -14,6 +14,7 @@ from .compare import (
     CoverageStatus,
     MatchResult,
     PipelineResult,
+    RetrievedCandidate,
     normalize_internalization_decision,
 )
 from .task import TaskInfo, TaskStatusEnum
@@ -30,6 +31,7 @@ __all__ = [
     "CoverageStatus",
     "MatchResult",
     "PipelineResult",
+    "RetrievedCandidate",
     "normalize_internalization_decision",
     "TaskInfo",
     "TaskStatusEnum",

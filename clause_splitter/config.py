@@ -57,6 +57,10 @@ REVIEW_FILTER_RELEVANCE = int(os.getenv("REVIEW_FILTER_RELEVANCE", "1"))
 # Truncation (chars) for the external clause / per candidate when judging relevance.
 REVIEW_FILTER_EXTERNAL_MAX_CHARS = int(os.getenv("REVIEW_FILTER_EXTERNAL_MAX_CHARS", "500"))
 REVIEW_FILTER_CANDIDATE_MAX_CHARS = int(os.getenv("REVIEW_FILTER_CANDIDATE_MAX_CHARS", "300"))
+# Minimum candidates kept on the review page after the relevance filter: top-up by
+# score regardless of relevance, so a clause never shows an empty recall list merely
+# because the strict filter dropped everything.
+REVIEW_MIN_CANDIDATES = int(os.getenv("REVIEW_MIN_CANDIDATES", "3"))
 # Max tokens per search snippet exposed to the LLM (truncated once, in the registry).
 SNIPPET_MAX_TOKENS = int(os.getenv("SNIPPET_MAX_TOKENS", "512"))
 # Max span (inclusive offsets) of a get_context window.
