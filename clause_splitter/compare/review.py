@@ -4,11 +4,20 @@
 召回是否相关、结论是否可信。``render_review_html`` 把 ``CompareResult`` 渲染成
 一个**自包含** HTML(内联 CSS/JS、emoji favicon、零外部资源,可直接双击打开):
 
-- 顶部:外规制度、内规库、生成时间、覆盖统计 chips + 统计表。
+- 顶部:外规制度、内规库、生成时间、覆盖统计 chips + 统计表(缺失只统计需内化
+  条款,无需内化单列)。
 - 控件:状态筛选 tab、关键词搜索、全部展开 / 收起。
-- 每条外规条款一张卡片:条款号 + 状态徽标 + 外规原文(折叠)+ 判定 analysis /
-  整改建议;其下「检索召回 top-k」逐条候选:制度名徽标 + 条款标签 + 检索后端徽标
-  + 得分 + 命中片段(查询词 ``<mark>`` 高亮)+ 全文可展开;被 agent 采用的标「✓ 采用」。
+- **无需内化条款集中折叠展示**(默认收起):宣示性/程序性等不纳入覆盖比对,
+  不再按顺序混入卡片流。
+- 每条**需要内化处理**的外规条款一张可折叠卡片:卡片头 = 条款号 + 覆盖状态徽标
+  + 内化判定徽标(需要内化/无需内化/待判定,点击整卡折叠/展开);卡片体内依次为
+  外规原文(折叠)、判定 analysis、部分覆盖的差异说明(内外规不一致处)、整改建议、
+  检索召回 top-k。内化判定的详细依据不展示在页面,只在差距报告中体现。
+- 「检索召回 top-k」按**来源制度分组**,组内用**表格**展示(列:条款号 | 关键词
+  高亮 snippet | 后端 | 得分),采用行优先、得分降序,按全文去重;被 agent 采用
+  的行标「✓」并浅绿高亮。被采用候选的全文即承接内规原文,不再另开
+  「承接内规原文」块,避免重复。
+- 内化判定只两值:需要内化 / 无需内化(「预防性内化」归并到「需要内化」)。
 - 一次比对一个外规 → 一个 HTML,写在 ``{output_dir}/内规检索复核.html``。
 
 所有用户文本先 ``html.escape`` 再进入模板,片段里的查询关键词用
@@ -32,6 +41,7 @@ from clause_splitter.models.compare import (
     CoverageStatus,
     MatchResult,
     RetrievedCandidate,
+    normalize_internalization_decision,
 )
 from clause_splitter.utils import get_logger
 from clause_splitter.utils.file.json_utils import parse_json_from_text
@@ -57,31 +67,57 @@ header h1{margin:0 0 4px;font-size:24px;display:flex;align-items:center;gap:8px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 .stat b{font-size:22px;display:block}
 .stat span{color:var(--muted);font-size:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
-.card-head{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 20px 18px;margin-bottom:16px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.card-head{display:flex;align-items:center;gap:10px;padding:4px 0;margin-bottom:8px;flex-wrap:wrap;cursor:pointer;user-select:none}
+.card-head:hover .clause-id{text-decoration:underline}
+.card-head .toggle-arrow{margin-left:auto;color:var(--muted);font-size:13px;transition:transform .12s}
+.card-head.collapsed .toggle-arrow{transform:rotate(-90deg)}
+.card-head.collapsed + .card-body{display:none}
 .clause-id{font-size:16px;font-weight:700}
 .badge{border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600;color:#fff}
 .badge-full{background:var(--full)}.badge-part{background:var(--part)}.badge-miss{background:var(--miss)}
+.intl-badge{border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600;border:1px solid transparent}
+.intl-must{background:#fff0f0;color:#b71c1c;border-color:#f3c2c2}
+.intl-none{background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9}
+.intl-pending{background:#eceff1;color:#78909c;border-color:#cfd8dc}
 details{background:#fafbfd;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:8px 0}
 summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--muted)}
 pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:13px;margin:8px 0 4px}
 .analysis{background:#f8f9fb;border-left:3px solid #90a4ae;padding:8px 12px;border-radius:4px;margin:8px 0}
 .analysis b{display:inline}
 .match{margin:8px 0;color:var(--full)}
+.diff{background:#fff8f0;border-left:3px solid #ef6c00;padding:8px 12px;border-radius:4px;margin:8px 0}
+.diff-head{font-weight:600;font-size:13px;color:#b7791f;margin-bottom:2px}
 .recall{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
 .recall h4{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:600}
-.cand{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fff}
-.cand-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
-.doc-badge{background:#eef2ff;color:#3730a3;border-radius:6px;padding:1px 8px;font-size:12px;font-weight:600}
-.label{color:var(--ink);font-weight:600;font-size:13px}
-.backend-badge{background:#eceff1;color:#455a64;border-radius:6px;padding:1px 8px;font-size:11px}
-.score{color:var(--muted);font-size:12px}
-.adopted{background:#e6f4ea;color:#1e6b3a;border-radius:6px;padding:1px 8px;font-size:12px;font-weight:700}
-.snippet{font-size:13px;color:#334155}
+.doc-group{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;overflow:hidden}
+.doc-group-head{background:#f4f6fb;padding:8px 12px;font-weight:600;font-size:13px;color:#37474f;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.doc-group-count{color:var(--muted);font-weight:500;font-size:12px;margin-left:auto}
+.cand-table{width:100%;border-collapse:collapse;font-size:13px}
+.cand-table td{padding:9px 12px;border-top:1px solid var(--line);vertical-align:top}
+.cand-row:first-child td{border-top:none}
+.cand-row:hover td{background:#f8fafc}
+.cand-row.adopted td{background:#f0faf3}
+.cand-row.adopted:hover td{background:#e6f5eb}
+.col-no{white-space:nowrap;font-weight:600;width:1%;color:var(--ink)}
+.col-text{color:#334155}
+.col-backend{white-space:nowrap;width:1%}
+.col-score{white-space:nowrap;text-align:right;width:1%;color:var(--muted);font-variant-numeric:tabular-nums}
+.adopted-mark{color:var(--full);font-weight:700}
+.backend-badge{background:#eceff1;color:#455a64;border-radius:6px;padding:1px 8px;font-size:11px;white-space:nowrap}
 mark{background:var(--mark-bg);padding:0 1px;border-radius:2px;font-weight:600}
 .empty{color:var(--muted);font-style:italic;padding:6px 0}
+.no-intl{border:1px solid var(--line);border-radius:10px;margin-bottom:16px;padding:6px 14px;background:#fff}
+.no-intl summary{padding:2px 0}
+.no-intl .hint{color:var(--muted);font-weight:400;margin-left:10px;font-size:12px}
+.no-intl-rows{padding-top:2px}
+.no-intl-row{display:flex;align-items:baseline;gap:10px;padding:8px 2px;border-top:1px dashed var(--line);font-size:13px}
+.no-intl-row:first-child{border-top:none}
+.no-intl-row .row-no{font-weight:700;white-space:nowrap}
+.no-intl-row .row-text{flex:1;color:#334155;overflow-wrap:anywhere}
+.no-intl-row .row-reason{color:var(--muted);font-size:12px;white-space:nowrap;max-width:45%;overflow:hidden;text-overflow:ellipsis}
 footer{color:var(--muted);font-size:12px;text-align:center;margin-top:30px}
-@media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}.no-intl-row{flex-wrap:wrap}.no-intl-row .row-reason{max-width:100%;white-space:normal}}
 """
 
 _JS = """
@@ -97,14 +133,29 @@ function applyFilters(){
     const okQuery = !q || card.textContent.toLowerCase().includes(q);
     card.style.display = (okStatus && okQuery) ? '' : 'none';
   });
+  document.querySelectorAll('.no-intl-row').forEach(row=>{
+    row.style.display = (!q || row.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  });
+}
+function setCardCollapsed(head, collapsed){
+  head.classList.toggle('collapsed', collapsed);
+  const arrow = head.querySelector('.toggle-arrow');
+  if (arrow) arrow.textContent = collapsed ? '▸' : '▾';
 }
 function toggleAll(open){
   document.querySelectorAll('.card details').forEach(d=>d.open=open);
+  document.querySelectorAll('.card-head').forEach(h=>setCardCollapsed(h, !open));
 }
 document.getElementById('search').addEventListener('input', applyFilters);
 document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>setFilter(c.dataset.filter)));
 document.getElementById('expand-all').addEventListener('click',()=>toggleAll(true));
 document.getElementById('collapse-all').addEventListener('click',()=>toggleAll(false));
+document.querySelectorAll('.card-head').forEach(head=>{
+  head.addEventListener('click', ()=>setCardCollapsed(head, !head.classList.contains('collapsed')));
+  head.addEventListener('keydown', e=>{
+    if (e.key==='Enter'||e.key===' ') { e.preventDefault(); setCardCollapsed(head, !head.classList.contains('collapsed')); }
+  });
+});
 """
 
 _BADGE = {
@@ -119,12 +170,14 @@ _BADGE = {
 # ═══════════════════════════════════════════════════════════════════════
 
 _RELEVANCE_SYSTEM = (
-    "你是一名合规比对审核助手。你会看到一条外规条款和若干候选内规条款,"
-    "请判断每个候选内规条款与外规条款是否「有一点关联」。\n"
-    "- 判定为相关:候选与外规属于同一监管主题或同一合规领域、内容相互呼应、可能承接该外规要求。\n"
-    "- 判定为不相关:候选与外规主体完全不同(例如外规是数据安全、候选是财务报销)、"
-    "主题完全无关、内容毫无承接关系。\n"
-    "宁可多留不可漏:只要有一点关联就保留,漏掉真正相关的候选比多显示一条不相关候选危害更大。\n"
+    "你是一名合规比对审核助手,负责对外规条款的检索召回候选做「相关/不相关」的严格二分类。\n"
+    "你会看到一条外规条款,以及若干候选内规条款(每条含:所属制度文件标题、条款号、条款内容摘录)。\n"
+    "请依据「制度文件标题 + 条款内容」判断每个候选内规条款与此外规条款是否真正相关:\n"
+    "- 判定为「相关」:两者属于同一监管主题/合规领域,且候选条款内容实质性承接、呼应或覆盖了该外规要求"
+    "(例如外规要求数据分类分级,候选正是数据分类分级管理制度下直接相关的条款)。\n"
+    "- 判定为「不相关」:仅因关键词相似被召回,但制度标题或条款内容与该外规不属同一合规领域、无实质承接关系"
+    "(例如外规是数据安全,候选是财务报销、人事考勤);或条款内容只是泛泛提及、未实质性涉及外规要求。\n"
+    "宁可漏判不可误留:对无法明确判定相关性的候选,一律判为不相关并剔除,避免页面展示无关信息。\n"
     '只输出 JSON,不要任何解释文字。格式:{"related": [候选编号...]},编号从 1 到候选总数;'
     '没有相关的就输出 {"related": []}。'
 )
@@ -239,37 +292,143 @@ async def filter_relevant_candidates(
     return dropped
 
 
+_INTL_BADGE = {
+    "需要内化": ("intl-must", "需要内化"),
+    "无需内化": ("intl-none", "无需内化"),
+}
+
+
+def _internalization_badge(m: MatchResult) -> str:
+    """内化判定徽标(二值):需要内化(红)/ 无需内化(绿)/ 待判定(灰,空)。
+
+    「预防性内化」经 normalize 归并到「需要内化」。
+    """
+    decision = normalize_internalization_decision((m.internalization_decision or "").strip())
+    if not decision:
+        return '<span class="intl-badge intl-pending">待判定</span>'
+    cls, label = _INTL_BADGE.get(decision, ("intl-pending", html.escape(decision)))
+    return f'<span class="intl-badge {cls}">{label}</span>'
+
+
+def _is_no_internalization(m: MatchResult) -> bool:
+    """是否判定「无需内化」(不纳入覆盖比对,复核页集中折叠展示)。"""
+    return normalize_internalization_decision((m.internalization_decision or "").strip()) == "无需内化"
+
+
+def _difference_html(m: MatchResult) -> str:
+    """部分覆盖的差异说明(内外规不一致处);非部分覆盖或为空时不渲染。"""
+    if m.status != CoverageStatus.PARTIALLY_COVERED or not (m.difference_analysis or "").strip():
+        return ""
+    return (
+        '<div class="diff"><div class="diff-head">🔍 差异说明(内外规不一致处)</div>'
+        f"<pre>{html.escape(m.difference_analysis)}</pre></div>"
+    )
+
+
 def _cand_html(m: MatchResult) -> str:
+    """召回候选:按来源制度分组,组内用表格展示(条款号 | 高亮 snippet | 后端 | 得分)。
+
+    组内采用行优先、得分降序,按全文去重——完全相同全文的重复候选被剔除,
+    避免页面堆叠同一段文字;被采用的候选行打「✓」并浅绿高亮。
+    """
     if not m.retrieved_candidates:
         return '<div class="empty">本条款没有可展示的检索召回(检索不可用,或全部召回经判定与本条款不相关)。</div>'
-    parts = []
-    for cand in m.retrieved_candidates:
-        adopted = '<span class="adopted">✓ 采用</span>' if cand.adopted else ""
-        score = f'<span class="score">得分 {cand.score:.4f}</span>' if cand.score is not None else ""
-        parts.append(
-            '<div class="cand">'
-            f'<div class="cand-head"><span class="doc-badge">{html.escape(cand.doc_name)}</span>'
-            f'<span class="label">{html.escape(cand.clause_label or cand.chunk_id)}</span>'
-            f'<span class="backend-badge">{html.escape(cand.backend)}</span>{score}{adopted}</div>'
-            f'<div class="snippet">{highlight(cand.snippet, cand.query)}</div>'
-            '<details><summary>展开全文</summary>'
-            f'<pre>{html.escape(cand.full_text)}</pre></details>'
+    groups: dict[str, list] = {}
+    seen: set[str] = set()
+    for cand in sorted(m.retrieved_candidates, key=lambda c: (not c.adopted, -(c.score or 0.0))):
+        key = cand.full_text or cand.chunk_id
+        if key in seen:
+            continue
+        seen.add(key)
+        groups.setdefault(cand.doc_name or "(未命名)", []).append(cand)
+    return "".join(_cand_table(doc, cands) for doc, cands in groups.items())
+
+
+def _cand_table(doc: str, cands: list[RetrievedCandidate]) -> str:
+    """一个来源制度的候选表格:表头(制度名 + 条数)+ 行。"""
+    rows = "".join(_cand_row(c) for c in cands)
+    return (
+        '<div class="doc-group">'
+        f'<div class="doc-group-head">📄 {html.escape(doc)}'
+        f'<span class="doc-group-count">{len(cands)} 条</span></div>'
+        f'<table class="cand-table"><tbody>{rows}</tbody></table>'
+        "</div>"
+    )
+
+
+def _cand_row(cand: RetrievedCandidate) -> str:
+    """表格一行:条款号(采用打勾)| 关键词高亮 snippet | 后端 | 得分。"""
+    adopted = " adopted" if cand.adopted else ""
+    mark = '<span class="adopted-mark">✓</span> ' if cand.adopted else ""
+    score = f"{cand.score:.4f}" if cand.score is not None else ""
+    return (
+        f'<tr class="cand-row{adopted}">'
+        f'<td class="col-no">{mark}{html.escape(cand.clause_label or cand.chunk_id)}</td>'
+        f'<td class="col-text">{highlight(cand.snippet, cand.query)}</td>'
+        f'<td class="col-backend"><span class="backend-badge">{html.escape(cand.backend)}</span></td>'
+        f'<td class="col-score">{score}</td>'
+        "</tr>"
+    )
+
+
+def _matched_refs(m: MatchResult) -> list[str]:
+    """所有被采纳的内规条款(人类可读 ``制度名 第X条``)。
+
+    优先用已标记 adopted 的召回候选(一条 episode 可能承接多条内规);
+    候选缺失时回退到头部字段(仅第一条承接)。
+    """
+    refs = []
+    for c in m.retrieved_candidates or []:
+        if c.adopted:
+            ref = f"{c.doc_name} {c.clause_label}".strip() or c.chunk_id
+            if ref not in refs:
+                refs.append(ref)
+    if not refs and m.matched_internal_id:
+        refs.append(f"{m.matched_internal_document_name or ''} {m.matched_internal_clause_number}".strip())
+    return refs
+
+
+def _no_intl_html(matches: list[MatchResult]) -> str:
+    """「无需内化」条款集中展示(默认折叠),不再按顺序混入卡片流。
+
+    每行:覆盖状态徽标 + 条款号 + 原文摘要 + 内化依据。不参与覆盖统计/整改。
+    """
+    if not matches:
+        return ""
+    rows = []
+    for m in matches:
+        cls, status_text = _BADGE[m.status]
+        clause_id = html.escape(m.external_article_id or m.external_clause_id)
+        src = m.external_source_text or ""
+        snippet = html.escape(src[:90]) + ("…" if len(src) > 90 else "")
+        reason = html.escape((m.internalization_reason or "").strip())
+        rows.append(
+            '<div class="no-intl-row">'
+            f'<span class="badge {cls}">{status_text}</span>'
+            f'<span class="row-no">{clause_id}</span>'
+            f'<span class="row-text">{snippet}</span>'
+            f'<span class="row-reason">{reason}</span>'
             "</div>"
         )
-    return "".join(parts)
+    return (
+        '<details class="no-intl">'
+        f"<summary>⚪ 无需内化条款 ({len(matches)} 条)"
+        '<span class="hint">宣示性/程序性等,不纳入覆盖比对</span></summary>'
+        f'<div class="no-intl-rows">{"".join(rows)}</div>'
+        "</details>"
+    )
 
 
 def _card_html(m: MatchResult) -> str:
     badge_cls, status_text = _BADGE[m.status]
     clause_id = html.escape(m.external_article_id or m.external_clause_id)
     matched = ""
-    if m.matched_internal_id and m.status != CoverageStatus.NOT_COVERED:
+    refs = _matched_refs(m)
+    if refs:
         matched = (
             '<div class="match">✓ 采用内规: '
-            f'<b>{html.escape(m.matched_internal_document_name or "")}</b> '
-            f'{html.escape(m.matched_internal_clause_number or "")}</div>'
-            "<details><summary>承接内规原文</summary>"
-            f"<pre>{html.escape(m.matched_internal_source_text)}</pre></details>"
+            + ", ".join(f"<b>{html.escape(r)}</b>" for r in refs)
+            + "</div>"
         )
     remedy = ""
     if m.remedy_suggestion:
@@ -279,16 +438,21 @@ def _card_html(m: MatchResult) -> str:
         )
     return (
         f'<section class="card" data-status="{m.status.value}">'
-        '<div class="card-head">'
+        '<header class="card-head" role="button" tabindex="0" aria-expanded="true">'
         f'<span class="clause-id">{clause_id}</span>'
         f'<span class="badge {badge_cls}">{status_text}</span>'
-        "</div>"
+        f"{_internalization_badge(m)}"
+        '<span class="toggle-arrow">▾</span>'
+        "</header>"
+        '<div class="card-body">'
         "<details><summary>外规原文</summary>"
         f"<pre>{html.escape(m.external_source_text)}</pre></details>"
         f'<div class="analysis"><b>判定分析:</b> {html.escape(m.analysis)}</div>'
+        f"{_difference_html(m)}"
         f"{matched}{remedy}"
         '<div class="recall"><h4>🔍 检索召回 top-k</h4>'
         f"{_cand_html(m)}"
+        "</div>"
         "</div>"
         "</section>"
     )
@@ -309,11 +473,14 @@ def render_review_html(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     ext_docs = "、".join(result.external_documents) or "(未命名)"
+    no_intl_matches = [m for m in result.matches if _is_no_internalization(m)]
+    card_matches = [m for m in result.matches if not _is_no_internalization(m)]
+    # 缺失只统计需内化处理的条款(无需内化单列,不当作缺口)。
     stats = {
-        "全部": len(result.matches),
         "完全覆盖": result.fully_covered_count,
         "部分覆盖": result.partially_covered_count,
-        "缺失": result.not_covered_count,
+        "缺失": result.internalizable_missing_count,
+        "无需内化": result.no_internalization_count,
     }
     stats_cells = "".join(
         f'<div class="stat"><b>{n}</b><span>{k}</span></div>' for k, n in stats.items()
@@ -322,13 +489,17 @@ def render_review_html(
         f'<button class="chip chip-{cls}" data-filter="{f}"{" active" if f == "all" else ""}>'
         f"{label} ({count})</button>"
         for cls, f, label, count in (
-            ("all", "all", "全部", len(result.matches)),
+            ("all", "all", "全部", len(card_matches)),
             ("full", CoverageStatus.FULLY_COVERED.value, "完全覆盖", result.fully_covered_count),
             ("part", CoverageStatus.PARTIALLY_COVERED.value, "部分覆盖", result.partially_covered_count),
-            ("miss", CoverageStatus.NOT_COVERED.value, "缺失", result.not_covered_count),
+            ("miss", CoverageStatus.NOT_COVERED.value, "缺失", result.internalizable_missing_count),
         )
     )
-    cards = "".join(_card_html(m) for m in result.matches) or '<p class="empty">无比对结果。</p>'
+    if card_matches:
+        cards = "".join(_card_html(m) for m in card_matches)
+    else:
+        cards = '<p class="empty">没有需要内化处理的条款(全部判定无需内化,或无比对结果)。</p>'
+    no_intl_html = _no_intl_html(no_intl_matches)
 
     doc = (
         "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n"
@@ -343,17 +514,19 @@ def render_review_html(
         f'<div class="meta">外规: <b>{html.escape(ext_docs)}</b>'
         f"{f' · 内规库: <b>{html.escape(store_name)}</b>' if store_name else ''}"
         f" · 生成时间: {datetime.now():%Y-%m-%d %H:%M}"
-        f" · 覆盖率: {result.coverage_rate:.1%}</div>\n"
+        f" · 覆盖率: {result.coverage_rate:.1%} (需内化处理 {result.internalizable_count} 条"
+        f"{f', {result.no_internalization_count} 条无需内化' if result.no_internalization_count else ''})</div>\n"
         f'<div class="stats">{stats_cells}</div>\n'
         f'<div class="chips">{chips}</div>\n'
         '<div class="controls">'
-        '<input id="search" type="search" placeholder="按关键词筛选条款 / 召回片段…">'
+        '<input id="search" type="search" placeholder="按关键词筛选条款 / 召回片段 / 无需内化列表…">'
         '<button id="expand-all">全部展开</button>'
         '<button id="collapse-all">全部收起</button>'
         "</div>\n"
         "</header>\n"
-        f"<main>\n{cards}\n</main>\n"
-        "<footer>「✓ 采用」= 该内规条款被比对 episode 采纳为承接条款;其余为批量预召回候选,供人工复核相关性。</footer>\n"
+        f"<main>\n{no_intl_html}\n{cards}\n</main>\n"
+        "<footer>「✓」= 该内规条款被比对 episode 采纳为承接条款;其余为批量预召回候选,供人工复核相关性。"
+        "覆盖/缺失统计只算需内化处理条款,无需内化条款不构成制度缺口。</footer>\n"
         "</div>\n"
         f"<script>{_JS}</script>\n</body>\n</html>"
     )

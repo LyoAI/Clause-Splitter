@@ -15,13 +15,21 @@ from clause_splitter.agent import AgentResult, ReActAgent
 
 @dataclass
 class ExternalClause:
-    """一条外规条款,作为一次比对的输入单元。"""
+    """一条外规条款,作为一次比对的输入单元。
+
+    ``clause_type`` / ``internalization_decision`` / ``internalization_reason``
+    由**前置内化判定阶段**(检索之前)填充;未判定时为空串(视为需内化处理,
+    保守纳入覆盖率口径)。
+    """
 
     document_name: str = ""
     clause_number: str = ""
     section: str = ""
     full_text: str = ""
     obligations: list[dict[str, Any]] = field(default_factory=list)
+    clause_type: str = ""
+    internalization_decision: str = ""
+    internalization_reason: str = ""
 
     @property
     def clause_id(self) -> str:

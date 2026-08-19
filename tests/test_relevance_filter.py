@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import asyncio
 
-from clause_splitter.compare.review import _judge_candidates, filter_relevant_candidates
+from clause_splitter.compare.review import (
+    _RELEVANCE_SYSTEM,
+    _judge_candidates,
+    filter_relevant_candidates,
+)
 from clause_splitter.models import CompareResult, CoverageStatus, MatchResult
 from clause_splitter.models.compare import RetrievedCandidate
 
@@ -153,3 +157,24 @@ def test_filter_noop_without_candidates_or_llm():
     has_cands = _result(_match([_cand(0)]))
     assert _run(filter_relevant_candidates(has_cands, None)) == 0
     assert [c.chunk_id for c in has_cands.matches[0].retrieved_candidates] == ["内规#第0条"]
+
+
+def test_relevance_system_is_strict_binary():
+    """过滤 prompt 是严格二分类:不再「宁可多留不可漏」,改为「宁可漏判不可误留」。"""
+    assert "宁可多留不可漏" not in _RELEVANCE_SYSTEM
+    assert "宁可漏判不可误留" in _RELEVANCE_SYSTEM
+    assert "制度文件标题" in _RELEVANCE_SYSTEM  # 依据文件标题 + 条款内容
+    assert "条款内容" in _RELEVANCE_SYSTEM
+    assert "二分类" in _RELEVANCE_SYSTEM
+
+
+def test_judge_prompt_carries_doc_title_and_clause_content():
+    """判定 prompt 里每条候选带制度文件名 + 条款号 + 条款内容,供二分类参考。"""
+    m = _match([_cand(0, doc="数据安全管理制度"), _cand(1, doc="财务报销制度")],
+               ext="外规要求建立数据分类分级制度。")
+    llm = _FakeLLM(['{"related": []}'])
+    _run(_judge_candidates(llm, m))
+    user = llm.calls[0][-1]["content"]
+    assert "数据安全管理制度" in user
+    assert "财务报销制度" in user
+    assert "外规要求建立数据分类分级制度" in user

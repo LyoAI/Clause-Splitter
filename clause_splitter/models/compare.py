@@ -24,6 +24,25 @@ class CoverageStatus(str, Enum):
     NOT_COVERED = "缺失"
 
 
+#: 内化判定的唯二取值:需要内化 / 无需内化。
+NEEDS_INTERNALIZATION = "需要内化"
+NO_INTERNALIZATION = "无需内化"
+
+
+def normalize_internalization_decision(decision: str) -> str:
+    """内化判定两值化:「预防性内化」并入「需要内化」。
+
+    历史上内化判定有三值(需要内化/预防性内化/无需内化);为简化页面与报告,
+    收敛为二值。指导性/金融科技特殊条款的「预防性内化」按保守口径归入
+    「需要内化」——仍在复核/整改范围内,缘由保留在 internalization_reason。
+    空值/未知值原样返回(渲染层回「待判定」)。
+    """
+    d = (decision or "").strip()
+    if d == "预防性内化":
+        return NEEDS_INTERNALIZATION
+    return d
+
+
 # ── Retrieved candidate (HTML 复核展示) ──────────────────────────────────
 
 class RetrievedCandidate(BaseModel):
@@ -101,6 +120,12 @@ class MatchResult(BaseModel):
         default="",
         description="Full source text of the matched internal obligation — evidence for the gap analysis report",
     )
+    matched_internal_clause_ids: list[str] = Field(
+        default_factory=list,
+        description="All internal clause ids grounded as adopted by the episode "
+                    "(head id in matched_internal_id; this list keeps the full set for "
+                    "multi-clause adoption)",
+    )
     analysis: str = Field(
         ...,
         min_length=1,
@@ -109,6 +134,28 @@ class MatchResult(BaseModel):
     remedy_suggestion: str = Field(
         default="",
         description="Suggested fix for gap or partial coverage",
+    )
+    clause_type: str = Field(
+        default="",
+        description="External clause type per the internalization framework: "
+                    "义务性条款 / 指导性条款 / 宣示性条款 (empty = not yet judged)",
+    )
+    internalization_decision: str = Field(
+        default="",
+        description="Whether this external clause needs to be internalized: "
+                    "需要内化 / 无需内化 (empty = 待判定;旧数据『预防性内化』"
+                    "经 normalize_internalization_decision 归并为『需要内化』)",
+    )
+    internalization_reason: str = Field(
+        default="",
+        description="Rationale for the internalization decision (clause type + "
+                    "applicability + five-dimension assessment / special cases)",
+    )
+    difference_analysis: str = Field(
+        default="",
+        description="For PARTIALLY_COVERED only: concrete differences between the "
+                    "external requirement and the internal provision (missing "
+                    "sub-requirements / looser constraints / scope mismatch / vagueness)",
     )
     retrieved_candidates: list[RetrievedCandidate] = Field(
         default_factory=list,
@@ -189,10 +236,38 @@ class CompareResult(BaseModel):
         return sum(1 for m in self.matches if m.status == CoverageStatus.NOT_COVERED)
 
     @property
+    def internalizable_count(self) -> int:
+        """覆盖率分母:需要内化处理的条款数(需要内化 + 待判定)。
+
+        "无需内化"的条款不进入覆盖比对,不计入分母;前置判定失败(字段为空)
+        按需内化处理保守计入,避免漏掉覆盖统计。
+        """
+        return sum(1 for m in self.matches if (m.internalization_decision or "").strip() != "无需内化")
+
+    @property
+    def no_internalization_count(self) -> int:
+        """无需内化的条款数(宣示性/程序性等),不参与覆盖率统计。"""
+        return sum(1 for m in self.matches if (m.internalization_decision or "").strip() == "无需内化")
+
+    @property
+    def internalizable_missing_count(self) -> int:
+        """需内化处理但缺失的条款数(排除"无需内化",真实制度缺口)。"""
+        return sum(
+            1 for m in self.matches
+            if m.status == CoverageStatus.NOT_COVERED
+            and (m.internalization_decision or "").strip() != "无需内化"
+        )
+
+    @property
     def coverage_rate(self) -> float:
-        total = len(self.matches)
+        """覆盖率 = (完全覆盖 + 部分覆盖) / 需内化处理条款数。
+
+        只统计需要内化的外规条款;"无需内化"的条款排除在外。
+        无需要内化的条款时视为无缺口(1.0)。
+        """
+        total = self.internalizable_count
         if total == 0:
-            return 0.0
+            return 1.0
         return (self.fully_covered_count + self.partially_covered_count) / total
 
     def to_summary_dict(self) -> dict:

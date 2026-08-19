@@ -13,7 +13,7 @@ import json
 
 from clause_splitter.agent import AgentResult, AgentTurn
 from clause_splitter.compare.episode import ExternalClause
-from clause_splitter.compare.ground import ground_episode
+from clause_splitter.compare.ground import _segment_label, ground_episode
 from clause_splitter.models import CoverageStatus
 from clause_splitter.tools.searcher.store import Chunk, DocumentStore
 
@@ -39,8 +39,12 @@ def _mini_store() -> DocumentStore:
     return store
 
 
-def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试", remedy="测试") -> AgentResult:
-    """构造一个 agent episode:轨迹只返回 seen_chunk_ids,答案声称 claimed_ids。"""
+def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试", remedy="测试",
+               extra: dict | None = None) -> AgentResult:
+    """构造一个 agent episode:轨迹只返回 seen_chunk_ids,答案声称 claimed_ids。
+
+    ``extra`` 可并入答案 JSON(覆盖/新增键),用于测试内化判定等新字段透传。
+    """
     trajectory = [
         AgentTurn(
             step=i,
@@ -58,6 +62,7 @@ def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试",
             "evidence": {k: v for k, v in evidence.items()},
             "analysis": analysis,
             "remedy_suggestion": remedy,
+            **(extra or {}),
         },
         ensure_ascii=False,
     )
@@ -130,3 +135,118 @@ def test_grounded_empty_analysis_still_nonempty():
     )
     assert r["analysis"].strip()
     assert r["analysis"].startswith("承接内规条款:")
+
+
+# ── _segment_label 编号修正回归 ─────────────────────────────────────────
+
+
+def _chunk(chunk_id: str, text: str, section: str = "", meta: dict | None = None) -> Chunk:
+    m = {"section": section, **(meta or {})}
+    return Chunk(chunk_id=chunk_id, doc_id=chunk_id.split("#")[0], order=0, text=text, meta=m)
+
+
+def test_segment_label_excel_leaf_no_separator():
+    """Excel 内规库 section 直接是 "第一条"(无 ` > ` 分隔符) → 返回 "第一条",
+    而不是 0 起始的 chunk 序号(历史偏移 bug)。"""
+    assert _segment_label(_chunk("网络数据安全管理条例#0", "第一条 数据安全…", section="第一条")) == "第一条"
+    assert _segment_label(_chunk("网络数据安全管理条例#1", "第二条 数据出境…", section="第二条")) == "第二条"
+
+
+def test_segment_label_path_takes_last_leaf():
+    """章节路径取末级标题。"""
+    assert _segment_label(_chunk("doc#0", "第三条…", section="第一章 总则 > 第三条")) == "第三条"
+
+
+def test_segment_label_no_section_extracts_article_from_text():
+    """无 section 时从原文开头提取 "第X条"。"""
+    assert _segment_label(_chunk("doc#5", "第三条　处理者应当…", section="")) == "第三条"
+    assert _segment_label(_chunk("doc#5", "第二十条　…", section="")) == "第二十条"
+
+
+def test_segment_label_fallback_is_1based():
+    """既无 section 也无条款号 → 回退 1 起始段落号(第N段),不再显示 0。"""
+    assert _segment_label(_chunk("doc#0", "无编号的一段文字", section="")) == "第1段"
+    assert _segment_label(_chunk("doc#8", "无编号的一段文字", section="")) == "第9段"
+
+
+# ── 内化判定(前置)/ 差异说明(episode) 透传 ─────────────────────────────
+
+
+def _ext_with_intl(**kw) -> ExternalClause:
+    """带前置内化判定的外规条款(模拟检索前已由 pre_internalize 填充字段)。"""
+    return ExternalClause(
+        document_name="外规", clause_number="第一条", full_text="测试条款",
+        clause_type=kw.get("clause_type", "义务性条款"),
+        internalization_decision=kw.get("internalization_decision", "需要内化"),
+        internalization_reason=kw.get("internalization_reason", "前置判定依据"),
+    )
+
+
+def test_ground_episode_passes_through_pre_classified_internalization():
+    """内化判定来自前置阶段(存于 ext),原样透传到 MatchResult;差异说明仍由 episode 产出。"""
+    store = _mini_store()
+    r = ground_episode(
+        _mk_result(
+            "部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID],
+            extra={
+                # episode 契约已移除内化字段:即使 agent 误输出,也不该被采纳。
+                "clause_type": "宣示性条款",
+                "internalization_decision": "无需内化",
+                "difference_analysis": "外规要求加密+访问控制;内规仅覆盖加密,遗漏访问控制。",
+            },
+        ),
+        store, _ext_with_intl(
+            clause_type="义务性条款", internalization_decision="需要内化",
+            internalization_reason="外规为义务性条款且涉及核心业务",
+        ),
+    )
+    # 前置判定优先级高于 episode 输出。
+    assert r["clause_type"] == "义务性条款"
+    assert r["internalization_decision"] == "需要内化"
+    assert r["internalization_reason"] == "外规为义务性条款且涉及核心业务"
+    # 差异说明仍来自 episode(部分覆盖必须写差异)。
+    assert r["difference_analysis"].startswith("外规要求加密")
+    # 覆盖判定本身不受新字段影响
+    assert r["status"] == CoverageStatus.PARTIALLY_COVERED
+
+
+def test_ground_episode_missing_new_fields_defaults_empty():
+    """未做前置判定(ext 字段空)/旧答案 → 内化字段回空串,MatchResult 校验不炸。"""
+    store = _mini_store()
+    r = ground_episode(_mk_result("缺失", [], {}, [], analysis="缺失原因", remedy=""), store, EXT)
+    assert r["clause_type"] == ""
+    assert r["internalization_decision"] == ""
+    assert r["internalization_reason"] == ""
+    assert r["difference_analysis"] == ""
+    from clause_splitter.models import MatchResult
+
+    m = MatchResult(**r)
+    assert m.clause_type == "" and m.internalization_decision == "" and m.difference_analysis == ""
+
+
+def test_ground_episode_normalizes_preventive_to_need():
+    """旧数据 ext 填了「预防性内化」→ 透传时两值化为「需要内化」。"""
+    store = _mini_store()
+    r = ground_episode(
+        _mk_result("缺失", [], {}, []),
+        store, _ext_with_intl(internalization_decision="预防性内化"),
+    )
+    assert r["internalization_decision"] == "需要内化"
+    assert r["clause_type"] == "义务性条款"  # 其余字段原样透传
+
+
+def test_ground_episode_tolerates_non_str_diff_analysis():
+    """episode 把 difference_analysis 输出成非字符串(如 None/数字) → 回空串,不抛异常。"""
+    store = _mini_store()
+    r = ground_episode(
+        _mk_result("缺失", [], {}, [], extra={"difference_analysis": 123}),
+        store, EXT,
+    )
+    assert r["difference_analysis"] == ""
+    # 前置判定字段即使 ext 填了非 str 也宽容回空串(防脏数据)。
+    r2 = ground_episode(
+        _mk_result("缺失", [], {}, []),
+        store, _ext_with_intl(clause_type=123, internalization_decision=None),
+    )
+    assert r2["clause_type"] == ""
+    assert r2["internalization_decision"] == ""

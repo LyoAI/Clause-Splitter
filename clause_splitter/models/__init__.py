@@ -9,7 +9,13 @@ from .clause import (
     ObligationRule,
     StructureLevel,
 )
-from .compare import CompareResult, CoverageStatus, MatchResult, PipelineResult
+from .compare import (
+    CompareResult,
+    CoverageStatus,
+    MatchResult,
+    PipelineResult,
+    normalize_internalization_decision,
+)
 from .task import TaskInfo, TaskStatusEnum
 
 __all__ = [
@@ -24,6 +30,7 @@ __all__ = [
     "CoverageStatus",
     "MatchResult",
     "PipelineResult",
+    "normalize_internalization_decision",
     "TaskInfo",
     "TaskStatusEnum",
 ]

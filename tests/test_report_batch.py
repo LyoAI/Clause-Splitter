@@ -168,6 +168,10 @@ def test_batch_failure_falls_back_template():
     assert "完全覆盖" in out["report"]
     assert "缺失" in out["report"]
     assert "外规#第24条" in out["report"]  # 模板逐行呈现全部条款
+    # 模板回退报告带上内化判定总览 + 各节内化判定列(空字段 → 待判定)
+    assert "内化判定总览" in out["report"]
+    assert "| 内化判定 | 条款数 | 占比 | 说明 |" in out["report"]
+    assert "待判定" in out["report"]
 
 
 def test_to_summary_dict_excludes_candidates():

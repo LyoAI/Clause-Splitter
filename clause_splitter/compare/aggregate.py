@@ -17,6 +17,7 @@ import asyncio
 from typing import Any
 
 from clause_splitter.agent import ReActAgent, persist_result
+from clause_splitter.agent.prompts import PRE_INTERNALIZE_PROMPT, build_pre_internalize_prompt
 from clause_splitter.config import (
     COMPARE_CONCURRENCY,
     CONTEXT_SCOPE_MAX,
@@ -29,12 +30,17 @@ from clause_splitter.config import (
     SNIPPET_MAX_TOKENS,
     doc_cache_dir,
 )
-from clause_splitter.models import CompareResult, CoverageStatus, MatchResult
+from clause_splitter.models import (
+    CompareResult,
+    CoverageStatus,
+    MatchResult,
+    normalize_internalization_decision,
+)
 from clause_splitter.tools import ToolRegistry, build_searchers
 from clause_splitter.tools.searcher.store import DocumentStore
 from clause_splitter.utils import get_logger
 from .episode import ExternalClause, run_clause_episode
-from .ground import ground_episode, parse_answer_json
+from .ground import _norm_str, ground_episode, parse_answer_json
 from .retrieve import pre_retrieve
 
 logger = get_logger()
@@ -104,7 +110,59 @@ def _timeout_match(ext: ExternalClause, timeout_s: float) -> MatchResult:
         status=CoverageStatus.NOT_COVERED,
         analysis=f"该条款比对超时(>{timeout_s:g}s),未完成承接判定,需人工复核。",
         remedy_suggestion="待人工复核:确认该外规条款是否确有内规承接。",
+        clause_type=ext.clause_type,
+        internalization_decision=ext.internalization_decision,
+        internalization_reason=ext.internalization_reason,
     )
+
+
+def _no_internalize_match(ext: ExternalClause) -> MatchResult:
+    """无需内化条款:不进入覆盖比对,直接生成轻量 MatchResult。
+
+    覆盖率口径只统计需内化处理的条款,故此处不参与覆盖统计;复核页/报告
+    靠 internalization_decision == "无需内化" 识别并排除出缺失/行动项。
+    """
+    return MatchResult(
+        external_clause_id=ext.clause_id,
+        external_document_name=ext.document_name,
+        external_article_id=ext.clause_number,
+        external_source_text=ext.full_text,
+        status=CoverageStatus.NOT_COVERED,
+        analysis="该条款为宣示性/程序性规定(或判定无需内化),不纳入覆盖比对。",
+        remedy_suggestion="",
+        clause_type=ext.clause_type,
+        internalization_decision=ext.internalization_decision,
+        internalization_reason=ext.internalization_reason,
+    )
+
+
+async def _pre_internalize(
+    llm: Any, ext: ExternalClause, sem: asyncio.Semaphore, timeout_s: float
+) -> None:
+    """检索之前判定某条外规是否需内化,结果写入 ``ext``(决定是否进入 episode)。
+
+    判定失败(超时/解析异常/LLM 报错)保持 fail-open:内化字段留空,按
+    "需内化处理"保守进入 episode —— 不漏掉覆盖统计,也不阻塞整批比对。
+    """
+    async with sem:
+        try:
+            resp = await asyncio.wait_for(
+                llm.ainvoke([
+                    {"role": "system", "content": PRE_INTERNALIZE_PROMPT},
+                    {"role": "user", "content": build_pre_internalize_prompt(ext)},
+                ]),
+                timeout=timeout_s,
+            )
+            content = resp.content if hasattr(resp, "content") else str(resp)
+            parsed = parse_answer_json(content)
+            ext.clause_type = _norm_str(parsed.get("clause_type") if parsed else "")
+            # 两值化:预防性内化 → 需要内化(写入点归一,下游一致)。
+            ext.internalization_decision = normalize_internalization_decision(
+                _norm_str(parsed.get("internalization_decision") if parsed else "")
+            )
+            ext.internalization_reason = _norm_str(parsed.get("internalization_reason") if parsed else "")
+        except Exception as e:  # noqa: BLE001 — 判定失败不拖垮整批
+            logger.warning("前置内化判定失败(%s),按需内化处理: %s", ext.clause_id, e)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -132,6 +190,13 @@ async def run_compare(
 ) -> CompareResult:
     """跑全部外规条款的比对 episode,聚合为 CompareResult。
 
+    流程(内化判定前置于检索):
+    1. 对每条外规先做**前置内化判定**(只依据条款原文,不检索内规库),
+       决策写入 ``ExternalClause``(clause_type / internalization_decision / reason)。
+    2. 无需内化条款 → 直接生成轻量 MatchResult,**不进入检索 episode**;
+       需内化处理(需要内化/判定失败)条款 → 正常跑 episode 比对。
+    3. 覆盖率口径只统计需内化处理的条款(见 ``CompareResult.coverage_rate``)。
+
     Args:
         external_clauses: 外规条款列表(每条 = 一个 episode)。
         store: 已建好索引的内规条款库。
@@ -151,6 +216,15 @@ async def run_compare(
             total_external_obligations=0,
             total_internal_obligations=len(store.all_chunks()),
         )
+
+    # 前置内化判定:检索之前逐条判定是否需内化(写入 ext)。
+    pre_sem = asyncio.Semaphore(concurrency)
+    await asyncio.gather(*(_pre_internalize(llm, c, pre_sem, episode_timeout) for c in external_clauses))
+    n_skip = sum(1 for c in external_clauses if (c.internalization_decision or "").strip() == "无需内化")
+    logger.info(
+        "前置内化判定完成:%d 条外规条款,其中 %d 条无需内化(不进入覆盖比对)",
+        len(external_clauses), n_skip,
+    )
 
     registry, bound_tools = _build_registry(
         searcher, store,
@@ -173,14 +247,19 @@ async def run_compare(
                 store, list(registry.searchers.values()),
                 ext.full_text, top_k=review_top_k,
             )
-            adopted = match.matched_internal_id
+            adopted_ids = set(match.matched_internal_clause_ids or ())
+            if not adopted_ids and match.matched_internal_id:
+                adopted_ids = {match.matched_internal_id}
             for cand in candidates:
-                cand.adopted = adopted is not None and cand.chunk_id == adopted
+                cand.adopted = cand.chunk_id in adopted_ids
             match.retrieved_candidates = candidates
         except Exception as e:  # noqa: BLE001 — 展示数据失败不拖垮批量
             logger.warning("pre_retrieve 失败(%s),复核页该条无候选: %s", ext.clause_id, e)
 
     async def _run_one(ext: ExternalClause) -> MatchResult:
+        # 无需内化条款:不检索、不跑 episode,直接给轻量结果(覆盖率不计)。
+        if (ext.internalization_decision or "").strip() == "无需内化":
+            return _no_internalize_match(ext)
         async with sem:
             try:
                 result = await asyncio.wait_for(
@@ -215,6 +294,9 @@ async def run_compare(
                     status=CoverageStatus.NOT_COVERED,
                     analysis="该条款比对结果无法落地(grounding 校验失败),已降级为缺失,需人工复核。",
                     remedy_suggestion="待人工复核:确认该外规条款是否确有内规承接。",
+                    clause_type=ext.clause_type,
+                    internalization_decision=ext.internalization_decision,
+                    internalization_reason=ext.internalization_reason,
                 )
             _attach_candidates(match, ext)
             return match

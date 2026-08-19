@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Any
 
 from clause_splitter.config import REPORT_BATCH_SIZE, REPO_ROOT
-from clause_splitter.models import CompareResult, CoverageStatus, MatchResult
+from clause_splitter.models import (
+    CompareResult,
+    CoverageStatus,
+    MatchResult,
+    normalize_internalization_decision,
+)
 from clause_splitter.utils import get_logger
 from clause_splitter.utils.skill_loader import load_skill
 from ..tools.searcher.store import DocumentStore
@@ -43,10 +48,14 @@ _STATUS_LABEL = {
 _BATCH_SUMMARY_SYSTEM = (
     "你是一名合规比对助手。你会收到一批「外规条款 vs 内规条款」的比对结果"
     "(每条含 external_source_text / status / matched_internal_document_name / "
-    "matched_internal_clause_number / matched_internal_source_text / analysis / remedy_suggestion)。\n"
+    "matched_internal_clause_number / matched_internal_source_text / analysis / remedy_suggestion / "
+    "clause_type / internalization_decision / internalization_reason / difference_analysis)。\n"
     "请为这一批条款输出紧凑的中文总结,作为后续报告撰写者的素材:\n"
     "- 逐条列出:外规出处+条款号 → 覆盖状态(完全覆盖/部分覆盖/缺失) → 承接内规"
-    "(制度名+条款号;缺失写「无」) → 一句话差距/整改建议。\n"
+    "(制度名+条款号;缺失写「无」) → 内化判定(需要内化/无需内化,标注条款性质)"
+    " → 一句话差距/整改建议。\n"
+    "- 判定为「无需内化」的条款单独列出,不当作差距、不列整改建议;覆盖率只统计需内化处理的条款。\n"
+    "- 部分覆盖的条目必须带上 difference_analysis 的要点(内外规差异:遗漏子项/约束更松/主体范围不一致等)。\n"
     "- 凡被承接(完全/部分覆盖)的条目,必须用「>」引用 matched_internal_source_text 的关键句作证据,"
     "证明承接成立;缺失的条目说明缺失原因。\n"
     "- 只输出该批素材,不要输出报告标题/摘要/统计表/结论等整篇报告框架,不要重复外规原文全文。\n"
@@ -122,8 +131,10 @@ def _build_final_prompt(result: CompareResult, summaries: list[str]) -> str:
     stats = (
         f"- 外规制度:{', '.join(result.external_documents) or '—'}\n"
         f"- 内规制度:{', '.join(result.internal_documents) or '—'}\n"
-        f"- 外规条款共 {result.total_external_obligations} 条:完全覆盖 {result.fully_covered_count} 条、"
-        f"部分覆盖 {result.partially_covered_count} 条、缺失 {result.not_covered_count} 条。"
+        f"- 外规条款共 {result.total_external_obligations} 条,需内化处理 {result.internalizable_count} 条"
+        f"(完全覆盖 {result.fully_covered_count} 条、部分覆盖 {result.partially_covered_count} 条、"
+        f"缺失 {result.internalizable_missing_count} 条);{result.no_internalization_count} 条判定无需内化,"
+        f"不纳入覆盖统计。"
     )
     sections = "\n\n".join(
         f"## 批次 {i + 1} 总结\n\n{s}" for i, s in enumerate(summaries)
@@ -151,16 +162,50 @@ def _internal_ref(m) -> str:
 
 
 def _stats_table(result: CompareResult) -> str:
-    n = max(len(result.matches), 1)
+    """覆盖情况总览 —— 分母为需内化处理条款数(不含"无需内化")。"""
+    n = max(result.internalizable_count, 1)
     rows = [
         ("完全覆盖", result.fully_covered_count, "内规已完整承接"),
         ("部分覆盖", result.partially_covered_count, "需补足子要求或收紧约束"),
-        ("缺失", result.not_covered_count, "无制度承接，风险最高"),
+        ("缺失", result.internalizable_missing_count, "无制度承接，风险最高"),
     ]
     lines = ["| 覆盖状态 | 条款数 | 占比 | 说明 |", "|---|---:|---:|---|"]
     for label, count, note in rows:
         lines.append(f"| {label} | {count} | {count / n:.1%} | {note} |")
+    if result.no_internalization_count:
+        lines.append(
+            f"\n> 共 {len(result.matches)} 条外规条款,其中 {result.no_internalization_count} 条判定"
+            "**无需内化**(宣示性/程序性等),不纳入覆盖率统计;上表按需内化处理的 "
+            f"{result.internalizable_count} 条统计。"
+        )
     return "\n".join(lines)
+
+
+def _internalization_overview(result: CompareResult) -> str:
+    """内化判定概览:需要内化 / 无需内化 / 待判定 各几条(二值,预防性并入需要内化)。"""
+    if not result.matches:
+        return "本报告无内化判定数据。"
+    total = len(result.matches)
+    counts: dict[str, int] = {}
+    for m in result.matches:
+        key = normalize_internalization_decision((m.internalization_decision or "").strip()) or "待判定"
+        counts[key] = counts.get(key, 0) + 1
+    notes = {
+        "需要内化": "义务性条款、指导性/金融科技特殊领域（预防性内化），需新建/修订制度",
+        "无需内化": "宣示性/程序性条款或已有制度充分覆盖",
+        "待判定": "未给出内化判定，需人工复核",
+    }
+    lines = ["| 内化判定 | 条款数 | 占比 | 说明 |", "|---|---:|---:|---|"]
+    for decision in ("需要内化", "无需内化", "待判定"):
+        n = counts.get(decision, 0)
+        if n:
+            lines.append(f"| {decision} | {n} | {n / total:.1%} | {notes[decision]} |")
+    return "\n".join(lines)
+
+
+def _intl(m) -> str:
+    """单条款的内化判定列值(空 → 待判定)。"""
+    return (m.internalization_decision or "待判定").strip()
 
 
 def _covered_section(result: CompareResult) -> str:
@@ -168,14 +213,15 @@ def _covered_section(result: CompareResult) -> str:
     if not rows:
         return "本部分无完全承接条款。"
     lines = [
-        "| 外规条款 | 外规要求（原文摘要） | 承接的内规 | 说明 |",
-        "|---|---|---|---|",
+        "| 外规条款 | 外规要求（原文摘要） | 承接的内规 | 内化判定 | 说明 |",
+        "|---|---|---|---|---|",
     ]
     for m in rows:
         internal = f"{_internal_ref(m)}"
         source = m.matched_internal_source_text or ""
         lines.append(
-            f"| {m.external_clause_id} | {m.external_source_text[:60]}… | {internal} | {m.analysis[:80]} |"
+            f"| {m.external_clause_id} | {m.external_source_text[:60]}… | {internal} | "
+            f"{_intl(m)} | {m.analysis[:80]} |"
         )
         if source:
             lines.append(f"> 承接原文：{source}")
@@ -187,13 +233,14 @@ def _partial_section(result: CompareResult) -> str:
     if not rows:
         return "本部分无部分承接条款。"
     lines = [
-        "| 外规条款 | 外规要求 | 部分承接的内规 | 差距点 | 补足建议 |",
-        "|---|---|---|---|---|",
+        "| 外规条款 | 外规要求 | 部分承接的内规 | 内化判定 | 差异说明 | 补足建议 |",
+        "|---|---|---|---|---|---|",
     ]
     for m in rows:
+        diff = (m.difference_analysis or "—").replace("\n", " ")
         lines.append(
             f"| {m.external_clause_id} | {m.external_source_text[:50]}… | "
-            f"{_internal_ref(m)} | {m.analysis[:70]} | {m.remedy_suggestion or '—'} |"
+            f"{_internal_ref(m)} | {_intl(m)} | {diff[:80]} | {m.remedy_suggestion or '—'} |"
         )
         if m.matched_internal_source_text:
             lines.append(f"> 承接原文：{m.matched_internal_source_text}")
@@ -201,25 +248,39 @@ def _partial_section(result: CompareResult) -> str:
 
 
 def _missing_section(result: CompareResult) -> str:
-    rows = [m for m in result.matches if m.status == CoverageStatus.NOT_COVERED]
-    if not rows:
-        return "本部分无缺失条款（全部承接）。"
-    lines = [
-        "| 外规条款 | 外规要求（原文） | 缺失原因 | 整改建议 |",
-        "|---|---|---|---|",
+    """缺失的需内化条款(真实制度缺口);"无需内化"单列说明,不当作缺口。"""
+    rows = [
+        m for m in result.matches
+        if m.status == CoverageStatus.NOT_COVERED
+        and (m.internalization_decision or "").strip() != "无需内化"
     ]
-    for m in rows:
-        lines.append(
-            f"| {m.external_clause_id} | {m.external_source_text[:50]}… | "
-            f"{m.analysis[:60]} | {m.remedy_suggestion or '—'} |"
-        )
+    skipped = [m for m in result.matches if (m.internalization_decision or "").strip() == "无需内化"]
+    lines = []
+    if rows:
+        lines = [
+            "| 外规条款 | 外规要求（原文） | 内化判定 | 缺失原因 | 整改建议 |",
+            "|---|---|---|---|---|",
+        ]
+        for m in rows:
+            lines.append(
+                f"| {m.external_clause_id} | {m.external_source_text[:50]}… | "
+                f"{_intl(m)} | {m.analysis[:60]} | {m.remedy_suggestion or '—'} |"
+            )
+    else:
+        lines.append("本部分无缺失的需内化条款。")
+    if skipped:
+        lines.append("")
+        lines.append("以下条款判定**无需内化**(宣示性/程序性等),不构成制度缺口:")
+        lines.append("、".join(m.external_clause_id for m in skipped))
     return "\n".join(lines)
 
 
 def _priority_actions(result: CompareResult) -> str:
-    """结论与行动建议:把部分覆盖 + 缺失的 remedy 按状态优先级排。"""
+    """结论与行动建议:部分覆盖 + 缺失的 remedy 按优先级排;"无需内化"排除。"""
     items = []
     for m in result.matches:
+        if (m.internalization_decision or "").strip() == "无需内化":
+            continue
         if m.status == CoverageStatus.NOT_COVERED:
             items.append((1, m, "高"))
         elif m.status == CoverageStatus.PARTIALLY_COVERED:
@@ -236,15 +297,21 @@ def _priority_actions(result: CompareResult) -> str:
 def _template_report(result: CompareResult) -> str:
     """确定性回退报告:统计表 + 三节明细 + 行动清单,证据原文直接引用。"""
     n = len(result.matches)
+    skip = result.no_internalization_count
     scope = (
-        f"分析范围：共 {n} 条外规条款，涉及 {len(result.external_documents)} 个外规制度、"
+        f"分析范围：共 {n} 条外规条款（其中 {skip} 条判定无需内化），需内化处理 "
+        f"{result.internalizable_count} 条；涉及 {len(result.external_documents)} 个外规制度、"
         f"{len(result.internal_documents)} 个内规制度。"
     )
-    top_risks = [m for m in result.matches if m.status == CoverageStatus.NOT_COVERED][:3]
+    top_risks = [
+        m for m in result.matches
+        if m.status == CoverageStatus.NOT_COVERED
+        and (m.internalization_decision or "").strip() != "无需内化"
+    ][:3]
     risk_lines = "\n".join(
         f"- **{m.external_clause_id}**（{m.external_document_name}）：{m.analysis[:60]}"
         for m in top_risks
-    ) or "- 无完全缺失条款。"
+    ) or "- 无需补足的需内化条款。"
 
     return f"""# 内外规合规差距深度分析报告
 
@@ -257,6 +324,10 @@ def _template_report(result: CompareResult) -> str:
 ## 覆盖情况总览
 
 {_stats_table(result)}
+
+## 内化判定总览
+
+{_internalization_overview(result)}
 
 ## 三、完全承接的条款
 

@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 from clause_splitter.agent import AgentResult, AgentTurn
-from clause_splitter.models import CoverageStatus
+from clause_splitter.models import CoverageStatus, normalize_internalization_decision
 from clause_splitter.utils import get_logger
 from .episode import ExternalClause
 from ..tools.searcher.store import DocumentStore
@@ -106,6 +106,13 @@ def ground_episode(
         "matched_internal_source_text": "",
         "analysis": analysis,
         "remedy_suggestion": remedy,
+        # 内化判定由**前置内化判定阶段**(检索前)写入 ext,episode 不再产出;
+        # 缺失/非 str 一律回空串,不阻塞比对;旧数据「预防性内化」两值化为「需要内化」。
+        "clause_type": _norm_str(ext.clause_type),
+        "internalization_decision": normalize_internalization_decision(_norm_str(ext.internalization_decision)),
+        "internalization_reason": _norm_str(ext.internalization_reason),
+        # difference_analysis 仍由 episode 产出(部分覆盖差异说明依赖比对结果)。
+        "difference_analysis": _norm_str(parsed.get("difference_analysis") if parsed else ""),
     }
 
     # 缺失:无承接 —— 直接返回(claimed ids 即使有也不落地)。
@@ -148,7 +155,8 @@ def ground_episode(
             "remedy_suggestion": base["remedy_suggestion"] or _DOWNGRADE_REMEDY,
         }
 
-    # 用第一承接条款回填 MatchResult 的内规侧字段(报告展示用)。
+    # 用第一承接条款回填 MatchResult 的内规侧字段(报告展示用);全量承接
+    # 列表存 matched_internal_clause_ids(复核页给所有 adopted 候选打「✓ 采用」)。
     # 内规 chunk 来自 mineru 层级分块:制度名取 chunk.doc_id,条款/段落标识
     # 取 section 路径的末级标题(如 "第二十条"),无标题文档回退到序号。
     head = store.get_chunk(grounded[0])
@@ -159,7 +167,8 @@ def ground_episode(
         "matched_internal_document_name": head.doc_id if head else None,
         "matched_internal_clause_number": _segment_label(head) if head else "",
         "matched_internal_source_text": head.text if head else "",
-        "analysis": _merge_analysis(analysis, grounded, evidence),
+        "matched_internal_clause_ids": grounded,
+        "analysis": _merge_analysis(analysis, grounded, store),
     }
 
 
@@ -189,27 +198,49 @@ def _norm_claimed_ids(value: Any) -> list[str]:
     return []
 
 
-def _segment_label(chunk) -> str:
-    """内规 chunk 的条款/段落标识。
-
-    优先取 ``meta.section`` 路径的末级标题(如 "第三章 数据安全 > 第二十条"
-    → "第二十条");无标题文档回退到 ``chunk_id`` 的序号段(``doc#N`` → "N")。
-    """
-    section = str(chunk.meta.get("section", "") or "").strip() if chunk.meta else ""
-    if " > " in section:
-        leaf = section.split(" > ")[-1].strip()
-        if leaf:
-            return leaf
-    if "#" in chunk.chunk_id:
-        return chunk.chunk_id.split("#")[-1]
+def _norm_str(value: Any) -> str:
+    """宽容取字符串:缺失 / 非 str 一律回空串,避免新字段拖垮比对。"""
+    if isinstance(value, str):
+        return value.strip()
     return ""
 
 
-def _merge_analysis(
-    analysis: str, grounded: list[str], evidence: dict[str, str]
-) -> str:
-    """把 grounding 结果附加到 analysis 后,标注承接条款。"""
+def _segment_label(chunk) -> str:
+    """内规 chunk 的条款/段落标识。
+
+    优先取 ``meta.section`` 的末级标题(如 "第三章 数据安全 > 第二十条" → "第二十条";
+    Excel 内规库 ``section`` 直接是 "第一条" 也直接返回,不再掉进 0 起始序号回退)。
+    无 section 时,从 chunk 原文开头提取 "第X条"(文本通常以条款号起头);
+    仍无则用 1 起始的段落序号(``第N段``),与实际的 1 起始编号对齐。
+    """
+    section = str(chunk.meta.get("section", "") or "").strip() if chunk.meta else ""
+    if section:
+        leaf = section.split(" > ")[-1].strip()
+        if leaf:
+            return leaf
+    head = re.match(r"^\s*(第[一二三四五六七八九十百零\d]+条)", chunk.text or "")
+    if head:
+        return head.group(1)
+    if "#" in chunk.chunk_id:
+        order = chunk.chunk_id.rsplit("#", 1)[-1]
+        if order.isdigit():
+            return f"第{int(order) + 1}段"
+    return ""
+
+
+def _merge_analysis(analysis: str, grounded: list[str], store: DocumentStore) -> str:
+    """把 grounding 结果附加到 analysis 后,标注承接条款(人类可读,非 chunk_id)。
+
+    每个 grounded chunk_id 转成 ``制度名 第X条``(走 ``_segment_label`` 与复核页
+    同一套 1 起始编号),避免 0 起始的 chunk_id(如 ``…#0``)泄漏进报告/复核页。
+    """
     lines = [analysis] if analysis else []
-    lines.append("承接内规条款: " + ", ".join(grounded))
+    refs = []
+    for cid in grounded:
+        chunk = store.get_chunk(cid)
+        doc = chunk.doc_id if chunk else ""
+        label = _segment_label(chunk) if chunk else ""
+        refs.append(f"{doc} {label}".strip() or cid)
+    lines.append("承接内规条款: " + ", ".join(refs))
     # 过滤空行,避免 analysis 为空时结果以换行开头。
     return "\n".join(line for line in lines if line.strip())
