@@ -218,6 +218,8 @@ def test_ground_episode_missing_new_fields_defaults_empty():
     assert r["internalization_decision"] == ""
     assert r["internalization_reason"] == ""
     assert r["difference_analysis"] == ""
+    assert r["core_regulatory_requirements"] == ""
+    assert r.get("remedy_suggestion", "") == ""  # 整改建议不再产出(旧契约字段已移除)
     from clause_splitter.models import MatchResult
 
     m = MatchResult(**r)
@@ -256,6 +258,20 @@ def test_ensure_adopted_in_candidates_injects_grounded_chunks():
     before = len(candidates)
     _ensure_adopted_in_candidates(candidates, {"办法#0"}, store, "q")
     assert len(candidates) == before
+
+
+def test_ground_episode_passes_through_core_regulatory_requirements():
+    """episode 产出的核心监管要求(编号逐条、换行分隔)原样透传;旧答案无此字段 → 空串。"""
+    store = _mini_store()
+    r = ground_episode(
+        _mk_result(
+            "完全覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID],
+            extra={"core_regulatory_requirements": "1）、建立数据分类分级制度\n2）、实施数据安全管理"},
+        ),
+        store, EXT,
+    )
+    assert r["core_regulatory_requirements"] == "1）、建立数据分类分级制度\n2）、实施数据安全管理"
+    assert r["status"] == CoverageStatus.FULLY_COVERED
 
 
 def test_ground_episode_normalizes_preventive_to_need():

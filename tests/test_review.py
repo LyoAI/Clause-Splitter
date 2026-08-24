@@ -212,10 +212,10 @@ def _partial_match(candidates=None) -> MatchResult:
         matched_internal_clause_number="第二条",
         matched_internal_source_text="第二条　重要数据应当加密存储。",
         analysis="内规仅覆盖加密,遗漏访问控制。",
-        remedy_suggestion="修订第二条:补充访问控制要求。",
         clause_type="义务性条款", internalization_decision="需要内化",
         internalization_reason="义务性条款且涉及核心业务。",
         difference_analysis="外规要求加密存储并实施访问控制;内规仅覆盖加密存储,遗漏访问控制要求。",
+        core_regulatory_requirements="1）、对重要数据加密存储\n2）、实施访问控制",
         retrieved_candidates=candidates or [],
     )
 
@@ -298,6 +298,51 @@ def test_review_difference_only_for_partial(tmp_path):
     match.status = CoverageStatus.FULLY_COVERED
     html_text = _render(tmp_path, match)
     assert "差异说明(内外规不一致处)" not in html_text
+
+
+def test_review_core_requirements_between_source_and_analysis(tmp_path):
+    """卡片体内:外规原文 → 核心监管要求 → 判定分析;整改建议不再渲染。"""
+    html_text = _render(tmp_path, _partial_match())
+    # 新段落标题 + 编号分点逐行展示。
+    assert "📋 核心监管要求（合规义务）" in html_text
+    assert '<div class="line">1）、对重要数据加密存储</div>' in html_text
+    assert '<div class="line">2）、实施访问控制</div>' in html_text
+    # 顺序:核心监管要求在 外规原文 与 判定分析 之间。
+    assert (
+        html_text.index("外规原文")
+        < html_text.index("核心监管要求（合规义务）")
+        < html_text.index("判定分析")
+    )
+    # 整改建议(卡片层)不再渲染。
+    assert "整改建议" not in html_text
+    assert "修订第二条" not in html_text
+
+
+def test_review_core_requirements_hidden_when_empty(tmp_path):
+    """核心监管要求为空(定义/目的/附则类条款或旧数据)→ 不渲染该段落。"""
+    match = _partial_match()
+    match.core_regulatory_requirements = ""
+    html_text = _render(tmp_path, match)
+    assert "核心监管要求（合规义务）" not in html_text
+    assert "判定分析" in html_text
+
+
+def test_review_multiline_analysis_and_difference(tmp_path):
+    """判定分析/差异说明含换行分点 → 每点独占一行;旧数据单行含编号标记也能拆行。"""
+    match = _partial_match()
+    match.analysis = "1）、内规已承接加密存储\n2）、但遗漏访问控制"
+    match.difference_analysis = "1）、外规要求加密存储\n2）、内规未提访问控制"
+    html_text = _render(tmp_path, match)
+    assert '<div class="line">1）、内规已承接加密存储</div>' in html_text
+    assert '<div class="line">2）、但遗漏访问控制</div>' in html_text
+    assert '<div class="line">1）、外规要求加密存储</div>' in html_text
+    assert '<div class="line">2）、内规未提访问控制</div>' in html_text
+    # 旧数据:无换行但有编号标记 → 同样拆行(标记保留在原项)。
+    match2 = _partial_match()
+    match2.analysis = "1）、建立分类分级制度2）、实施安全管理"
+    html_text2 = _render(tmp_path, match2)
+    assert '<div class="line">1）、建立分类分级制度</div>' in html_text2
+    assert '<div class="line">2）、实施安全管理</div>' in html_text2
 
 
 def _no_intl_match() -> MatchResult:

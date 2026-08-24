@@ -61,7 +61,7 @@
     "status": "完全覆盖 ｜ 部分覆盖 ｜ 缺失",
     "matched_internal_id": "string or null", // 匹配到的内规id
     "analysis": "string", // 简述匹配理由或缺失的具体点，例如外规要求A和B，内规仅提及A，缺失B
-    "remedy_suggestion": "string" // 针对gap或不足的具体整改建议，例如: "建议在内规第X条中补充关于B的要求"
+    "core_regulatory_requirements": "string" // 核心监管要求（合规义务），编号逐条、每项一行
   }
 ]
 ```

@@ -11,8 +11,10 @@
   不再按顺序混入卡片流。
 - 每条**需要内化处理**的外规条款一张可折叠卡片:卡片头 = 条款号 + 覆盖状态徽标
   + 内化判定徽标(需要内化/无需内化/待判定,点击整卡折叠/展开);卡片体内依次为
-  外规原文(折叠)、判定 analysis、部分覆盖的差异说明(内外规不一致处)、整改建议、
-  检索召回 top-k。内化判定的详细依据不展示在页面,只在差距报告中体现。
+  外规原文(折叠)、核心监管要求(合规义务)、判定 analysis、部分覆盖的差异说明
+  (内外规不一致处)、检索召回 top-k。内化判定的详细依据不展示在页面,只在差距
+  报告中体现。判定分析/差异说明/核心监管要求按分点换行展示(旧数据无换行时按
+  编号标记拆行)。
 - 「检索召回 top-k」按**来源制度分组**,组内用**表格**展示(列:条款号 | 关键词
   高亮 snippet | 后端 | 得分),采用行优先、得分降序,按全文去重;被 agent 采用
   的行标「✓」并浅绿高亮。被采用候选的全文即承接内规原文,不再另开
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -85,7 +88,10 @@ details{background:#fafbfd;border:1px solid var(--line);border-radius:8px;paddin
 summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--muted)}
 pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:13px;margin:8px 0 4px}
 .analysis{background:#f8f9fb;border-left:3px solid #90a4ae;padding:8px 12px;border-radius:4px;margin:8px 0}
-.analysis b{display:inline}
+.analysis-head{font-weight:600;font-size:13px;color:#455a64;margin-bottom:2px}
+.core{background:#f0f7ff;border-left:3px solid #1976d2;padding:8px 12px;border-radius:4px;margin:8px 0}
+.core-head{font-weight:600;font-size:13px;color:#1565c0;margin-bottom:2px}
+.line{padding:1px 0}
 .match{margin:8px 0;color:var(--full)}
 .diff{background:#fff8f0;border-left:3px solid #ef6c00;padding:8px 12px;border-radius:4px;margin:8px 0}
 .diff-head{font-weight:600;font-size:13px;color:#b7791f;margin-bottom:2px}
@@ -341,13 +347,46 @@ def _is_no_internalization(m: MatchResult) -> bool:
     return normalize_internalization_decision((m.internalization_decision or "").strip()) == "无需内化"
 
 
+#: 分点标记(编号开头),用于旧数据无换行时拆行:
+#: 1）、2.3) / （1）(2) / 一、二、 / ①②(全角 ） U+FF09 也要收进字符类)
+_NUM_MARK = re.compile(
+    r"(?=[（(]\d+[）)])|(?=\d+[、.)）])|(?=[一二三四五六七八九十]+、)|(?=[①②③④⑤⑥⑦⑧⑨⑩])"
+)
+
+
+def _multiline(text: str) -> str:
+    """把多行/多分点文本渲染成逐行块(每行一个 <div class="line">)。
+
+    优先按换行分点;单行但含编号标记(旧数据)时按标记拆行——保证每个分点
+    独占一行,不再揉在一起。HTML 转义后输出,安全进入模板。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+    if len(lines) == 1:
+        lines = [p.strip() for p in _NUM_MARK.split(raw) if p.strip()]
+    return "".join(f'<div class="line">{html.escape(p)}</div>' for p in lines)
+
+
+def _core_html(m: MatchResult) -> str:
+    """核心监管要求(合规义务):外规条款提取出的义务清单;为空(定义/目的/附则
+    类条款或旧数据)时不渲染。"""
+    if not (m.core_regulatory_requirements or "").strip():
+        return ""
+    return (
+        '<div class="core"><div class="core-head">📋 核心监管要求（合规义务）</div>'
+        f"{_multiline(m.core_regulatory_requirements)}</div>"
+    )
+
+
 def _difference_html(m: MatchResult) -> str:
     """部分覆盖的差异说明(内外规不一致处);非部分覆盖或为空时不渲染。"""
     if m.status != CoverageStatus.PARTIALLY_COVERED or not (m.difference_analysis or "").strip():
         return ""
     return (
         '<div class="diff"><div class="diff-head">🔍 差异说明(内外规不一致处)</div>'
-        f"<pre>{html.escape(m.difference_analysis)}</pre></div>"
+        f"{_multiline(m.difference_analysis)}</div>"
     )
 
 
@@ -459,12 +498,6 @@ def _card_html(m: MatchResult) -> str:
             + ", ".join(f"<b>{html.escape(r)}</b>" for r in refs)
             + "</div>"
         )
-    remedy = ""
-    if m.remedy_suggestion:
-        remedy = (
-            "<details><summary>整改建议</summary>"
-            f"<pre>{html.escape(m.remedy_suggestion)}</pre></details>"
-        )
     return (
         f'<section class="card" data-status="{m.status.value}">'
         '<header class="card-head" role="button" tabindex="0" aria-expanded="true">'
@@ -476,9 +509,10 @@ def _card_html(m: MatchResult) -> str:
         '<div class="card-body">'
         "<details><summary>外规原文</summary>"
         f"<pre>{html.escape(m.external_source_text)}</pre></details>"
-        f'<div class="analysis"><b>判定分析:</b> {html.escape(m.analysis)}</div>'
+        f"{_core_html(m)}"
+        f'<div class="analysis"><div class="analysis-head">判定分析</div>{_multiline(m.analysis)}</div>'
         f"{_difference_html(m)}"
-        f"{matched}{remedy}"
+        f"{matched}"
         '<div class="recall"><h4>🔍 检索召回 top-k</h4>'
         f"{_cand_html(m)}"
         "</div>"

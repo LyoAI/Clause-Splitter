@@ -27,7 +27,6 @@ _DOWNGRADE_ANALYSIS = (
     "内规库中未检索到可承接的候选条款。判定声称已覆盖，但引用的内规条款 ID "
     "无法对应到任何检索结果（疑似幻觉），已降级为缺失。请人工复核该外规义务是否确有内规承接。"
 )
-_DOWNGRADE_REMEDY = "待人工复核：确认是否需要新增或修订内规条款以承接该外部义务。"
 #: agent 未给出分析文案时的缺省说明(MatchResult.analysis 要求非空)。
 _NOT_COVERED_ANALYSIS = "内规库中未检索到承接该外规义务的条款，判定为缺失。"
 
@@ -92,7 +91,6 @@ def ground_episode(
     status = _norm_status(parsed.get("status") if parsed else None)
     claimed_ids = _norm_claimed_ids(parsed.get("matched_internal_clause_ids") if parsed else None)
     analysis = str(parsed.get("analysis") or "") if parsed else ""
-    remedy = str(parsed.get("remedy_suggestion") or "") if parsed else ""
 
     base = {
         "external_clause_id": ext.clause_id,
@@ -105,20 +103,19 @@ def ground_episode(
         "matched_internal_clause_number": "",
         "matched_internal_source_text": "",
         "analysis": analysis,
-        "remedy_suggestion": remedy,
         # 内化判定由**前置内化判定阶段**(检索前)写入 ext,episode 不再产出;
         # 缺失/非 str 一律回空串,不阻塞比对;旧数据「预防性内化」两值化为「需要内化」。
         "clause_type": _norm_str(ext.clause_type),
         "internalization_decision": normalize_internalization_decision(_norm_str(ext.internalization_decision)),
         "internalization_reason": _norm_str(ext.internalization_reason),
-        # difference_analysis 仍由 episode 产出(部分覆盖差异说明依赖比对结果)。
+        # difference_analysis / core_regulatory_requirements 仍由 episode 产出
+        # (差异说明依赖比对结果;核心监管要求为外规义务提取)。
         "difference_analysis": _norm_str(parsed.get("difference_analysis") if parsed else ""),
+        "core_regulatory_requirements": _norm_str(parsed.get("core_regulatory_requirements") if parsed else ""),
     }
 
     # 缺失:无承接 —— 直接返回(claimed ids 即使有也不落地)。
     if status == CoverageStatus.NOT_COVERED:
-        if not base["remedy_suggestion"]:
-            base["remedy_suggestion"] = _DOWNGRADE_REMEDY
         if not base["analysis"].strip():
             base["analysis"] = _NOT_COVERED_ANALYSIS
         return base
@@ -152,7 +149,6 @@ def ground_episode(
             **base,
             "status": CoverageStatus.NOT_COVERED,
             "analysis": _DOWNGRADE_ANALYSIS,
-            "remedy_suggestion": base["remedy_suggestion"] or _DOWNGRADE_REMEDY,
         }
 
     # 用第一承接条款回填 MatchResult 的内规侧字段(报告展示用);全量承接
@@ -229,18 +225,19 @@ def _segment_label(chunk) -> str:
 
 
 def _merge_analysis(analysis: str, grounded: list[str], store: DocumentStore) -> str:
-    """把 grounding 结果附加到 analysis 后,标注承接条款(人类可读,非 chunk_id)。
+    """analysis 为空时用承接条款兜底(复核页/报告的判定分析列要求非空)。
 
-    每个 grounded chunk_id 转成 ``制度名 第X条``(走 ``_segment_label`` 与复核页
-    同一套 1 起始编号),避免 0 起始的 chunk_id(如 ``…#0``)泄漏进报告/复核页。
+    analysis **非空时不再追加**「承接内规条款: …」——该信息由复核页「✓ 采用内规」、
+    报告的「承接内规」列单独展示,追加只会让判定分析段落变长、与简洁要求冲突。
+    兜底时每个 grounded chunk_id 转成 ``制度名 第X条``(走 ``_segment_label`` 与
+    复核页同一套 1 起始编号),避免 0 起始的 chunk_id(如 ``…#0``)泄漏。
     """
-    lines = [analysis] if analysis else []
+    if analysis:
+        return analysis
     refs = []
     for cid in grounded:
         chunk = store.get_chunk(cid)
         doc = chunk.doc_id if chunk else ""
         label = _segment_label(chunk) if chunk else ""
         refs.append(f"{doc} {label}".strip() or cid)
-    lines.append("承接内规条款: " + ", ".join(refs))
-    # 过滤空行,避免 analysis 为空时结果以换行开头。
-    return "\n".join(line for line in lines if line.strip())
+    return "承接内规条款: " + ", ".join(refs)

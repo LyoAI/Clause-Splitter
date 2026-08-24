@@ -48,13 +48,14 @@ _STATUS_LABEL = {
 _BATCH_SUMMARY_SYSTEM = (
     "你是一名合规比对助手。你会收到一批「外规条款 vs 内规条款」的比对结果"
     "(每条含 external_source_text / status / matched_internal_document_name / "
-    "matched_internal_clause_number / matched_internal_source_text / analysis / remedy_suggestion / "
-    "clause_type / internalization_decision / internalization_reason / difference_analysis)。\n"
+    "matched_internal_clause_number / matched_internal_source_text / analysis / "
+    "clause_type / internalization_decision / internalization_reason / difference_analysis / "
+    "core_regulatory_requirements)。\n"
     "请为这一批条款输出紧凑的中文总结,作为后续报告撰写者的素材:\n"
     "- 逐条列出:外规出处+条款号 → 覆盖状态(完全覆盖/部分覆盖/缺失) → 承接内规"
     "(制度名+条款号;缺失写「无」) → 内化判定(需要内化/无需内化,标注条款性质)"
-    " → 一句话差距/整改建议。\n"
-    "- 判定为「无需内化」的条款单独列出,不当作差距、不列整改建议;覆盖率只统计需内化处理的条款。\n"
+    " → 核心监管要求(合规义务)要点。\n"
+    "- 判定为「无需内化」的条款单独列出,不当作差距处理;覆盖率只统计需内化处理的条款。\n"
     "- 部分覆盖的条目必须带上 difference_analysis 的要点(内外规差异:遗漏子项/约束更松/主体范围不一致等)。\n"
     "- 凡被承接(完全/部分覆盖)的条目,必须用「>」引用 matched_internal_source_text 的关键句作证据,"
     "证明承接成立;缺失的条目说明缺失原因。\n"
@@ -233,14 +234,14 @@ def _partial_section(result: CompareResult) -> str:
     if not rows:
         return "本部分无部分承接条款。"
     lines = [
-        "| 外规条款 | 外规要求 | 部分承接的内规 | 内化判定 | 差异说明 | 补足建议 |",
-        "|---|---|---|---|---|---|",
+        "| 外规条款 | 外规要求 | 部分承接的内规 | 内化判定 | 差异说明 |",
+        "|---|---|---|---|---|",
     ]
     for m in rows:
         diff = (m.difference_analysis or "—").replace("\n", " ")
         lines.append(
             f"| {m.external_clause_id} | {m.external_source_text[:50]}… | "
-            f"{_internal_ref(m)} | {_intl(m)} | {diff[:80]} | {m.remedy_suggestion or '—'} |"
+            f"{_internal_ref(m)} | {_intl(m)} | {diff[:80]} |"
         )
         if m.matched_internal_source_text:
             lines.append(f"> 承接原文：{m.matched_internal_source_text}")
@@ -258,13 +259,13 @@ def _missing_section(result: CompareResult) -> str:
     lines = []
     if rows:
         lines = [
-            "| 外规条款 | 外规要求（原文） | 内化判定 | 缺失原因 | 整改建议 |",
-            "|---|---|---|---|---|",
+            "| 外规条款 | 外规要求（原文） | 内化判定 | 缺失原因 |",
+            "|---|---|---|---|",
         ]
         for m in rows:
             lines.append(
                 f"| {m.external_clause_id} | {m.external_source_text[:50]}… | "
-                f"{_intl(m)} | {m.analysis[:60]} | {m.remedy_suggestion or '—'} |"
+                f"{_intl(m)} | {m.analysis[:60]} |"
             )
     else:
         lines.append("本部分无缺失的需内化条款。")
@@ -275,27 +276,8 @@ def _missing_section(result: CompareResult) -> str:
     return "\n".join(lines)
 
 
-def _priority_actions(result: CompareResult) -> str:
-    """结论与行动建议:部分覆盖 + 缺失的 remedy 按优先级排;"无需内化"排除。"""
-    items = []
-    for m in result.matches:
-        if (m.internalization_decision or "").strip() == "无需内化":
-            continue
-        if m.status == CoverageStatus.NOT_COVERED:
-            items.append((1, m, "高"))
-        elif m.status == CoverageStatus.PARTIALLY_COVERED:
-            items.append((2, m, "中"))
-    if not items:
-        return "本报告无整改行动项。"
-    items.sort(key=lambda t: t[0])
-    lines = ["| 优先级 | 外规条款 | 整改建议 |", "|---|---|---|"]
-    for _, m, prio in items:
-        lines.append(f"| {prio} | {m.external_clause_id} | {m.remedy_suggestion or '—'} |")
-    return "\n".join(lines)
-
-
 def _template_report(result: CompareResult) -> str:
-    """确定性回退报告:统计表 + 三节明细 + 行动清单,证据原文直接引用。"""
+    """确定性回退报告:统计表 + 三节明细,证据原文直接引用。"""
     n = len(result.matches)
     skip = result.no_internalization_count
     scope = (
@@ -340,10 +322,6 @@ def _template_report(result: CompareResult) -> str:
 ## 五、缺失的条款
 
 {_missing_section(result)}
-
-## 结论与行动建议
-
-{_priority_actions(result)}
 
 ---
 *本报告由模板自动生成(LLM 报告不可用时的确定性回退)。证据原文直接引用自比对结果。*

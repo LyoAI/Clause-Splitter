@@ -157,6 +157,12 @@ class MatchResult(BaseModel):
                     "external requirement and the internal provision (missing "
                     "sub-requirements / looser constraints / scope mismatch / vagueness)",
     )
+    core_regulatory_requirements: str = Field(
+        default="",
+        description="核心监管要求（合规义务）:该外规条款对适用主体设定的具体合规义务,"
+                    "编号逐条列出、每项一行(空 = 条款为定义/目的/适用范围/附则性质,"
+                    "或无具体义务)",
+    )
     retrieved_candidates: list[RetrievedCandidate] = Field(
         default_factory=list,
         description="Top-k internal clauses batch-pre-retrieved for this external "

@@ -36,7 +36,7 @@ def _mk_match(i: int, status: CoverageStatus = CoverageStatus.FULLY_COVERED) -> 
         matched_internal_clause_number=f"第{i}条" if covered else "",
         matched_internal_source_text=f"内部承接条款 {i}" if covered else "",
         analysis="比对分析",
-        remedy_suggestion="整改建议",
+        core_regulatory_requirements="1）、建立数据分类分级制度",
         retrieved_candidates=[
             RetrievedCandidate(
                 chunk_id=f"内规#第{i}条",
@@ -116,6 +116,8 @@ def test_batch_prompt_scoped():
     assert "候选全文" not in prompt
     # 承接内规只列本批 grounding 实际承接的条款(去重后两条)。
     assert "内规#第0条" in prompt and "内规#第1条" in prompt
+    # 核心监管要求(新契约字段)进入批 prompt,供报告撰写者引用。
+    assert "1）、建立数据分类分级制度" in prompt
 
 
 def test_generate_gap_report_batched(monkeypatch):
