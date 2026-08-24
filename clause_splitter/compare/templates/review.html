@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>内规检索复核 · {{ ext_docs }}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚖️</text></svg>">
+<style>
+:root{--full:#1a7f37;--part:#b45309;--miss:#c0302e;--ink:#16233b;--muted:#64748b;--bg:#eef2f7;--card:#fff;--line:#dfe6ef;--blue:#1d5bd6;--mark-bg:#fde047}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg)}
+.wrap{max-width:1320px;margin:0 auto;padding:24px 20px 64px}
+header h1{margin:0 0 2px;font-size:22px;letter-spacing:.3px}
+.meta{color:var(--muted);font-size:12.5px;margin-bottom:16px}
+.meta b{color:var(--ink)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;display:flex;align-items:baseline;gap:12px;box-shadow:0 1px 2px rgba(15,23,42,.03)}
+.stat b{font-size:26px;line-height:1;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:12.5px}
+.stat.s-full b{color:var(--full)}.stat.s-part b{color:var(--part)}.stat.s-miss b{color:var(--miss)}.stat.s-none b{color:#5b6b80}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.chip{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:5px 14px;cursor:pointer;font-size:13px;color:var(--ink);transition:border-color .12s}
+.chip:hover{border-color:#b9c4d4}
+.chip.active{font-weight:600;box-shadow:inset 0 0 0 1.5px currentColor}
+.chip-full{color:var(--full)}.chip-part{color:var(--part)}.chip-miss{color:var(--miss)}
+.controls{position:sticky;top:0;z-index:20;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;padding:10px 12px;background:rgba(238,242,247,.92);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:12px;box-shadow:0 4px 16px -10px rgba(15,23,42,.14)}
+#search{flex:1;min-width:220px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:#fff;color:var(--ink);outline:none}
+#search:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(29,91,214,.12)}
+.controls button{padding:8px 13px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;color:var(--ink);transition:border-color .12s,background .12s}
+.controls button:hover{border-color:#b9c4d4;background:#f8fafc}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:16px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 10px 28px -22px rgba(15,23,42,.18);overflow:hidden}
+.card[data-status="完全覆盖"]{border-top:3px solid var(--full)}
+.card[data-status="部分覆盖"]{border-top:3px solid var(--part)}
+.card[data-status="缺失"]{border-top:3px solid var(--miss)}
+.card-head{display:flex;align-items:center;gap:10px;padding:13px 18px;cursor:pointer;user-select:none;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.card-head:hover{background:#fafbfd}
+.card-head:hover .clause-id{color:var(--blue)}
+.card-head .toggle-arrow{margin-left:auto;color:var(--muted);font-size:12px;transition:transform .15s;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:8px}
+.card-head:hover .toggle-arrow{background:#e9eef6}
+.card-head.collapsed .toggle-arrow{transform:rotate(-90deg)}
+.card-head.collapsed + .card-body{display:none}
+.clause-id{font-size:15px;font-weight:700;letter-spacing:.2px}
+.badge{border-radius:999px;padding:3px 11px;font-size:12px;font-weight:600;color:#fff;letter-spacing:.3px}
+.badge-full{background:var(--full)}.badge-part{background:var(--part)}.badge-miss{background:var(--miss)}
+.intl-badge{border-radius:999px;padding:3px 11px;font-size:12px;font-weight:600;border:1px solid transparent}
+.intl-must{background:#fff0f0;color:#b71c1c;border-color:#f3c2c2}
+.intl-none{background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9}
+.intl-pending{background:#eceff1;color:#78909c;border-color:#cfd8dc}
+.card-body{padding:14px 18px 18px}
+details.src{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:9px 14px;margin:0 0 14px}
+details.src summary{cursor:pointer;font-weight:600;font-size:12.5px;color:#526078;user-select:none}
+details.src summary:hover{color:var(--blue)}
+details.src pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:13px;line-height:1.8;margin:10px 0 2px;color:#334155}
+.panels{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:stretch}
+.panel{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.panel-head{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;padding:9px 12px 8px;border-bottom:1px solid var(--line);letter-spacing:.2px}
+.panel-core .panel-head{color:var(--blue);border-left:3px solid var(--blue)}
+.panel-analysis .panel-head{color:#475569;border-left:3px solid #94a3b8}
+.panel-diff .panel-head{color:var(--part);border-left:3px solid var(--part)}
+.panel-inner .panel-head{color:var(--full);border-left:3px solid var(--full)}
+.panel-body{padding:10px 12px;font-size:13px;color:#334155;flex:1;overflow-wrap:anywhere}
+.panel-body .line{padding:2px 0}
+.panel-empty{color:#94a3b8;font-style:italic;font-size:12.5px;padding:2px 0;line-height:1.6}
+.match{margin-bottom:10px;padding:8px 10px;background:#f0faf3;border:1px solid #d3ecd9;border-radius:8px;color:var(--full);font-size:12.5px;line-height:1.6}
+.match b{font-weight:700}
+.match.none{background:#f8fafc;border-color:var(--line);color:var(--muted)}
+.match-snippet{margin:2px 0 6px 0;padding:4px 8px;background:#fff;border:1px solid var(--line);border-radius:6px;color:var(--ink);font-size:12px;line-height:1.6;overflow-wrap:break-word}
+.recall-head{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#526078;padding:0 2px 8px}
+.recall-count{color:var(--muted);font-weight:500;font-size:11px;margin-left:auto;font-variant-numeric:tabular-nums}
+.recall-body .empty{margin:0}
+/* 每个来源制度默认展示前 2 行,第 3 行起折叠;须与 review.py 的
+   _RECALL_ROWS_SHOWN_PER_GROUP 常量保持一致 */
+.recall-body.truncated .cand-table tbody tr:nth-of-type(n+3){display:none}
+.recall-more-btn{display:block;width:100%;margin-top:8px;padding:6px 10px;border:1px dashed var(--line);border-radius:8px;background:#f8fafc;cursor:pointer;font-size:12px;color:var(--muted);text-align:center;transition:border-color .12s,color .12s,background .12s}
+.recall-more-btn:hover{color:var(--blue);border-color:var(--blue);background:#fff}
+/* 四栏之下的整行检索召回区:只与四栏留白分隔,样式与原先召回区一致 */
+.recall-under{margin-top:14px}
+.doc-group{border:1px solid var(--line);border-radius:9px;margin-bottom:8px;overflow:hidden}
+.doc-group:last-child{margin-bottom:0}
+.doc-group-head{background:#f6f8fb;padding:7px 10px;font-weight:600;font-size:12px;color:#37474f;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:6px}
+.doc-group-count{color:var(--muted);font-weight:500;font-size:11px;margin-left:auto}
+.cand-table{width:100%;border-collapse:collapse;font-size:12px}
+.cand-table td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+.cand-row:first-child td{border-top:none}
+.cand-row:hover td{background:#f8fafc}
+.cand-row.adopted td{background:#f0faf3}
+.cand-row.adopted:hover td{background:#e6f5eb}
+.col-no{white-space:nowrap;font-weight:600;width:1%;color:var(--ink)}
+.col-text{color:#334155;overflow-wrap:anywhere}
+.col-backend{white-space:nowrap;width:1%}
+.col-score{white-space:nowrap;text-align:right;width:1%;color:var(--muted);font-variant-numeric:tabular-nums}
+.adopted-mark{color:var(--full);font-weight:700}
+.backend-badge{background:#eef1f6;color:#475569;border-radius:5px;padding:1px 7px;font-size:10.5px;white-space:nowrap}
+mark{background:var(--mark-bg);padding:0 1px;border-radius:2px;font-weight:600}
+.empty{color:var(--muted);font-style:italic;padding:6px 0;font-size:12.5px}
+.no-intl{border:1px solid var(--line);border-radius:12px;margin-bottom:16px;background:var(--card);overflow:hidden}
+.no-intl summary{padding:12px 16px;cursor:pointer;font-weight:600;font-size:13px;color:#526078;user-select:none}
+.no-intl .hint{color:var(--muted);font-weight:400;margin-left:10px;font-size:12px}
+.no-intl-rows{padding:4px 16px 12px;border-top:1px dashed var(--line)}
+.no-intl-row{padding:10px 2px;border-top:1px dashed var(--line);font-size:13px}
+.no-intl-row:first-child{border-top:none}
+.no-intl-row .row-main{display:flex;align-items:baseline;gap:10px}
+.no-intl-row .row-no{font-weight:700;white-space:nowrap}
+.no-intl-row .row-text{flex:1;color:#334155;overflow-wrap:anywhere}
+.no-intl-row .row-reason{color:var(--muted);font-size:12px;margin-top:3px;overflow-wrap:anywhere;line-height:1.6}
+footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-height:1.8;padding:0 20px}
+@media(max-width:1100px){.panels{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){
+  .wrap{padding:16px 12px 48px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .card-body{padding:12px 14px 16px}
+  .card-head{padding:12px 14px}
+  .controls{margin-bottom:14px}
+  #search{flex:1 1 100%;min-width:0}
+  .panels{grid-template-columns:minmax(0,1fr)}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<h1>⚖️ 内规检索复核</h1>
+<div class="meta">外规: <b>{{ ext_docs }}</b>{% if store_name %} · 内规库: <b>{{ store_name }}</b>{% endif %} · 生成时间: {{ generated_at }} · 覆盖率: {{ coverage_rate }} (需内化处理 {{ internalizable_count }} 条{% if no_internalization_count %}，{{ no_internalization_count }} 条无需内化{% endif %})</div>
+<div class="stats">{% for s in stats %}<div class="stat {{ s.cls }}"><b>{{ s.count }}</b><span>{{ s.label }}</span></div>{% endfor %}</div>
+<div class="chips">{% for c in chips %}<button class="chip chip-{{ c.cls }}{{ ' active' if c.filter == 'all' else '' }}" data-filter="{{ c.filter }}">{{ c.label }} ({{ c.count }})</button>{% endfor %}</div>
+<div class="controls">
+<input id="search" type="search" placeholder="按关键词筛选条款 / 召回片段 / 无需内化列表…">
+</div>
+</header>
+<main>
+{% if no_intl %}
+<details class="no-intl">
+<summary>⚪ 无需内化条款 ({{ no_intl | length }} 条)<span class="hint">宣示性/程序性等,不纳入覆盖比对</span></summary>
+<div class="no-intl-rows">
+{% for row in no_intl %}
+<div class="no-intl-row">
+<div class="row-main"><span class="badge {{ row.badge_cls }}">{{ row.status_text }}</span><span class="row-no">{{ row.clause_id }}</span><span class="row-text">{{ row.external_source_text }}</span></div>
+<div class="row-reason">💡 判定依据: {{ row.reason }}</div>
+</div>
+{% endfor %}
+</div>
+</details>
+{% endif %}
+{% if cards %}
+{% for m in cards %}
+<section class="card" data-status="{{ m.status }}">
+<header class="card-head" role="button" tabindex="0" aria-expanded="true">
+<span class="clause-id">{{ m.clause_id }}</span>
+<span class="badge {{ m.badge_cls }}">{{ m.status_text }}</span>
+<span class="intl-badge {{ m.intl_cls }}">{{ m.intl_label }}</span>
+<span class="toggle-arrow">▾</span>
+</header>
+<div class="card-body">
+<details class="src"><summary>外规原文</summary><pre>{{ m.external_source_text }}</pre></details>
+<div class="panels">
+<div class="panel panel-core"><div class="panel-head">📋 核心监管要求（合规义务）</div><div class="panel-body">{% if m.core_lines %}{% for line in m.core_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.core_empty }}</div>{% endif %}</div></div>
+<div class="panel panel-analysis"><div class="panel-head">🔎 判定分析</div><div class="panel-body">{% if m.analysis_lines %}{% for line in m.analysis_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">—</div>{% endif %}</div></div>
+<div class="panel panel-diff"><div class="panel-head">🆚 差异说明（内外规不一致处）</div><div class="panel-body">{% if m.diff_lines %}{% for line in m.diff_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.diff_empty }}</div>{% endif %}</div></div>
+<div class="panel panel-inner"><div class="panel-head">✅ 采用内规</div><div class="panel-body">
+{% if m.refs %}<div class="match">✓ 采用内规: {% for r in m.refs %}{% if not loop.first %}, {% endif %}<b>{{ r.ref }}</b>{% endfor %}</div>{% for r in m.refs %}<div class="match-snippet">{{ r.snippet }}</div>{% endfor %}{% else %}<div class="match none">— 无承接内规</div>{% endif %}
+</div></div>
+</div>
+<div class="recall recall-under">
+<div class="recall-head">🔍 检索召回 top-k<span class="recall-count">({{ m.total_candidates }} 条)</span></div>
+<div class="recall-body{% if m.more_count %} truncated{% endif %}">
+{% if m.groups %}
+{% for g in m.groups %}
+<div class="doc-group">
+<div class="doc-group-head">📄 {{ g.doc }}<span class="doc-group-count">{{ g.count }} 条</span></div>
+<table class="cand-table"><tbody>
+{% for r in g.rows %}
+<tr class="cand-row{% if r.adopted %} adopted{% endif %}">
+<td class="col-no">{% if r.adopted %}<span class="adopted-mark">✓</span> {% endif %}{{ r.label }}</td>
+<td class="col-text">{{ r.snippet_html | safe }}</td>
+<td class="col-backend"><span class="backend-badge">{{ r.backend }}</span></td>
+<td class="col-score">{{ r.score }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+</div>
+{% endfor %}
+{% else %}
+<div class="empty">本条款没有可展示的检索召回(检索不可用,未召回任何内规候选)。</div>
+{% endif %}
+</div>
+{% if m.more_count %}<button type="button" class="recall-more-btn" data-more="展开更多 ({{ m.more_count }} 条) ▾" data-less="收起 ▴">展开更多 ({{ m.more_count }} 条) ▾</button>{% endif %}
+</div>
+</div>
+</section>
+{% endfor %}
+{% else %}
+<p class="empty">没有需要内化处理的条款(全部判定无需内化,或无比对结果)。</p>
+{% endif %}
+</main>
+<footer>「✓」= 该内规条款被比对 episode 采纳为承接条款;其余为批量预召回候选,供人工复核相关性。覆盖/缺失统计只算需内化处理条款,无需内化条款不构成制度缺口。</footer>
+</div>
+<script>
+function setFilter(status){
+  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active', c.dataset.filter===status));
+  applyFilters();
+}
+function applyFilters(){
+  const status=document.querySelector('.chip.active').dataset.filter;
+  const q=document.getElementById('search').value.trim().toLowerCase();
+  document.querySelectorAll('.card').forEach(card=>{
+    const okStatus = status==='all' || card.dataset.status===status;
+    const okQuery = !q || card.textContent.toLowerCase().includes(q);
+    card.style.display = (okStatus && okQuery) ? '' : 'none';
+  });
+  document.querySelectorAll('.no-intl-row').forEach(row=>{
+    row.style.display = (!q || row.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  });
+}
+function setCardCollapsed(head, collapsed){
+  head.classList.toggle('collapsed', collapsed);
+  const arrow = head.querySelector('.toggle-arrow');
+  if (arrow) arrow.textContent = collapsed ? '▸' : '▾';
+}
+document.getElementById('search').addEventListener('input', applyFilters);
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>setFilter(c.dataset.filter)));
+document.querySelectorAll('.card-head').forEach(head=>{
+  head.addEventListener('click', ()=>setCardCollapsed(head, !head.classList.contains('collapsed')));
+  head.addEventListener('keydown', e=>{
+    if (e.key==='Enter'||e.key===' ') { e.preventDefault(); setCardCollapsed(head, !head.classList.contains('collapsed')); }
+  });
+});
+// 检索召回的「展开更多」:只展开/收起当前召回区里折叠的候选行(展示每个来源
+// 制度前 N 条,超出折叠),不做全局全部展开/收起。
+document.querySelectorAll('.recall-more-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const body = btn.closest('.recall').querySelector('.recall-body');
+    const expanded = !body.classList.contains('truncated');
+    body.classList.toggle('truncated', expanded);
+    btn.textContent = expanded ? btn.dataset.more : btn.dataset.less;
+  });
+});
+</script>
+</body>
+</html>

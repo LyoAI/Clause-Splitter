@@ -175,6 +175,9 @@ def test_render_review_html_self_contained(tmp_path: Path) -> None:
     assert html_text.count('class="cand-row adopted"') == 1
     assert html_text.count('<span class="adopted-mark">✓</span>') == 1
     assert "第一条" in html_text
+    # 第四栏「采用内规」:被采用条款摘要 + 内容 snippet(截断)。
+    assert 'class="match-snippet"' in html_text
+    assert "第二条　重要数据应当加密存储,并实施访问控制。" in html_text
     # adopted candidate carries the full text; no separate 承接内规原文 block (dup removed)
     assert "承接内规原文" not in html_text
     # internalization decision not set on this match → gray 待判定 badge
@@ -221,14 +224,17 @@ def _partial_match(candidates=None) -> MatchResult:
 
 
 def test_review_groups_candidates_by_document(tmp_path):
-    """召回来自同一法律条款文件的片段聚合在一个 doc-group 下。"""
+    """召回来自同一法律条款文件的片段聚合在一个 doc-group 下。
+
+    采用候选不再单独进第四栏,与未采用候选一起在四栏之下的召回区按来源制度
+    分组:数据安全办法(2 条) + 财务报销制度(1 条) → 共 2 个 doc-group。
+    """
     match = _partial_match(candidates=[
         _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
         _cand("数据安全办法#0", "数据安全办法", "第一条", "第一条　本制度适用于数据分类分级。"),
         _cand("财务报销#3", "财务报销制度", "第四条", "第四条　差旅报销需附发票。"),
     ])
     html_text = _render(tmp_path, match)
-    # 两个来源制度 → 两个 doc-group 头;同制度候选聚合在同一个组里
     assert html_text.count('class="doc-group"') == 2
     assert "📄 数据安全办法" in html_text
     assert "📄 财务报销制度" in html_text
@@ -241,14 +247,16 @@ def _strip_marks(html_text: str) -> str:
 
 
 def test_review_dedupes_identical_full_text(tmp_path):
-    """相同全文的重复候选(分块边界/跨后端)只展示一次。"""
+    """相同全文的重复候选(分块边界/跨后端)在召回表里只展示一次。"""
     match = _partial_match(candidates=[
         _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
         _cand("数据安全办法#1b", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。"),
         _cand("数据安全办法#0", "数据安全办法", "第一条", "第一条　本制度适用于数据分类分级。"),
     ])
     html_text = _render(tmp_path, match)
-    assert _strip_marks(html_text).count("第二条　重要数据应当加密存储。") == 1
+    # 去重作用域是召回区(第四栏「采用内规」snippet 刻意含被采用条款文本,不计入)。
+    recall = html_text[html_text.index("检索召回 top-k"):]
+    assert _strip_marks(recall).count("第二条　重要数据应当加密存储。") == 1
 
 
 def test_review_candidate_shows_snippet_only(tmp_path):
@@ -270,9 +278,9 @@ def test_review_candidate_shows_snippet_only(tmp_path):
 
 
 def test_review_renders_difference_and_internalization_badge(tmp_path):
-    """部分覆盖渲染差异说明;内化判定只以卡片头徽标呈现,无正文小节。"""
+    """部分覆盖在「差异说明」栏渲染逐条差异;内化判定只以卡片头徽标呈现。"""
     html_text = _render(tmp_path, _partial_match())
-    assert "差异说明(内外规不一致处)" in html_text
+    assert "差异说明（内外规不一致处）" in html_text
     assert "外规要求加密存储并实施访问控制" in html_text
     # 结果 = 卡片头的「需要内化」徽标;条款性质/依据不展示在页面。
     assert '<span class="intl-badge intl-must">需要内化</span>' in html_text
@@ -292,12 +300,21 @@ def test_review_internalization_pending_when_empty(tmp_path):
     assert '<span class="intl-badge intl-pending">待判定</span>' in html_text
 
 
-def test_review_difference_only_for_partial(tmp_path):
-    """完全覆盖/缺失不渲染差异说明,即使字段有残留。"""
-    match = _partial_match()
-    match.status = CoverageStatus.FULLY_COVERED
-    html_text = _render(tmp_path, match)
-    assert "差异说明(内外规不一致处)" not in html_text
+def test_review_difference_panel_state_by_status(tmp_path):
+    """差异说明栏四栏恒定:仅部分覆盖有逐条内容,其余状态给占位文案。"""
+    partial = _render(tmp_path, _partial_match())
+    assert "外规要求加密存储并实施访问控制" in partial  # 部分覆盖 → 逐条内容
+    full = _partial_match()
+    full.status = CoverageStatus.FULLY_COVERED
+    full_html = _render(tmp_path, full)
+    assert "差异说明（内外规不一致处）" in full_html  # 栏恒在
+    assert "外规要求加密存储并实施访问控制" not in full_html  # 内容不残留
+    assert "无内外规差异" in full_html  # 占位表达「已检查、无差异」
+    missing = _partial_match()
+    missing.status = CoverageStatus.NOT_COVERED
+    missing.matched_internal_id = None
+    missing_html = _render(tmp_path, missing)
+    assert "缺失，无内规可对比" in missing_html
 
 
 def test_review_core_requirements_between_source_and_analysis(tmp_path):
@@ -318,12 +335,71 @@ def test_review_core_requirements_between_source_and_analysis(tmp_path):
     assert "修订第二条" not in html_text
 
 
-def test_review_core_requirements_hidden_when_empty(tmp_path):
-    """核心监管要求为空(定义/目的/附则类条款或旧数据)→ 不渲染该段落。"""
+def test_review_four_column_panels_layout(tmp_path):
+    """卡片体内横向四栏:外规原文(原位顶部)之后,核心监管要求/判定分析/差异
+    说明/采用内规四栏并排;全部检索召回 top-k(含采用/未采用)在四栏之下整行
+    展示。"""
+    html_text = _render(tmp_path, _partial_match(candidates=[
+        _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
+        _cand("数据安全办法#0", "数据安全办法", "第一条", "第一条　本制度适用于数据分类分级。"),
+    ]))
+    # 外规原文保持原位(顶部 details),在四栏容器之前。
+    assert html_text.index("外规原文") < html_text.index('class="panels"')
+    # 四栏恒在,且 DOM 顺序:核心 → 分析 → 差异 → 采用内规侧。
+    assert html_text.count('<div class="panel ') == 4
+    order = [
+        html_text.index("核心监管要求（合规义务）"),
+        html_text.index("判定分析"),
+        html_text.index("差异说明（内外规不一致处）"),
+        html_text.index("采用内规"),
+    ]
+    assert order == sorted(order)
+    # 第四栏只放「采用内规」摘要(无候选表);整行检索召回区在四栏容器之后。
+    inner = html_text[html_text.index("采用内规"):]
+    assert inner.index('class="match"') < inner.index("检索召回 top-k")
+    assert html_text.index("检索召回 top-k") > html_text.index('class="panels"')
+    # 第四栏内不含候选分组表(doc-group/cand-table 全部在下方召回区)。
+    assert 'class="doc-group"' not in inner[:inner.index("检索召回 top-k")]
+    # 检索召回区:头部带全部候选条数(采用+未采用);本卡 2 条 ≤ 每制度默认 2 条 → 全展示、无「展开更多」。
+    assert 'class="recall-head"' in html_text
+    assert "检索召回 top-k" in html_text
+    assert "(2 条)</span>" in html_text
+    assert 'class="recall-body truncated"' not in html_text  # 未触发折叠
+    assert 'class="recall-more-btn"' not in html_text  # 无折叠候选 → 无按钮
+    # 无全局全部展开/收起按钮。
+    assert "expand-all" not in html_text
+    assert "collapse-all" not in html_text
+
+
+def test_review_recall_truncated_with_expand_more(tmp_path):
+    """检索召回区:每个来源制度默认只展示前 2 条,超出的行折叠 +「展开更多」按钮。"""
+    match = _partial_match(candidates=[
+        _cand("a#0", "数据安全办法", "第一条", "第一条　一", score=1.0),
+        _cand("a#1", "数据安全办法", "第二条", "第二条　二", score=2.0),
+        _cand("a#2", "数据安全办法", "第三条", "第三条　三", score=3.0),
+        _cand("a#3", "数据安全办法", "第四条", "第四条　四", score=4.0),
+        _cand("a#4", "数据安全办法", "第五条", "第五条　五", score=5.0),
+    ])
+    html_text = _render(tmp_path, match)
+    # 折叠态:recall-body 带 truncated,5 行仍在 DOM(第 3 行起由 CSS 隐藏)。
+    assert 'class="recall-body truncated"' in html_text
+    assert html_text.count('class="cand-row"') == 5
+    # 「展开更多」按钮:带剩余条数 + 展开/收起切换文案。
+    assert "展开更多 (3 条) ▾" in html_text
+    assert 'data-less="收起 ▴"' in html_text
+    # 组头条数仍显示该制度全部候选数,便于知道折叠了多少。
+    assert "5 条</span>" in html_text
+
+
+def test_review_core_panel_placeholder_when_empty(tmp_path):
+    """核心监管要求为空(定义/目的/附则类条款或旧数据)→ 四栏仍恒定,
+    栏内给占位文案,不渲染任何分点内容。"""
     match = _partial_match()
     match.core_regulatory_requirements = ""
     html_text = _render(tmp_path, match)
-    assert "核心监管要求（合规义务）" not in html_text
+    assert "核心监管要求（合规义务）" in html_text  # 栏头恒在
+    assert '<div class="line">1）、对重要数据加密存储</div>' not in html_text
+    assert "无具体合规义务" in html_text  # 占位
     assert "判定分析" in html_text
 
 
@@ -377,8 +453,8 @@ def test_review_no_internalization_grouped_and_collapsed(tmp_path):
     assert "无需内化条款 (1 条)" in html_text
     assert "本办法自2026年1月1日起施行" in html_text
     # 统计:缺失 = 需内化缺失(0),无需内化 = 1。
-    assert '<div class="stat"><b>0</b><span>缺失</span></div>' in html_text
-    assert '<div class="stat"><b>1</b><span>无需内化</span></div>' in html_text
+    assert '<div class="stat s-miss"><b>0</b><span>缺失</span></div>' in html_text
+    assert '<div class="stat s-none"><b>1</b><span>无需内化</span></div>' in html_text
 
 
 def test_review_mixes_cards_and_no_intl_section(tmp_path):
@@ -392,7 +468,7 @@ def test_review_mixes_cards_and_no_intl_section(tmp_path):
     assert html_text.count('<section class="card"') == 1
     assert 'class="no-intl"' in html_text
     # 缺失统计只算需内化处理条款(1),不含无需内化那条(2)。
-    assert '<div class="stat"><b>1</b><span>缺失</span></div>' in html_text
+    assert '<div class="stat s-miss"><b>1</b><span>缺失</span></div>' in html_text
     # 无需内化条目(第五条)出现在集中 section,不在卡片区。
     no_intl_block = html_text[html_text.index('class="no-intl"'):]
     assert "第五条" in no_intl_block

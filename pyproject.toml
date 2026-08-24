@@ -17,6 +17,8 @@ dependencies = [
     "pycryptodome==3.23.0",
     "json-repair==0.60.1",
     "requests==2.34.2",
+    # HTML 复核页模板
+    "jinja2==3.1.6",
     # Parsing
     "mineru[pipeline]>=3.4.4",   # local document parser (PDF / docx / pptx / xlsx / images)
     # Retrieval
