@@ -17,6 +17,9 @@
   ③ 差异说明(内外规不一致处,仅部分覆盖有内容,其余状态给占位)
   ④ 采用内规(被采用条款摘要 + 各条简要 snippet)。四栏结构恒定,空栏以占位
   文案表达「已检查、无内容」。
+  卡片内容区是**固定高度窗口**(模板 CSS 变量 ``--card-window``,默认 360px):
+  内容超出时窗口内滚动(右侧细滑条),保证卡片高度一致、页面整齐。点击召回
+  候选行或采用 snippet **弹窗**展示完整条款文本(遮罩淡入 + 面板上浮动效)。
   内化判定的详细依据不展示在页面,只在差距报告中体现。判定分析/差异说明/
   核心监管要求按分点换行展示(旧数据无换行时按编号标记拆行)。
 - **全部检索召回 top-k 放在四栏之下整行展示**:含**被采用**与**未采用**的全部
@@ -312,7 +315,8 @@ def _cand_row_data(cand: RetrievedCandidate) -> dict:
     """表格一行的数据:条款号(采用打勾)| 高亮 snippet | 后端 | 得分。
 
     ``snippet_html`` 是唯一预渲染的 HTML(``highlight`` 包 ``<mark>``,已转义),
-    模板里 ``|safe`` 放行;其余字段交 Jinja 自动转义。
+    模板里 ``|safe`` 放行;``full`` 是完整条款文本(渲染进 ``data-full`` 属性,
+    点击该行弹窗展示),其余字段交 Jinja 自动转义。
     """
     # 补入的采用条款来自比对检索(episode),无批量召回得分 → 显示「—」。
     score = f"{cand.score:.4f}" if cand.score is not None else "—"
@@ -322,6 +326,7 @@ def _cand_row_data(cand: RetrievedCandidate) -> dict:
         "backend": cand.backend or "",
         "score": score,
         "adopted": cand.adopted,
+        "full": cand.full_text or cand.snippet or "",
     }
 
 
@@ -330,11 +335,12 @@ _MATCH_SNIPPET_MAX_CHARS = 80
 
 
 def _matched_refs(m: MatchResult) -> list[dict]:
-    """所有被采纳的内规条款 ``[{"ref", "snippet"}]``(人类可读 ``制度名 第X条``)。
+    """所有被采纳的内规条款 ``[{"ref", "snippet", "full"}]``(``制度名 第X条``)。
 
     优先用已标记 adopted 的召回候选(一条 episode 可能承接多条内规);
     候选缺失时回退到头部字段(仅第一条承接)。``snippet`` 是被采用条款全文的
-    截断摘要(第四栏简要展示),原始文本交 Jinja 自动转义。
+    截断摘要(第四栏简要展示),``full`` 是完整文本(点击 snippet 弹窗展示),
+    原始文本交 Jinja 自动转义。
     """
     refs: list[dict] = []
     seen: set[str] = set()
@@ -347,11 +353,13 @@ def _matched_refs(m: MatchResult) -> list[dict]:
             refs.append({
                 "ref": ref,
                 "snippet": _truncate(c.full_text or c.snippet or "", _MATCH_SNIPPET_MAX_CHARS),
+                "full": c.full_text or c.snippet or "",
             })
     if not refs and m.matched_internal_id:
         refs.append({
             "ref": f"{m.matched_internal_document_name or ''} {m.matched_internal_clause_number}".strip(),
             "snippet": _truncate(m.matched_internal_source_text or "", _MATCH_SNIPPET_MAX_CHARS),
+            "full": m.matched_internal_source_text or "",
         })
     return refs
 

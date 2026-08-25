@@ -30,9 +30,11 @@ header h1{margin:0 0 2px;font-size:22px;letter-spacing:.3px}
 .controls button{padding:8px 13px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;color:var(--ink);transition:border-color .12s,background .12s}
 .controls button:hover{border-color:#b9c4d4;background:#f8fafc}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:16px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 10px 28px -22px rgba(15,23,42,.18);overflow:hidden}
-.card[data-status="完全覆盖"]{border-top:3px solid var(--full)}
-.card[data-status="部分覆盖"]{border-top:3px solid var(--part)}
-.card[data-status="缺失"]{border-top:3px solid var(--miss)}
+/* 卡片入场:轻微上浮淡入(JS 按卡片序号错开延迟);系统开启「减少动态」时禁用 */
+@media (prefers-reduced-motion: no-preference){
+  .card{animation:card-in .38s ease both}
+  @keyframes card-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+}
 .card-head{display:flex;align-items:center;gap:10px;padding:13px 18px;cursor:pointer;user-select:none;flex-wrap:wrap;border-bottom:1px solid var(--line)}
 .card-head:hover{background:#fafbfd}
 .card-head:hover .clause-id{color:var(--blue)}
@@ -47,7 +49,13 @@ header h1{margin:0 0 2px;font-size:22px;letter-spacing:.3px}
 .intl-must{background:#fff0f0;color:#b71c1c;border-color:#f3c2c2}
 .intl-none{background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9}
 .intl-pending{background:#eceff1;color:#78909c;border-color:#cfd8dc}
-.card-body{padding:14px 18px 18px}
+/* 每张外规卡片的内容窗口:固定高度,内容超出时窗口内滚动(右侧细滑条),
+   完整条款文本点击行弹窗查看。窗口高度可用 --card-window 调整。 */
+.card-body{padding:14px 18px 18px;max-height:var(--card-window,360px);overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#b9c4d4 transparent}
+.card-body::-webkit-scrollbar{width:9px}
+.card-body::-webkit-scrollbar-thumb{background:#c3cedd;border-radius:8px;border:2px solid var(--card)}
+.card-body::-webkit-scrollbar-thumb:hover{background:#9fb0c6}
+.card-body::-webkit-scrollbar-track{background:transparent}
 details.src{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:9px 14px;margin:0 0 14px}
 details.src summary{cursor:pointer;font-weight:600;font-size:12.5px;color:#526078;user-select:none}
 details.src summary:hover{color:var(--blue)}
@@ -65,7 +73,8 @@ details.src pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;f
 .match{margin-bottom:10px;padding:8px 10px;background:#f0faf3;border:1px solid #d3ecd9;border-radius:8px;color:var(--full);font-size:12.5px;line-height:1.6}
 .match b{font-weight:700}
 .match.none{background:#f8fafc;border-color:var(--line);color:var(--muted)}
-.match-snippet{margin:2px 0 6px 0;padding:4px 8px;background:#fff;border:1px solid var(--line);border-radius:6px;color:var(--ink);font-size:12px;line-height:1.6;overflow-wrap:break-word}
+.match-snippet{margin:2px 0 6px 0;padding:4px 8px;background:#fff;border:1px solid var(--line);border-radius:6px;color:var(--ink);font-size:12px;line-height:1.6;overflow-wrap:break-word;cursor:pointer;transition:border-color .12s}
+.match-snippet:hover{border-color:var(--blue)}
 .recall-head{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#526078;padding:0 2px 8px}
 .recall-count{color:var(--muted);font-weight:500;font-size:11px;margin-left:auto;font-variant-numeric:tabular-nums}
 .recall-body .empty{margin:0}
@@ -82,6 +91,7 @@ details.src pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;f
 .doc-group-count{color:var(--muted);font-weight:500;font-size:11px;margin-left:auto}
 .cand-table{width:100%;border-collapse:collapse;font-size:12px}
 .cand-table td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+.cand-row{cursor:pointer}
 .cand-row:first-child td{border-top:none}
 .cand-row:hover td{background:#f8fafc}
 .cand-row.adopted td{background:#f0faf3}
@@ -105,6 +115,18 @@ mark{background:var(--mark-bg);padding:0 1px;border-radius:2px;font-weight:600}
 .no-intl-row .row-text{flex:1;color:#334155;overflow-wrap:anywhere}
 .no-intl-row .row-reason{color:var(--muted);font-size:12px;margin-top:3px;overflow-wrap:anywhere;line-height:1.6}
 footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-height:1.8;padding:0 20px}
+/* 条款全文弹窗:点击召回候选行 / 第四栏 snippet 打开(遮罩淡入 + 面板轻浮上移) */
+.modal-backdrop{position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:24px;opacity:0;transition:opacity .18s ease}
+.modal-backdrop[hidden]{display:none}
+.modal-backdrop.open{opacity:1}
+.modal{background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 24px 64px -16px rgba(15,23,42,.35);transform:translateY(12px) scale(.97);opacity:0;transition:transform .2s ease,opacity .2s ease}
+.modal-backdrop.open .modal{transform:none;opacity:1}
+.modal-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line);font-size:14px}
+.modal-head b{flex:1;overflow-wrap:anywhere}
+.modal-close{border:none;background:#f1f5f9;border-radius:8px;width:28px;height:28px;cursor:pointer;color:var(--muted);font-size:13px;line-height:1;transition:background .12s,color .12s}
+.modal-close:hover{background:#e2e8f0;color:var(--ink)}
+.modal-text{margin:0;padding:16px 18px;overflow-y:auto;font-family:inherit;font-size:13.5px;line-height:1.9;color:#334155;white-space:pre-wrap;word-break:break-word}
+@media (prefers-reduced-motion: reduce){.modal-backdrop,.modal{transition:none}}
 @media(max-width:1100px){.panels{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:680px){
   .wrap{padding:16px 12px 48px}
@@ -158,7 +180,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 <div class="panel panel-analysis"><div class="panel-head">🔎 判定分析</div><div class="panel-body">{% if m.analysis_lines %}{% for line in m.analysis_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">—</div>{% endif %}</div></div>
 <div class="panel panel-diff"><div class="panel-head">🆚 差异说明（内外规不一致处）</div><div class="panel-body">{% if m.diff_lines %}{% for line in m.diff_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.diff_empty }}</div>{% endif %}</div></div>
 <div class="panel panel-inner"><div class="panel-head">✅ 采用内规</div><div class="panel-body">
-{% if m.refs %}<div class="match">✓ 采用内规: {% for r in m.refs %}{% if not loop.first %}, {% endif %}<b>{{ r.ref }}</b>{% endfor %}</div>{% for r in m.refs %}<div class="match-snippet">{{ r.snippet }}</div>{% endfor %}{% else %}<div class="match none">— 无承接内规</div>{% endif %}
+{% if m.refs %}<div class="match">✓ 采用内规: {% for r in m.refs %}{% if not loop.first %}, {% endif %}<b>{{ r.ref }}</b>{% endfor %}</div>{% for r in m.refs %}<div class="match-snippet" data-title="{{ r.ref }}" data-full="{{ r.full }}" title="点击查看全文">{{ r.snippet }}</div>{% endfor %}{% else %}<div class="match none">— 无承接内规</div>{% endif %}
 </div></div>
 </div>
 <div class="recall recall-under">
@@ -170,7 +192,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 <div class="doc-group-head">📄 {{ g.doc }}<span class="doc-group-count">{{ g.count }} 条</span></div>
 <table class="cand-table"><tbody>
 {% for r in g.rows %}
-<tr class="cand-row{% if r.adopted %} adopted{% endif %}">
+<tr class="cand-row{% if r.adopted %} adopted{% endif %}" data-title="{{ g.doc }} {{ r.label }}" data-full="{{ r.full }}" title="点击查看全文">
 <td class="col-no">{% if r.adopted %}<span class="adopted-mark">✓</span> {% endif %}{{ r.label }}</td>
 <td class="col-text">{{ r.snippet_html | safe }}</td>
 <td class="col-backend"><span class="backend-badge">{{ r.backend }}</span></td>
@@ -194,6 +216,12 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 {% endif %}
 </main>
 <footer>「✓」= 该内规条款被比对 episode 采纳为承接条款;其余为批量预召回候选,供人工复核相关性。覆盖/缺失统计只算需内化处理条款,无需内化条款不构成制度缺口。</footer>
+</div>
+<div class="modal-backdrop" id="modal" hidden>
+<div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+<div class="modal-head"><b id="modal-title"></b><button type="button" class="modal-close" aria-label="关闭">✕</button></div>
+<pre class="modal-text" id="modal-text"></pre>
+</div>
 </div>
 <script>
 function setFilter(status){
@@ -235,6 +263,31 @@ document.querySelectorAll('.recall-more-btn').forEach(btn=>{
     btn.textContent = expanded ? btn.dataset.more : btn.dataset.less;
   });
 });
+// 条款全文弹窗:点击召回候选行 / 采用内规 snippet,弹窗展示完整条款文本。
+const modal = document.getElementById('modal');
+const modalTitle = document.getElementById('modal-title');
+const modalText = document.getElementById('modal-text');
+function openModal(title, text){
+  modalTitle.textContent = title;
+  modalText.textContent = text;
+  modal.hidden = false;
+  requestAnimationFrame(()=>modal.classList.add('open'));
+  document.body.style.overflow = 'hidden';
+}
+function closeModal(){
+  modal.classList.remove('open');
+  document.body.style.overflow = '';
+  setTimeout(()=>{ if(!modal.classList.contains('open')) modal.hidden = true; }, 200);
+}
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-full]');
+  if (t && t.dataset.full) openModal(t.dataset.title || '条款全文', t.dataset.full);
+});
+modal.addEventListener('click', e=>{ if (e.target === modal) closeModal(); });
+modal.querySelector('.modal-close').addEventListener('click', closeModal);
+document.addEventListener('keydown', e=>{ if (e.key === 'Escape' && !modal.hidden) closeModal(); });
+// 卡片入场动效逐张错开(最多 8 张封顶,避免长列表尾部久等)。
+document.querySelectorAll('.card').forEach((c,i)=>{ c.style.animationDelay = (Math.min(i,8)*60) + 'ms'; });
 </script>
 </body>
 </html>

@@ -178,6 +178,9 @@ def test_render_review_html_self_contained(tmp_path: Path) -> None:
     # 第四栏「采用内规」:被采用条款摘要 + 内容 snippet(截断)。
     assert 'class="match-snippet"' in html_text
     assert "第二条　重要数据应当加密存储,并实施访问控制。" in html_text
+    # 弹窗查看全文:召回行/采用 snippet 带 data-full,页面含弹窗容器。
+    assert 'id="modal"' in html_text and 'id="modal-text"' in html_text
+    assert 'data-full="' in html_text
     # adopted candidate carries the full text; no separate 承接内规原文 block (dup removed)
     assert "承接内规原文" not in html_text
     # internalization decision not set on this match → gray 待判定 badge
@@ -254,9 +257,10 @@ def test_review_dedupes_identical_full_text(tmp_path):
         _cand("数据安全办法#0", "数据安全办法", "第一条", "第一条　本制度适用于数据分类分级。"),
     ])
     html_text = _render(tmp_path, match)
-    # 去重作用域是召回区(第四栏「采用内规」snippet 刻意含被采用条款文本,不计入)。
+    # 去重作用域是召回表的可见单元格(第四栏 snippet 与弹窗 data-full 属性刻意
+    # 含被采用条款文本,不计入):同一全文只渲染一个可见行。
     recall = html_text[html_text.index("检索召回 top-k"):]
-    assert _strip_marks(recall).count("第二条　重要数据应当加密存储。") == 1
+    assert _strip_marks(recall).count(">第二条　重要数据应当加密存储。</td>") == 1
 
 
 def test_review_candidate_shows_snippet_only(tmp_path):
@@ -271,10 +275,33 @@ def test_review_candidate_shows_snippet_only(tmp_path):
         ),
     ])
     html_text = _render(tmp_path, match)
-    # 任何候选都不渲染「展开全文」;snippet(带 <mark> 高亮)仍完整展示。
-    assert "展开全文" not in html_text
+    # 长全文不渲染为可见文本,只进弹窗的 data-full 属性;表格单元格仅 snippet。
+    assert html_text.count(long_text) == 1
+    assert ('data-full="' + long_text) in html_text
+    assert ('<td class="col-text">' + long_text + "</td>") not in html_text
     assert "<mark>" in html_text
     assert "重要数据应当加密存储" in _strip_marks(html_text)
+    # 卡片窗口不做「展开全文」(与窗口内滚动冗余,已移除),全文走弹窗。
+    assert 'class="card-expand-btn"' not in html_text
+    assert "展开全文" not in html_text
+
+
+def test_review_modal_carries_full_text(tmp_path):
+    """召回行与第四栏采用 snippet 都携带 data-full(点击弹窗展示完整条款)。"""
+    match = _partial_match(candidates=[
+        _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
+    ])
+    html_text = _render(tmp_path, match)
+    # 召回行:行级 data-full = 候选全文,data-title = 制度名 + 条款号。
+    assert 'data-full="第二条　重要数据应当加密存储。"' in html_text
+    assert 'data-title="数据安全办法 第二条"' in html_text
+    # 第四栏采用 snippet 同样携带全文(弹窗内容不截断)。
+    assert html_text.count('class="match-snippet"') == 1
+    snippet = html_text[html_text.index('class="match-snippet"'):]
+    assert 'data-full="第二条　重要数据应当加密存储。"' in snippet
+    # 弹窗容器 + 关闭按钮在页面里(JS 控制,静态断言只查结构)。
+    assert 'id="modal"' in html_text and 'id="modal-text"' in html_text
+    assert 'class="modal-close"' in html_text
 
 
 def test_review_renders_difference_and_internalization_badge(tmp_path):
