@@ -6,30 +6,45 @@
 
 - 顶部:外规制度、内规库、生成时间、覆盖统计 chips + 统计表(缺失只统计需内化
   条款,无需内化单列)。
-- 控件:状态筛选 tab、关键词搜索(无全局全部展开/收起);检索召回区自带
-  「展开更多」按钮,只展开当前召回区折叠的候选行。
+- 控件:状态筛选 tab、关键词搜索、📊 导出 Excel、📝 导出批注、📥 导入批注
+  (无全局全部展开/收起);检索召回区自带「展开更多」按钮,只展开当前召回区
+  折叠的候选行。
 - **无需内化条款集中折叠展示**(默认收起):宣示性/程序性等不纳入覆盖比对,
   不再按顺序混入卡片流。
 - 每条**需要内化处理**的外规条款一张可折叠卡片(纵向单元):卡片头 = 条款号 +
   覆盖状态徽标 + 内化判定徽标(需要内化/无需内化/待判定,点击整卡折叠/展开)。
   卡片体内**外规原文保持原位**(顶部折叠),其下是**四栏并排**(桌面 4 栏,窄屏
-  两两排布,手机单列堆叠):① 核心监管要求(合规义务) ② 判定分析
-  ③ 差异说明(内外规不一致处,仅部分覆盖有内容,其余状态给占位)
-  ④ 采用内规(被采用条款摘要 + 各条简要 snippet)。四栏结构恒定,空栏以占位
-  文案表达「已检查、无内容」。
-  卡片内容区是**固定高度窗口**(模板 CSS 变量 ``--card-window``,默认 360px):
-  内容超出时窗口内滚动(右侧细滑条),保证卡片高度一致、页面整齐。点击召回
-  候选行或采用 snippet **弹窗**展示完整条款文本(遮罩淡入 + 面板上浮动效)。
-  内化判定的详细依据不展示在页面,只在差距报告中体现。判定分析/差异说明/
-  核心监管要求按分点换行展示(旧数据无换行时按编号标记拆行)。
-- **全部检索召回 top-k 放在四栏之下整行展示**:含**被采用**与**未采用**的全部
-  候选(被采用行在第四栏标「✓」且下方召回行浅绿高亮)。按**来源制度分组**,组内
-  用**表格**展示(列:条款号 | 关键词高亮 snippet | 后端 | 得分),采用行优先、
-  得分降序、按全文去重;每个来源制度默认展示前 ``_RECALL_ROWS_SHOWN_PER_GROUP``
-  条,**超出的行折叠**,由召回区底部的「展开更多 (N 条)」按钮展开。第四栏对每条
-  被采用条款给一行截断的简要 snippet(见上);被采用候选的全文即承接内规原文,
-  不再另开「承接内规原文」块,避免重复。
+  两两排布,手机单列堆叠,栏头简短):① 核心监管要求(内化判定依据为栏内
+  虚线分隔的独立子块,给出为什么内化的原因) ② 差异说明(判定分析 + 内外规
+  不一致处合并,栏内两小节,解决两栏各自单薄且内容重合的问题)
+  ③ 整改建议 ④ 采用内规&检索召回(被采用条款摘要 + snippet + 全部检索召回
+  top-k 表格)。四栏结构恒定,空栏以占位文案表达「已检查、无内容」。
+  卡片内容区与第四栏栏体都是**固定高度窗口**(模板 CSS 变量 ``--card-window``
+  / ``--panel-window``),内容超出时窗口内滚动(右侧细滑条),保证卡片高度一致、
+  页面整齐。点击召回候选行或采用 snippet **弹窗**展示完整条款文本(遮罩淡入 +
+  面板上浮动效)。
+  判定分析/差异说明/核心监管要求/内化判定依据/整改建议按分点换行展示
+  (旧数据无换行时按编号标记拆行)。
+- **检索召回 top-k 收进第四栏**:含**被采用**与**未采用**的全部候选(被采用行
+  标「✓」浅绿高亮)。按**来源制度分组**,组内用**表格**展示(列:条款号 |
+  关键词高亮 snippet | 得分),采用行优先、得分降序、按全文去重;每个
+  来源制度默认展示前 ``_RECALL_ROWS_SHOWN_PER_GROUP`` 条,**超出的行折叠**,
+  由「展开更多 (N 条)」按钮展开;栏体在固定高度窗口内滚动。被采用候选的全文
+  即承接内规原文,不再另开「承接内规原文」块,避免重复。
 - 内化判定只两值:需要内化 / 无需内化(「预防性内化」归并到「需要内化」)。
+- **批注与编辑(选中文字触发)**:用鼠标选中卡片内 核心监管要求/判定分析/
+  差异说明/外规原文 的文字 → 浮出工具条「✍️ 编辑 / 💬 批注」。「编辑」弹窗
+  展示引用的选中文字 + 修改输入,保存后该处文字替换、整行黄底标记;「批注」
+  弹窗展示引用 + 署名(默认匿名)+ 批注内容,批注以黄色便签贴在卡片底部;
+  引用处在文中以黄条点线标记,点击标记**原地弹出该处批注内容气泡**(可查看/
+  删除,再点同一标记或点别处 / Esc / 滚动收起)。工具条选中即同步弹出,
+  编辑/批注弹窗动效 10ms 近乎即时,批注保存后自动滚动定位到新便签。
+  📝 导出批注产出 JSON 存档(类型/位置/条款号/字段/引用原文/修改文/署名/时间,
+  修改记录附整单元最终全文),📥 导入批注按稳定 ``data-ann-id``(卡片序号:
+  字段:行号)对位恢复——页面原文一致才回填,数据变更后错位项跳过;修改与
+  批注同时自动暂存 localStorage,页面重新生成后不自动恢复。
+- 进入页面弹**使用说明**弹窗(宫格功能卡,「⏳ 5 秒后自动关闭」倒计时 5→1,
+  「我知道了」绿色框按钮可立即关闭)。
 - 一次比对一个外规 → 一个 HTML,写在 ``{output_dir}/内规检索复核.html``。
 
 页面模板在 ``templates/review.html``(Jinja2,``autoescape=True``):CSS/JS 内联在
@@ -312,18 +327,18 @@ def _group_candidates(cands: list[RetrievedCandidate]) -> tuple[list[dict], int]
 
 
 def _cand_row_data(cand: RetrievedCandidate) -> dict:
-    """表格一行的数据:条款号(采用打勾)| 高亮 snippet | 后端 | 得分。
+    """表格一行的数据:条款号(采用打勾)| 高亮 snippet | 得分。
 
-    ``snippet_html`` 是唯一预渲染的 HTML(``highlight`` 包 ``<mark>``,已转义),
-    模板里 ``|safe`` 放行;``full`` 是完整条款文本(渲染进 ``data-full`` 属性,
-    点击该行弹窗展示),其余字段交 Jinja 自动转义。
+    不展示检索后端列(窄栏里把宽度让给条款文本;后端信息保留在导出 Excel 的
+    召回行里)。``snippet_html`` 是唯一预渲染的 HTML(``highlight`` 包 ``<mark>``,
+    已转义),模板里 ``|safe`` 放行;``full`` 是完整条款文本(渲染进 ``data-full``
+    属性,点击该行弹窗展示),其余字段交 Jinja 自动转义。
     """
     # 补入的采用条款来自比对检索(episode),无批量召回得分 → 显示「—」。
     score = f"{cand.score:.4f}" if cand.score is not None else "—"
     return {
         "label": cand.clause_label or cand.chunk_id,
         "snippet_html": highlight(cand.snippet, cand.query),
-        "backend": cand.backend or "",
         "score": score,
         "adopted": cand.adopted,
         "full": cand.full_text or cand.snippet or "",
@@ -383,11 +398,12 @@ def _no_intl_data(m: MatchResult) -> dict:
 def _card_data(m: MatchResult) -> dict:
     """一张外规条款卡片的数据(模板渲染纵向单元 + 四栏并排)。
 
-    四栏 = 核心监管要求 / 判定分析 / 差异说明 / 采用内规,每栏内部纵向;桌面 4
-    栏并排,窄屏(≤1100px)两两排布,手机单列堆叠。差异说明按状态给占位(完全
-    覆盖=无差异,缺失=无内规可对比),四栏结构恒定。全部检索召回(含采用/未采用)
-    由模板在四栏之下整行展示。只做数据准备,HTML 渲染交给模板
-    (``templates/review.html``)。
+    四栏 = ① 核心监管要求(内化判定依据为栏内独立子块) ② 差异说明(判定分析 +
+    内外规不一致处合并,栏内两小节) ③ 整改建议 ④ 采用内规&检索召回,每栏内部
+    纵向;桌面 4 栏并排,窄屏(≤1100px)两两排布,手机单列堆叠。差异说明按状态
+    给占位(完全覆盖=无差异,缺失=无内规可对比),四栏结构恒定。检索召回(含
+    采用/未采用)收进第四栏,栏体固定高度窗口滚动。只做数据准备,HTML 渲染交给
+    模板(``templates/review.html``)。
     """
     badge_cls, status_text = _BADGE[m.status]
     intl_cls, intl_label = _intl_badge_data(m)
@@ -411,16 +427,55 @@ def _card_data(m: MatchResult) -> dict:
         "external_source_text": m.external_source_text or "",
         "core_lines": _split_lines(m.core_regulatory_requirements),
         "core_empty": "无具体合规义务（定义/目的/程序性质条款）",
+        "intl_reason_lines": _split_lines(m.internalization_reason),
         "analysis_lines": _split_lines(m.analysis),
         "diff_lines": (
             _split_lines(m.difference_analysis)
             if m.status == CoverageStatus.PARTIALLY_COVERED else []
         ),
         "diff_empty": diff_empty,
+        "remedy_lines": _split_lines(m.remedy_suggestion),
+        "remedy_empty": "—",
         "refs": _matched_refs(m),
         "total_candidates": len(cands),
         "groups": groups,
         "more_count": more_count,
+    }
+
+
+def _export_row(m: MatchResult) -> dict:
+    """导出 Excel 的一行(模板把全部行以 JSON 内嵌进页面,由「导出 Excel」按钮
+    在前端生成 .xls,页面保持零外部依赖)。
+
+    文本一律用原始值(不带高亮 ``<mark>``);检索召回与页面展示同一顺序
+    (采用优先、得分降序、按全文去重),被采用候选带「✓」前缀;差异说明仅
+    部分覆盖导出。含核心监管要求 / 内化判定依据 / 整改建议(与页面四栏对齐)。
+    """
+    seen: set[str] = set()
+    recall_lines: list[str] = []
+    for c in sorted(m.retrieved_candidates or [], key=lambda c: (not c.adopted, -(c.score or 0.0))):
+        key = c.full_text or c.chunk_id
+        if key in seen:
+            continue
+        seen.add(key)
+        mark = "✓ " if c.adopted else ""
+        score = f"{c.score:.4f}" if c.score is not None else "—"
+        ref = f"{c.doc_name} {c.clause_label or c.chunk_id}".strip()
+        recall_lines.append(f"{mark}{ref}（{c.backend or '—'} {score}）\n{c.full_text or c.snippet or ''}")
+    refs = _matched_refs(m)
+    adopted = "\n\n".join(f"【{r['ref']}】\n{r['snippet']}" for r in refs) if refs else "—"
+    diff = m.difference_analysis if m.status == CoverageStatus.PARTIALLY_COVERED else ""
+    return {
+        "clause": m.external_article_id or m.external_clause_id,
+        "status": m.status.value,
+        "external": m.external_source_text or "",
+        "core": m.core_regulatory_requirements or "",
+        "intl_reason": m.internalization_reason or "",
+        "analysis": m.analysis or "",
+        "diff": diff or "",
+        "remedy": m.remedy_suggestion or "",
+        "adopted": adopted,
+        "recall": "\n\n".join(recall_lines),
     }
 
 
@@ -458,10 +513,11 @@ def render_review_html(
          "count": result.internalizable_missing_count},
     ]
 
+    generated_at = f"{datetime.now():%Y-%m-%d %H:%M}"
     doc = _TEMPLATE.render(
         ext_docs=ext_docs,
         store_name=store_name,
-        generated_at=f"{datetime.now():%Y-%m-%d %H:%M}",
+        generated_at=generated_at,
         coverage_rate=f"{result.coverage_rate:.1%}",
         internalizable_count=result.internalizable_count,
         no_internalization_count=result.no_internalization_count,
@@ -469,6 +525,13 @@ def render_review_html(
         chips=chips,
         no_intl=[_no_intl_data(m) for m in no_intl_matches],
         cards=[_card_data(m) for m in card_matches],
+        # 导出 Excel / 批注存档的前端数据源(文件名剔除非法字符;generated_at
+        # 供批注存档识别页面版本,页面重新生成后旧批注不自动恢复)。
+        export_data={
+            "name": f"内规检索复核-{re.sub(r'[\\/:*?\"<>|]', '_', ext_docs)[:40]}",
+            "generated_at": generated_at,
+            "rows": [_export_row(m) for m in card_matches],
+        },
     )
     output_path.write_text(doc, encoding="utf-8")
     logger.info("内规检索复核页已生成: %s (%d 条款, %d 召回候选)",

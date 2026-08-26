@@ -10,6 +10,7 @@ keyword highlights, and the 「✓ 采用」 adopted marker.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -164,10 +165,12 @@ def test_render_review_html_self_contained(tmp_path: Path) -> None:
     assert 'class="doc-group"' in html_text
     assert 'class="cand-table"' in html_text
     assert 'class="col-no"' in html_text and 'class="col-text"' in html_text
-    assert 'class="col-backend"' in html_text and 'class="col-score"' in html_text
+    assert 'class="col-score"' in html_text
+    # 检索后端列已去掉(窄栏把宽度让给条款文本);后端只保留在导出 Excel 的召回行里。
+    assert 'class="col-backend"' not in html_text
+    assert 'class="backend-badge"' not in html_text
     assert "数据安全办法" in html_text
     assert "第二条" in html_text
-    assert "bm25" in html_text
     # verbatim keyword mark on the adopted candidate, substring-fallback mark on the other
     assert "<mark>应当加密存储</mark>" in html_text
     assert "<mark>数据</mark>" in html_text
@@ -222,6 +225,7 @@ def _partial_match(candidates=None) -> MatchResult:
         internalization_reason="义务性条款且涉及核心业务。",
         difference_analysis="外规要求加密存储并实施访问控制;内规仅覆盖加密存储,遗漏访问控制要求。",
         core_regulatory_requirements="1）、对重要数据加密存储\n2）、实施访问控制",
+        remedy_suggestion="建议在数据安全办法中补充访问控制条款。",
         retrieved_candidates=candidates or [],
     )
 
@@ -304,17 +308,41 @@ def test_review_modal_carries_full_text(tmp_path):
     assert 'class="modal-close"' in html_text
 
 
+def test_review_embeds_export_data(tmp_path):
+    """导出 Excel:控制栏有按钮,页面内嵌 export-data JSON(原始文本、采用 ✓ 前缀)。"""
+    match = _partial_match(candidates=[
+        _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
+        _cand("数据安全办法#0", "数据安全办法", "第一条", "第一条　本制度适用于数据分类分级。"),
+    ])
+    html_text = _render(tmp_path, match)
+    assert 'id="export-excel"' in html_text and "📊 导出 Excel" in html_text
+    tag = '<script id="export-data" type="application/json">'
+    start = html_text.index(tag) + len(tag)
+    data = json.loads(html_text[start:html_text.index("</script>", start)])
+    assert data["name"].startswith("内规检索复核-")
+    row = data["rows"][0]
+    assert row["clause"] == "第一条" and row["status"] == "部分覆盖"
+    assert row["external"] == "外规要求重要数据加密存储。"
+    assert "对重要数据加密存储" in row["core"]              # 核心监管要求
+    assert "义务性条款且涉及核心业务。" in row["intl_reason"]  # 内化判定依据
+    assert "建议在数据安全办法中补充访问控制条款。" in row["remedy"]  # 整改建议
+    assert "【数据安全办法 第二条】" in row["adopted"]       # 采用内规 + snippet
+    assert "✓ 数据安全办法 第二条" in row["recall"]          # 采用候选 ✓ 前缀、优先
+    assert "（bm25 1.0000）" in row["recall"]                # 页面去掉的后端列,导出仍保留
+    assert "第一条　本制度适用于数据分类分级。" in row["recall"]  # 未采用候选全文
+    assert "外规要求加密存储并实施访问控制" in row["diff"]    # 差异说明(部分覆盖)
+
+
 def test_review_renders_difference_and_internalization_badge(tmp_path):
-    """部分覆盖在「差异说明」栏渲染逐条差异;内化判定只以卡片头徽标呈现。"""
+    """部分覆盖在「差异说明」栏(合并栏)渲染判定分析 + 逐条差异;内化判定依据
+    在「核心监管要求」栏内独立子块展示。"""
     html_text = _render(tmp_path, _partial_match())
-    assert "差异说明（内外规不一致处）" in html_text
+    assert "🆚 差异说明" in html_text
     assert "外规要求加密存储并实施访问控制" in html_text
-    # 结果 = 卡片头的「需要内化」徽标;条款性质/依据不展示在页面。
+    # 卡片头「需要内化」徽标;内化判定依据放进第一栏子块(不再只进报告)。
     assert '<span class="intl-badge intl-must">需要内化</span>' in html_text
-    assert "🎯 内化判定" not in html_text
-    assert "条款性质" not in html_text
-    assert "判定依据" not in html_text
-    assert "义务性条款且涉及核心业务。" not in html_text
+    assert "🧭 内化判定依据" in html_text
+    assert "义务性条款且涉及核心业务。" in html_text
 
 
 def test_review_internalization_pending_when_empty(tmp_path):
@@ -328,13 +356,13 @@ def test_review_internalization_pending_when_empty(tmp_path):
 
 
 def test_review_difference_panel_state_by_status(tmp_path):
-    """差异说明栏四栏恒定:仅部分覆盖有逐条内容,其余状态给占位文案。"""
+    """差异说明栏(合并栏)四栏恒定:仅部分覆盖有逐条内容,其余状态给占位文案。"""
     partial = _render(tmp_path, _partial_match())
     assert "外规要求加密存储并实施访问控制" in partial  # 部分覆盖 → 逐条内容
     full = _partial_match()
     full.status = CoverageStatus.FULLY_COVERED
     full_html = _render(tmp_path, full)
-    assert "差异说明（内外规不一致处）" in full_html  # 栏恒在
+    assert "🆚 差异说明" in full_html  # 栏恒在
     assert "外规要求加密存储并实施访问控制" not in full_html  # 内容不残留
     assert "无内外规差异" in full_html  # 占位表达「已检查、无差异」
     missing = _partial_match()
@@ -345,49 +373,55 @@ def test_review_difference_panel_state_by_status(tmp_path):
 
 
 def test_review_core_requirements_between_source_and_analysis(tmp_path):
-    """卡片体内:外规原文 → 核心监管要求 → 判定分析;整改建议不再渲染。"""
+    """卡片体内:外规原文 → 核心监管要求 → 差异说明(判定分析小节)→ 整改建议。"""
     html_text = _render(tmp_path, _partial_match())
     # 新段落标题 + 编号分点逐行展示。
-    assert "📋 核心监管要求（合规义务）" in html_text
-    assert '<div class="line">1）、对重要数据加密存储</div>' in html_text
-    assert '<div class="line">2）、实施访问控制</div>' in html_text
-    # 顺序:核心监管要求在 外规原文 与 判定分析 之间。
+    assert "📋 核心监管要求" in html_text
+    assert '1）、对重要数据加密存储</div>' in html_text
+    assert '2）、实施访问控制</div>' in html_text
+    # 顺序:外规原文 → 核心监管要求 → 差异说明(合并栏)→ 整改建议。
     assert (
         html_text.index("外规原文")
-        < html_text.index("核心监管要求（合规义务）")
-        < html_text.index("判定分析")
+        < html_text.index("核心监管要求")
+        < html_text.index("差异说明")
+        < html_text.index("整改建议")
     )
-    # 整改建议(卡片层)不再渲染。
-    assert "整改建议" not in html_text
-    assert "修订第二条" not in html_text
+    # 内化判定依据放进第一栏子块,在核心监管要求内容之后。
+    assert "内化判定依据" in html_text
+    # 整改建议恢复展示(合并栏之后)。
+    assert "🛠️ 整改建议" in html_text
+    assert "建议在数据安全办法中补充访问控制条款。" in html_text
 
 
 def test_review_four_column_panels_layout(tmp_path):
-    """卡片体内横向四栏:外规原文(原位顶部)之后,核心监管要求/判定分析/差异
-    说明/采用内规四栏并排;全部检索召回 top-k(含采用/未采用)在四栏之下整行
-    展示。"""
+    """卡片体内横向四栏:外规原文(原位顶部)之后,核心监管要求(含内化判定依据
+    子块)/差异说明(合并判定分析+内外规不一致)/整改建议/采用内规&检索召回
+    四栏并排;检索召回 top-k 收进第四栏,栏体固定高度窗口滚动(不再有四栏之下
+    的置底召回区)。"""
     html_text = _render(tmp_path, _partial_match(candidates=[
         _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
         _cand("数据安全办法#0", "数据安全办法", "第一条", "第一条　本制度适用于数据分类分级。"),
     ]))
     # 外规原文保持原位(顶部 details),在四栏容器之前。
     assert html_text.index("外规原文") < html_text.index('class="panels"')
-    # 四栏恒在,且 DOM 顺序:核心 → 分析 → 差异 → 采用内规侧。
+    # 四栏恒在,且 DOM 顺序:核心 → 差异说明 → 整改建议 → 采用内规&检索召回。
     assert html_text.count('<div class="panel ') == 4
     order = [
-        html_text.index("核心监管要求（合规义务）"),
-        html_text.index("判定分析"),
-        html_text.index("差异说明（内外规不一致处）"),
+        html_text.index("核心监管要求"),
+        html_text.index("差异说明"),
+        html_text.index("整改建议"),
         html_text.index("采用内规"),
     ]
     assert order == sorted(order)
-    # 第四栏只放「采用内规」摘要(无候选表);整行检索召回区在四栏容器之后。
-    inner = html_text[html_text.index("采用内规"):]
+    assert "✅ 采用内规&检索召回" in html_text
+    # 检索召回收进第四栏:召回小节在 panel-inner 内部,采用摘要在其前。
+    inner = html_text[html_text.index("panel panel-inner"):]
     assert inner.index('class="match"') < inner.index("检索召回 top-k")
-    assert html_text.index("检索召回 top-k") > html_text.index('class="panels"')
-    # 第四栏内不含候选分组表(doc-group/cand-table 全部在下方召回区)。
     assert 'class="doc-group"' not in inner[:inner.index("检索召回 top-k")]
-    # 检索召回区:头部带全部候选条数(采用+未采用);本卡 2 条 ≤ 每制度默认 2 条 → 全展示、无「展开更多」。
+    # 四栏之下的置底召回区不复存在;第四栏栏体为固定高度滚动窗口。
+    assert "recall-under" not in html_text
+    assert 'max-height:var(--panel-window' in html_text
+    # 召回小节:头部带全部候选条数(采用+未采用);本卡 2 条 ≤ 每制度默认 2 条 → 全展示、无「展开更多」。
     assert 'class="recall-head"' in html_text
     assert "检索召回 top-k" in html_text
     assert "(2 条)</span>" in html_text
@@ -424,8 +458,8 @@ def test_review_core_panel_placeholder_when_empty(tmp_path):
     match = _partial_match()
     match.core_regulatory_requirements = ""
     html_text = _render(tmp_path, match)
-    assert "核心监管要求（合规义务）" in html_text  # 栏头恒在
-    assert '<div class="line">1）、对重要数据加密存储</div>' not in html_text
+    assert "核心监管要求" in html_text  # 栏头恒在
+    assert 'data-ann-id="m0:core:' not in html_text  # 无分点 → 无可编辑行
     assert "无具体合规义务" in html_text  # 占位
     assert "判定分析" in html_text
 
@@ -436,16 +470,16 @@ def test_review_multiline_analysis_and_difference(tmp_path):
     match.analysis = "1）、内规已承接加密存储\n2）、但遗漏访问控制"
     match.difference_analysis = "1）、外规要求加密存储\n2）、内规未提访问控制"
     html_text = _render(tmp_path, match)
-    assert '<div class="line">1）、内规已承接加密存储</div>' in html_text
-    assert '<div class="line">2）、但遗漏访问控制</div>' in html_text
-    assert '<div class="line">1）、外规要求加密存储</div>' in html_text
-    assert '<div class="line">2）、内规未提访问控制</div>' in html_text
+    assert '1）、内规已承接加密存储</div>' in html_text
+    assert '2）、但遗漏访问控制</div>' in html_text
+    assert '1）、外规要求加密存储</div>' in html_text
+    assert '2）、内规未提访问控制</div>' in html_text
     # 旧数据:无换行但有编号标记 → 同样拆行(标记保留在原项)。
     match2 = _partial_match()
     match2.analysis = "1）、建立分类分级制度2）、实施安全管理"
     html_text2 = _render(tmp_path, match2)
-    assert '<div class="line">1）、建立分类分级制度</div>' in html_text2
-    assert '<div class="line">2）、实施安全管理</div>' in html_text2
+    assert '1）、建立分类分级制度</div>' in html_text2
+    assert '2）、实施安全管理</div>' in html_text2
 
 
 def _no_intl_match() -> MatchResult:
@@ -512,7 +546,7 @@ def test_review_preventive_internalization_normalized_to_need(tmp_path):
 
 
 def test_review_candidate_table_adopted_first_within_group(tmp_path):
-    """同制度组内采用行优先(即使得分更低);后端/得分各占一列。"""
+    """同制度组内采用行优先(即使得分更低);得分独立一列(后端列已去掉)。"""
     match = _partial_match(candidates=[
         _cand("数据安全办法#2", "数据安全办法", "第三条", "第三条　公司每年至少开展一次数据安全风险评估。", score=5.0),
         _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True, score=2.0),
@@ -551,3 +585,62 @@ def test_review_no_intl_row_vertical_full_reason(tmp_path):
     # 原因完整展示:完整字符串出现,未被省略号/截断。
     assert long_reason in html_text
     assert "判定依据: " + long_reason in html_text
+
+
+def test_review_editable_and_annotation_hooks(tmp_path):
+    """批注/编辑(选中文字触发):可批注单元带稳定 data-ann-id + 原文
+    data-original;选中后浮出工具条(✍️ 编辑/💬 批注)→ 编辑弹窗(引用 +
+    修改输入)/ 批注弹窗(引用 + 署名默认匿名 + 内容);便签贴卡片底部。"""
+    match = _partial_match(candidates=[
+        _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
+    ])
+    html_text = _render(tmp_path, match)
+    # 可批注单元:外规原文 + 三栏正文逐行,均带稳定定位 ID 与原文(供导出对照)。
+    assert 'data-ann-id="m0:external"' in html_text
+    assert 'data-ann-id="m0:core:0"' in html_text and 'data-ann-id="m0:core:1"' in html_text
+    assert 'data-ann-id="m0:intl:0"' in html_text      # 内化判定依据子块可编辑
+    assert 'data-ann-id="m0:analysis:0"' in html_text  # 合并栏:判定分析小节
+    assert 'data-ann-id="m0:diff:0"' in html_text      # 合并栏:内外规不一致小节
+    assert 'data-ann-id="m0:remedy:0"' in html_text    # 整改建议可编辑
+    assert 'data-original="1）、对重要数据加密存储"' in html_text
+    # 选中文字 → 浮出工具条。
+    assert 'id="selbar"' in html_text
+    assert "✍️ 编辑" in html_text and "💬 批注" in html_text
+    # 编辑弹窗:引用选中文字 + 修改输入;进出动效 10ms 近乎即时。
+    assert 'transition-duration:.01s' in html_text
+    assert 'modal-backdrop fast' in html_text
+    assert 'id="edit-modal"' in html_text and 'id="edit-quote"' in html_text
+    assert "修改后的文字" in html_text and "请输入修改后的文字" in html_text
+    # 批注弹窗:引用 + 署名(默认匿名)+ 批注内容。
+    assert 'id="comment-modal"' in html_text and 'id="comment-quote"' in html_text
+    assert 'id="comment-author"' in html_text and "默认匿名" in html_text
+    assert "请输入批注内容" in html_text
+    # 批注便签容器(卡片底部)、文中黄条引用标记、点标记弹出的内容气泡。
+    assert 'data-notes-for="m0"' in html_text
+    assert "quote-mark" in html_text
+    assert 'id="note-pop"' in html_text and 'class="pop-item"' not in html_text  # 气泡条目由 JS 动态生成
+    # 控制栏:导出/导入批注按钮 + 隐藏文件选择(只收 JSON)。
+    assert 'id="export-notes"' in html_text and "📝 导出批注" in html_text
+    assert 'id="import-notes"' in html_text and "📥 导入批注" in html_text
+    assert 'id="import-file" accept=".json' in html_text
+    # 批注引擎关键行为:按选区定位单元、localStorage 暂存、导入恢复。
+    assert "getSelection" in html_text and "localStorage" in html_text
+    assert "applyAnnotations" in html_text
+    # 卡片头不再有 💬 批注按钮(批注一律由选中文字触发)。
+    assert "card-note-btn" not in html_text
+    assert "contenteditable" not in html_text
+
+
+def test_review_intro_modal_grid(tmp_path):
+    """使用说明弹窗:宫格功能卡(非长列表),「我知道了」绿色框按钮,
+    5 秒自动关闭;头部带自动关闭提示。"""
+    html_text = _render(tmp_path, _partial_match())
+    assert 'id="intro"' in html_text
+    assert 'class="intro-grid"' in html_text
+    assert html_text.count('class="intro-item"') == 6
+    assert 'class="intro-ok"' in html_text and "我知道了" in html_text
+    assert "⏳ 5 秒后自动关闭" in html_text
+    assert "setTimeout(closeIntro, 5000)" in html_text
+    assert "setInterval" in html_text  # 倒计时 5→1
+    # 导出功能都在说明卡里介绍到。
+    assert "导出 Excel" in html_text and "批注 JSON" in html_text

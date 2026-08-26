@@ -49,13 +49,14 @@ header h1{margin:0 0 2px;font-size:22px;letter-spacing:.3px}
 .intl-must{background:#fff0f0;color:#b71c1c;border-color:#f3c2c2}
 .intl-none{background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9}
 .intl-pending{background:#eceff1;color:#78909c;border-color:#cfd8dc}
-/* 每张外规卡片的内容窗口:固定高度,内容超出时窗口内滚动(右侧细滑条),
-   完整条款文本点击行弹窗查看。窗口高度可用 --card-window 调整。 */
-.card-body{padding:14px 18px 18px;max-height:var(--card-window,360px);overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#b9c4d4 transparent}
-.card-body::-webkit-scrollbar{width:9px}
-.card-body::-webkit-scrollbar-thumb{background:#c3cedd;border-radius:8px;border:2px solid var(--card)}
-.card-body::-webkit-scrollbar-thumb:hover{background:#9fb0c6}
-.card-body::-webkit-scrollbar-track{background:transparent}
+/* 卡片内容窗口与第四栏栏体窗口共用一套滑条样式:固定高度,内容超出时窗口内
+   滚动(右侧细滑条),完整条款文本点击行弹窗查看。
+   高度分别用 --card-window / --panel-window 调整。 */
+.card-body{padding:14px 18px 18px;max-height:var(--card-window,480px);overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#b9c4d4 transparent}
+.card-body::-webkit-scrollbar,.panel-inner .panel-body::-webkit-scrollbar{width:9px}
+.card-body::-webkit-scrollbar-thumb,.panel-inner .panel-body::-webkit-scrollbar-thumb{background:#c3cedd;border-radius:8px;border:2px solid var(--card)}
+.card-body::-webkit-scrollbar-thumb:hover,.panel-inner .panel-body::-webkit-scrollbar-thumb:hover{background:#9fb0c6}
+.card-body::-webkit-scrollbar-track,.panel-inner .panel-body::-webkit-scrollbar-track{background:transparent}
 details.src{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:9px 14px;margin:0 0 14px}
 details.src summary{cursor:pointer;font-weight:600;font-size:12.5px;color:#526078;user-select:none}
 details.src summary:hover{color:var(--blue)}
@@ -64,12 +65,21 @@ details.src pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;f
 .panel{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
 .panel-head{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;padding:9px 12px 8px;border-bottom:1px solid var(--line);letter-spacing:.2px}
 .panel-core .panel-head{color:var(--blue);border-left:3px solid var(--blue)}
-.panel-analysis .panel-head{color:#475569;border-left:3px solid #94a3b8}
 .panel-diff .panel-head{color:var(--part);border-left:3px solid var(--part)}
+.panel-remedy .panel-head{color:#7c3aed;border-left:3px solid #7c3aed}
 .panel-inner .panel-head{color:var(--full);border-left:3px solid var(--full)}
 .panel-body{padding:10px 12px;font-size:13px;color:#334155;flex:1;overflow-wrap:anywhere}
-.panel-body .line{padding:2px 0}
+.panel-body .line{padding:2px 0;white-space:pre-wrap}
+/* 栏内小节(合并栏 / 第一栏内化依据):用虚线 + 小标签与主内容区分,标题保持简短 */
+.panel-sub{display:flex;align-items:center;gap:6px;margin:10px 0 4px;padding-top:10px;border-top:1px dashed var(--line);font-size:11.5px;font-weight:700;color:#526078;letter-spacing:.2px}
+.panel-body .panel-sub:first-child{border-top:none;margin-top:0;padding-top:0}
+.intl-reason{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)}
+.intl-reason-head{display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;color:var(--part);margin-bottom:4px;letter-spacing:.2px}
 .panel-empty{color:#94a3b8;font-style:italic;font-size:12.5px;padding:2px 0;line-height:1.6}
+/* 第四栏(采用摘要 + 召回合并展示)内容较长:栏体固定高度窗口,超出时窗口内
+   滚动;召回小节与采用摘要之间用虚线分隔 */
+.panel-inner .panel-body{max-height:var(--panel-window,340px);min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#b9c4d4 transparent}
+.panel-inner .recall-head{margin:10px 0 6px;padding-top:10px;border-top:1px dashed var(--line)}
 .match{margin-bottom:10px;padding:8px 10px;background:#f0faf3;border:1px solid #d3ecd9;border-radius:8px;color:var(--full);font-size:12.5px;line-height:1.6}
 .match b{font-weight:700}
 .match.none{background:#f8fafc;border-color:var(--line);color:var(--muted)}
@@ -83,8 +93,6 @@ details.src pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;f
 .recall-body.truncated .cand-table tbody tr:nth-of-type(n+3){display:none}
 .recall-more-btn{display:block;width:100%;margin-top:8px;padding:6px 10px;border:1px dashed var(--line);border-radius:8px;background:#f8fafc;cursor:pointer;font-size:12px;color:var(--muted);text-align:center;transition:border-color .12s,color .12s,background .12s}
 .recall-more-btn:hover{color:var(--blue);border-color:var(--blue);background:#fff}
-/* 四栏之下的整行检索召回区:只与四栏留白分隔,样式与原先召回区一致 */
-.recall-under{margin-top:14px}
 .doc-group{border:1px solid var(--line);border-radius:9px;margin-bottom:8px;overflow:hidden}
 .doc-group:last-child{margin-bottom:0}
 .doc-group-head{background:#f6f8fb;padding:7px 10px;font-weight:600;font-size:12px;color:#37474f;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:6px}
@@ -98,10 +106,8 @@ details.src pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;f
 .cand-row.adopted:hover td{background:#e6f5eb}
 .col-no{white-space:nowrap;font-weight:600;width:1%;color:var(--ink)}
 .col-text{color:#334155;overflow-wrap:anywhere}
-.col-backend{white-space:nowrap;width:1%}
 .col-score{white-space:nowrap;text-align:right;width:1%;color:var(--muted);font-variant-numeric:tabular-nums}
 .adopted-mark{color:var(--full);font-weight:700}
-.backend-badge{background:#eef1f6;color:#475569;border-radius:5px;padding:1px 7px;font-size:10.5px;white-space:nowrap}
 mark{background:var(--mark-bg);padding:0 1px;border-radius:2px;font-weight:600}
 .empty{color:var(--muted);font-style:italic;padding:6px 0;font-size:12.5px}
 .no-intl{border:1px solid var(--line);border-radius:12px;margin-bottom:16px;background:var(--card);overflow:hidden}
@@ -126,7 +132,77 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 .modal-close{border:none;background:#f1f5f9;border-radius:8px;width:28px;height:28px;cursor:pointer;color:var(--muted);font-size:13px;line-height:1;transition:background .12s,color .12s}
 .modal-close:hover{background:#e2e8f0;color:var(--ink)}
 .modal-text{margin:0;padding:16px 18px;overflow-y:auto;font-family:inherit;font-size:13.5px;line-height:1.9;color:#334155;white-space:pre-wrap;word-break:break-word}
-@media (prefers-reduced-motion: reduce){.modal-backdrop,.modal{transition:none}}
+@media (prefers-reduced-motion: reduce){.modal-backdrop,.modal{transition:none}.note.flash{animation:none}.intro-auto.tick{animation:none}}
+/* 批注与编辑:选中正文文字 → 浮出工具条(编辑/批注);修改处黄底标记,
+   批注引用在文中以黄条点线标记,便签贴在卡片底部 */
+.editable{border-radius:4px}
+.editable:hover{background:#f6f9fe}
+.editable.edited{background:#fef6c4;box-shadow:0 0 0 1px #ead78a}
+.quote-mark{background:#fef08a;border-bottom:2px dotted #d97706;border-radius:2px;cursor:pointer}
+/* 点击文中黄条标记,原地弹出该处批注内容气泡 */
+.note-pop{position:fixed;z-index:140;width:320px;max-width:calc(100vw - 16px);max-height:320px;overflow-y:auto;background:#fffbeb;border:1px solid #f5e08a;border-left:3px solid #f2c94c;border-radius:10px;box-shadow:0 12px 32px -10px rgba(15,23,42,.35);padding:10px 12px}
+.note-pop[hidden]{display:none}
+.pop-item{position:relative;padding:6px 24px 6px 0;border-top:1px dashed #f0e2a8}
+.pop-item:first-child{border-top:none}
+.pop-head{display:flex;align-items:baseline;gap:8px;font-size:11.5px;margin-bottom:3px}
+.pop-author{font-weight:700;color:#8a6d1f}
+.pop-time{color:#a18831}
+.pop-text{white-space:pre-wrap;color:#7a5b00;font-size:12.5px;line-height:1.7;overflow-wrap:anywhere}
+.pop-del{position:absolute;top:4px;right:0;border:none;background:transparent;border-radius:6px;width:20px;height:20px;cursor:pointer;color:#b09b56;font-size:11px;line-height:1;padding:0}
+.pop-del:hover{background:#f6ecc7;color:#8a6d1f}
+.selbar{position:fixed;z-index:150;display:flex;align-items:center;gap:2px;background:#16233b;border-radius:10px;padding:4px;box-shadow:0 8px 24px -8px rgba(15,23,42,.5)}
+.selbar[hidden]{display:none}
+.selbar-btn{border:none;background:transparent;color:#e2e8f0;border-radius:7px;padding:5px 10px;font-size:12.5px;cursor:pointer;line-height:1.4;font-family:inherit}
+.selbar-btn:hover{background:rgba(255,255,255,.15);color:#fff}
+.selbar-sep{width:1px;height:14px;background:rgba(255,255,255,.2)}
+.notes{display:none;margin-top:12px}
+.notes.has-notes{display:block}
+.note{position:relative;background:#fffbeb;border:1px solid #f5e08a;border-left:3px solid #f2c94c;border-radius:8px;padding:8px 30px 8px 12px;margin-bottom:8px}
+.note.flash{animation:note-flash 1.2s ease}
+@keyframes note-flash{0%,100%{box-shadow:none}30%{box-shadow:0 0 0 3px #f2c94c}}
+.note-head{display:flex;align-items:baseline;gap:10px;font-size:11.5px}
+.note-author{font-weight:700;color:#8a6d1f}
+.note-time{color:#a18831}
+.note-quote{background:#fdf6d8;border-left:2px solid #e5c558;border-radius:4px;padding:4px 8px;font-size:11.5px;color:#8a6d1f;margin:5px 0;line-height:1.6;white-space:pre-wrap;max-height:84px;overflow-y:auto;overflow-wrap:anywhere}
+.note-text{white-space:pre-wrap;color:#7a5b00;font-size:12.5px;line-height:1.7;overflow-wrap:anywhere}
+.note-del{position:absolute;top:7px;right:7px;border:none;background:transparent;border-radius:6px;width:20px;height:20px;cursor:pointer;color:#b09b56;font-size:11px;line-height:1;padding:0}
+.note-del:hover{background:#f6ecc7;color:#8a6d1f}
+/* 编辑 / 批注表单弹窗:引用原文 + 输入区;进出动效 10ms 近乎即时 */
+.form-modal{max-width:560px}
+.modal-backdrop.fast{transition-duration:.01s}
+.modal.fast{transition-duration:.01s}
+.form-body{padding:16px 18px 18px}
+.quote-box{background:#f8fafc;border-left:3px solid #b9c4d4;border-radius:8px;padding:9px 12px;margin-bottom:12px}
+.quote-label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+.quote-text{font-size:13px;color:#334155;line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow-y:auto}
+.field-label{display:block;font-size:12.5px;font-weight:600;color:#526078;margin-bottom:6px}
+.form-body textarea{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font:inherit;font-size:13px;line-height:1.7;resize:vertical;min-height:76px;color:var(--ink);outline:none;background:#fff;box-sizing:border-box}
+.form-body textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(29,91,214,.12)}
+.author-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.author-row label{font-size:12.5px;font-weight:600;color:#526078;white-space:nowrap}
+.author-row input{flex:1;max-width:220px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;font-size:13px;outline:none;color:var(--ink)}
+.author-row input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(29,91,214,.12)}
+.form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.btn-ghost{padding:7px 18px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font-size:13px;cursor:pointer;font-family:inherit}
+.btn-ghost:hover{border-color:#b9c4d4;background:#f8fafc}
+.btn-primary{padding:7px 18px;border:1px solid var(--blue);border-radius:9px;background:var(--blue);color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-primary:hover{background:#1749b0}
+/* 使用说明弹窗:宫格功能卡 + 「我知道了」绿色框按钮 */
+.intro-body{padding:16px 18px 18px;max-height:70vh;overflow-y:auto}
+.intro-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.intro-item{display:flex;flex-direction:column;gap:3px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:11px 13px;transition:border-color .12s,background .12s}
+.intro-item:hover{border-color:#b9c4d4;background:#fff}
+.ii-icon{font-size:17px;line-height:1}
+.ii-title{font-size:13px;font-weight:700;color:var(--ink)}
+.ii-desc{font-size:12px;color:var(--muted);line-height:1.6}
+.intro-auto{color:var(--muted);font-size:11px;background:#f1f5f9;border-radius:999px;padding:3px 10px;font-weight:500;white-space:nowrap;display:inline-block}
+.intro-auto.tick{animation:intro-tick .32s ease}
+@keyframes intro-tick{0%{transform:scale(1)}50%{transform:scale(1.16)}100%{transform:scale(1)}}
+.intro-ok{display:block;margin:16px auto 0;padding:8px 42px;border:1.5px solid var(--full);background:#f0faf3;color:var(--full);border-radius:999px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;transition:background .12s,color .12s}
+.intro-ok:hover{background:var(--full);color:#fff}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:200;background:#16233b;color:#fff;padding:9px 18px;border-radius:999px;font-size:13px;box-shadow:0 8px 24px -8px rgba(0,0,0,.45);opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+.toast.show{opacity:1}
+@media(max-width:560px){.intro-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:1100px){.panels{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:680px){
   .wrap{padding:16px 12px 48px}
@@ -148,6 +224,10 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 <div class="chips">{% for c in chips %}<button class="chip chip-{{ c.cls }}{{ ' active' if c.filter == 'all' else '' }}" data-filter="{{ c.filter }}">{{ c.label }} ({{ c.count }})</button>{% endfor %}</div>
 <div class="controls">
 <input id="search" type="search" placeholder="按关键词筛选条款 / 召回片段 / 无需内化列表…">
+<button type="button" id="export-excel" title="把当前比对结果导出为 Excel 文件">📊 导出 Excel</button>
+<button type="button" id="export-notes" title="把页面上的文字修改与批注导出为 JSON 存档">📝 导出批注</button>
+<button type="button" id="import-notes" title="从批注 JSON 存档恢复修改与批注">📥 导入批注</button>
+<input type="file" id="import-file" accept=".json,application/json" hidden>
 </div>
 </header>
 <main>
@@ -166,7 +246,8 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 {% endif %}
 {% if cards %}
 {% for m in cards %}
-<section class="card" data-status="{{ m.status }}">
+{% set mi = loop.index0 %}
+<section class="card" data-status="{{ m.status }}" data-ann-id="m{{ mi }}" data-clause="{{ m.clause_id }}">
 <header class="card-head" role="button" tabindex="0" aria-expanded="true">
 <span class="clause-id">{{ m.clause_id }}</span>
 <span class="badge {{ m.badge_cls }}">{{ m.status_text }}</span>
@@ -174,16 +255,14 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 <span class="toggle-arrow">▾</span>
 </header>
 <div class="card-body">
-<details class="src"><summary>外规原文</summary><pre>{{ m.external_source_text }}</pre></details>
+<details class="src"><summary>外规原文</summary><pre class="editable" data-ann-id="m{{ mi }}:external" data-original="{{ m.external_source_text }}">{{ m.external_source_text }}</pre></details>
 <div class="panels">
-<div class="panel panel-core"><div class="panel-head">📋 核心监管要求（合规义务）</div><div class="panel-body">{% if m.core_lines %}{% for line in m.core_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.core_empty }}</div>{% endif %}</div></div>
-<div class="panel panel-analysis"><div class="panel-head">🔎 判定分析</div><div class="panel-body">{% if m.analysis_lines %}{% for line in m.analysis_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">—</div>{% endif %}</div></div>
-<div class="panel panel-diff"><div class="panel-head">🆚 差异说明（内外规不一致处）</div><div class="panel-body">{% if m.diff_lines %}{% for line in m.diff_lines %}<div class="line">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.diff_empty }}</div>{% endif %}</div></div>
-<div class="panel panel-inner"><div class="panel-head">✅ 采用内规</div><div class="panel-body">
+<div class="panel panel-core"><div class="panel-head">📋 核心监管要求</div><div class="panel-body">{% if m.core_lines %}{% for line in m.core_lines %}<div class="line editable" data-ann-id="m{{ mi }}:core:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.core_empty }}</div>{% endif %}{% if m.intl_reason_lines %}<div class="intl-reason"><div class="intl-reason-head">🧭 内化判定依据</div>{% for line in m.intl_reason_lines %}<div class="line editable" data-ann-id="m{{ mi }}:intl:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}</div>{% endif %}</div></div>
+<div class="panel panel-diff"><div class="panel-head">🆚 差异说明</div><div class="panel-body">{% if m.analysis_lines %}<div class="panel-sub">🔎 判定分析</div>{% for line in m.analysis_lines %}<div class="line editable" data-ann-id="m{{ mi }}:analysis:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}{% endif %}<div class="panel-sub">🆚 内外规不一致处</div>{% if m.diff_lines %}{% for line in m.diff_lines %}<div class="line editable" data-ann-id="m{{ mi }}:diff:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.diff_empty }}</div>{% endif %}</div></div>
+<div class="panel panel-remedy"><div class="panel-head">🛠️ 整改建议</div><div class="panel-body">{% if m.remedy_lines %}{% for line in m.remedy_lines %}<div class="line editable" data-ann-id="m{{ mi }}:remedy:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.remedy_empty }}</div>{% endif %}</div></div>
+<div class="panel panel-inner"><div class="panel-head">✅ 采用内规&检索召回</div><div class="panel-body">
 {% if m.refs %}<div class="match">✓ 采用内规: {% for r in m.refs %}{% if not loop.first %}, {% endif %}<b>{{ r.ref }}</b>{% endfor %}</div>{% for r in m.refs %}<div class="match-snippet" data-title="{{ r.ref }}" data-full="{{ r.full }}" title="点击查看全文">{{ r.snippet }}</div>{% endfor %}{% else %}<div class="match none">— 无承接内规</div>{% endif %}
-</div></div>
-</div>
-<div class="recall recall-under">
+<div class="recall">
 <div class="recall-head">🔍 检索召回 top-k<span class="recall-count">({{ m.total_candidates }} 条)</span></div>
 <div class="recall-body{% if m.more_count %} truncated{% endif %}">
 {% if m.groups %}
@@ -195,7 +274,6 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 <tr class="cand-row{% if r.adopted %} adopted{% endif %}" data-title="{{ g.doc }} {{ r.label }}" data-full="{{ r.full }}" title="点击查看全文">
 <td class="col-no">{% if r.adopted %}<span class="adopted-mark">✓</span> {% endif %}{{ r.label }}</td>
 <td class="col-text">{{ r.snippet_html | safe }}</td>
-<td class="col-backend"><span class="backend-badge">{{ r.backend }}</span></td>
 <td class="col-score">{{ r.score }}</td>
 </tr>
 {% endfor %}
@@ -208,6 +286,9 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 </div>
 {% if m.more_count %}<button type="button" class="recall-more-btn" data-more="展开更多 ({{ m.more_count }} 条) ▾" data-less="收起 ▴">展开更多 ({{ m.more_count }} 条) ▾</button>{% endif %}
 </div>
+</div></div>
+</div>
+<div class="notes" data-notes-for="m{{ mi }}"></div>
 </div>
 </section>
 {% endfor %}
@@ -217,10 +298,67 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 </main>
 <footer>「✓」= 该内规条款被比对 episode 采纳为承接条款;其余为批量预召回候选,供人工复核相关性。覆盖/缺失统计只算需内化处理条款,无需内化条款不构成制度缺口。</footer>
 </div>
+<script id="export-data" type="application/json">{{ export_data | tojson }}</script>
 <div class="modal-backdrop" id="modal" hidden>
 <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
 <div class="modal-head"><b id="modal-title"></b><button type="button" class="modal-close" aria-label="关闭">✕</button></div>
 <pre class="modal-text" id="modal-text"></pre>
+</div>
+</div>
+<!-- 点击文中黄条标记弹出的批注内容气泡 -->
+<div class="note-pop" id="note-pop" hidden></div>
+<!-- 选中文字浮出工具条:✍️ 编辑 / 💬 批注 -->
+<div class="selbar" id="selbar" hidden>
+<button type="button" class="selbar-btn" data-selbar="edit">✍️ 编辑</button>
+<span class="selbar-sep"></span>
+<button type="button" class="selbar-btn" data-selbar="comment">💬 批注</button>
+</div>
+<!-- 编辑文字弹窗:引用选中文字 + 修改输入(fast:更快动效) -->
+<div class="modal-backdrop fast" id="edit-modal" hidden>
+<div class="modal form-modal fast" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+<div class="modal-head"><b id="edit-modal-title">✍️ 编辑文字</b><button type="button" class="modal-close" aria-label="关闭">✕</button></div>
+<div class="form-body">
+<div class="quote-box"><span class="quote-label">选中的文字</span><div class="quote-text" id="edit-quote"></div></div>
+<label class="field-label" for="edit-input">修改后的文字</label>
+<textarea id="edit-input" rows="3" placeholder="请输入修改后的文字"></textarea>
+<div class="form-actions">
+<button type="button" class="btn-ghost" id="edit-cancel">取消</button>
+<button type="button" class="btn-primary" id="edit-save">保存修改</button>
+</div>
+</div>
+</div>
+</div>
+<!-- 添加批注弹窗:引用选中文字 + 署名(默认匿名)+ 批注内容(fast:更快动效) -->
+<div class="modal-backdrop fast" id="comment-modal" hidden>
+<div class="modal form-modal fast" role="dialog" aria-modal="true" aria-labelledby="comment-modal-title">
+<div class="modal-head"><b id="comment-modal-title">💬 添加批注</b><button type="button" class="modal-close" aria-label="关闭">✕</button></div>
+<div class="form-body">
+<div class="quote-box"><span class="quote-label">选中的文字</span><div class="quote-text" id="comment-quote"></div></div>
+<div class="author-row"><label for="comment-author">署名</label><input id="comment-author" type="text" placeholder="默认匿名"></div>
+<label class="field-label" for="comment-input">批注内容</label>
+<textarea id="comment-input" rows="4" placeholder="请输入批注内容...."></textarea>
+<div class="form-actions">
+<button type="button" class="btn-ghost" id="comment-cancel">取消</button>
+<button type="button" class="btn-primary" id="comment-save">保存批注</button>
+</div>
+</div>
+</div>
+</div>
+<!-- 使用说明弹窗:宫格功能卡,进入页面自动弹出,5 秒自动关闭,点「我知道了」立即关闭 -->
+<div class="modal-backdrop" id="intro" hidden>
+<div class="modal intro" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+<div class="modal-head"><b id="intro-title">👋 内规检索复核 · 使用说明</b><span class="intro-auto">⏳ 5 秒后自动关闭</span><button type="button" class="modal-close" data-intro-close aria-label="关闭">✕</button></div>
+<div class="intro-body">
+<div class="intro-grid">
+<div class="intro-item"><span class="ii-icon">🗂️</span><span class="ii-title">卡片四栏对照</span><span class="ii-desc">每条外规一张卡片,四栏并排展示;点卡片头折叠,内容超长在窗口内滚动</span></div>
+<div class="intro-item"><span class="ii-icon">🔍</span><span class="ii-title">筛选与搜索</span><span class="ii-desc">顶部状态 tab 筛选覆盖情况,搜索框按关键词过滤</span></div>
+<div class="intro-item"><span class="ii-icon">✍️</span><span class="ii-title">编辑文字</span><span class="ii-desc">用鼠标选中正文文字,浮出工具条点「编辑」,改完的内容黄底标记</span></div>
+<div class="intro-item"><span class="ii-icon">💬</span><span class="ii-title">添加批注</span><span class="ii-desc">选中文字点「批注」,署名默认匿名;便签贴在卡片底部,引用处黄条标记</span></div>
+<div class="intro-item"><span class="ii-icon">📄</span><span class="ii-title">查看全文</span><span class="ii-desc">点召回候选行或采用摘要,弹窗展示完整条款文本</span></div>
+<div class="intro-item"><span class="ii-icon">📤</span><span class="ii-title">导出与导入</span><span class="ii-desc">📊 导出 Excel、📝 批注 JSON;📥 导入批注可恢复修改与批注</span></div>
+</div>
+<button type="button" class="intro-ok" data-intro-close>我知道了</button>
+</div>
 </div>
 </div>
 <script>
@@ -263,6 +401,39 @@ document.querySelectorAll('.recall-more-btn').forEach(btn=>{
     btn.textContent = expanded ? btn.dataset.more : btn.dataset.less;
   });
 });
+// ── 通用弹层(条款全文 / 编辑 / 批注 / 使用说明):遮罩淡入 + 面板上浮;
+// ✕、点遮罩、Esc 均可关闭;多层同开时滚动锁到最后一个关闭才放开 ──
+const LAYERS = ['modal', 'edit-modal', 'comment-modal', 'intro'];
+function openLayer(el, focusEl){
+  hideSelbar();
+  el.hidden = false;
+  requestAnimationFrame(()=>el.classList.add('open'));
+  document.body.style.overflow = 'hidden';
+  if (focusEl) focusEl.focus();  // 立即聚焦输入框,不等待动效
+}
+function closeLayer(el){
+  if (el.hidden) return;
+  el.classList.remove('open');
+  const anyOpen = LAYERS.some(id=>{ const x=document.getElementById(id); return x!==el && !x.hidden; });
+  if (!anyOpen) document.body.style.overflow = '';
+  setTimeout(()=>{ if(!el.classList.contains('open')) el.hidden = true; }, 200);
+}
+LAYERS.forEach(id=>{
+  const el = document.getElementById(id);
+  el.addEventListener('click', e=>{ if (e.target === el) closeLayer(el); });
+});
+document.querySelectorAll('.modal-backdrop .modal-close').forEach(b=>{
+  b.addEventListener('click', ()=>closeLayer(b.closest('.modal-backdrop')));
+});
+document.addEventListener('keydown', e=>{
+  if (e.key !== 'Escape') return;
+  const pop = document.getElementById('note-pop');
+  if (pop && !pop.hidden){ pop.hidden = true; return; }
+  for (const id of ['edit-modal', 'comment-modal', 'modal', 'intro']){
+    const el = document.getElementById(id);
+    if (el && !el.hidden){ closeLayer(el); break; }
+  }
+});
 // 条款全文弹窗:点击召回候选行 / 采用内规 snippet,弹窗展示完整条款文本。
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modal-title');
@@ -270,22 +441,397 @@ const modalText = document.getElementById('modal-text');
 function openModal(title, text){
   modalTitle.textContent = title;
   modalText.textContent = text;
-  modal.hidden = false;
-  requestAnimationFrame(()=>modal.classList.add('open'));
-  document.body.style.overflow = 'hidden';
+  openLayer(modal);
 }
-function closeModal(){
-  modal.classList.remove('open');
-  document.body.style.overflow = '';
-  setTimeout(()=>{ if(!modal.classList.contains('open')) modal.hidden = true; }, 200);
-}
+function closeModal(){ closeLayer(modal); }
 document.addEventListener('click', e=>{
   const t = e.target.closest('[data-full]');
   if (t && t.dataset.full) openModal(t.dataset.title || '条款全文', t.dataset.full);
 });
-modal.addEventListener('click', e=>{ if (e.target === modal) closeModal(); });
-modal.querySelector('.modal-close').addEventListener('click', closeModal);
-document.addEventListener('keydown', e=>{ if (e.key === 'Escape' && !modal.hidden) closeModal(); });
+// ── 导出 Excel:SpreadsheetML 2003 纯前端字符串生成(零外部依赖,Excel/WPS 直接打开)。
+// 数据来自内嵌 JSON(#export-data);样式:蓝底白字表头 + 覆盖状态三色 + 细边框 + 冻结首行。
+const EXPORT_DATA = JSON.parse(document.getElementById('export-data').textContent);
+function xmlEsc(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function xCell(text, style){
+  return '<Cell ss:StyleID="'+style+'"><Data ss:Type="String">'+xmlEsc(text)+'</Data></Cell>';
+}
+function exportExcel(){
+  const HEADERS = ['条款号','覆盖状态','外规原文','核心监管要求','内化判定依据','判定分析','差异说明','整改建议','采用内规（snippet）','检索召回 top-k'];
+  const WIDTHS  = [70, 80, 200, 180, 200, 200, 200, 180, 260, 320];
+  const BORDER  = ['Left','Right','Top','Bottom'].map(p=>'<Border ss:Position="'+p+'" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DFEA"/>').join('');
+  const FONT    = 'ss:FontName="微软雅黑" ss:Size="10"';
+  const STATUS_STYLE = {'完全覆盖':'st-full','部分覆盖':'st-part','缺失':'st-miss'};
+  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n'
+    + '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+    + '<Styles>'
+    + '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Top" ss:WrapText="1"/><Font '+FONT+' ss:Color="#334155"/></Style>'
+    + '<Style ss:ID="head"><Font '+FONT+' ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1D5BD6" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+    + '<Style ss:ID="cell"><Borders>'+BORDER+'</Borders></Style>'
+    + '<Style ss:ID="st-full" ss:Parent="cell"><Font '+FONT+' ss:Bold="1" ss:Color="#1A7F37"/><Interior ss:Color="#E8F5E9" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+    + '<Style ss:ID="st-part" ss:Parent="cell"><Font '+FONT+' ss:Bold="1" ss:Color="#B45309"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+    + '<Style ss:ID="st-miss" ss:Parent="cell"><Font '+FONT+' ss:Bold="1" ss:Color="#C0302E"/><Interior ss:Color="#FDE8E8" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+    + '</Styles>'
+    + '<Worksheet ss:Name="条款比对"><Table>';
+  WIDTHS.forEach(w=>{ xml += '<Column ss:AutoFitWidth="0" ss:Width="'+w+'"/>'; });
+  xml += '<Row ss:Height="26">' + HEADERS.map(h=>xCell(h,'head')).join('') + '</Row>';
+  EXPORT_DATA.rows.forEach(r=>{
+    xml += '<Row>' + xCell(r.clause,'cell') + xCell(r.status, STATUS_STYLE[r.status] || 'cell')
+      + xCell(r.external,'cell') + xCell(r.core,'cell') + xCell(r.intl_reason,'cell')
+      + xCell(r.analysis,'cell') + xCell(r.diff,'cell') + xCell(r.remedy,'cell')
+      + xCell(r.adopted,'cell') + xCell(r.recall,'cell') + '</Row>';
+  });
+  xml += '</Table>'
+    + '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">'
+    + '<FreezePanes/><FrozenNo/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane>'
+    + '</WorksheetOptions></Worksheet></Workbook>';
+  const blob = new Blob([xml], {type:'application/vnd.ms-excel;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = EXPORT_DATA.name + '.xls';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+document.getElementById('export-excel').addEventListener('click', exportExcel);
+// ── 批注与编辑(选中文字触发) ──
+// 鼠标选中可批注单元(四栏正文 / 外规原文)内的文字 → 浮出工具条「✍️ 编辑 /
+// 💬 批注」。编辑:弹窗引用选中文字 + 输入修改文,保存后替换并黄底标记;
+// 批注:弹窗引用 + 署名(默认匿名)+ 内容,便签贴在卡片底部,引用处在文中
+// 以黄条点线标记(点击定位便签)。修改与批注可导出 JSON / 导入恢复,并自动
+// 暂存 localStorage(页面重新生成后不自动恢复,防止错位)。
+const ANN_KEY = 'review-ann:' + EXPORT_DATA.name;
+let comments = [];  // {target, clause, field, quote, author, text, time}
+let editLogs = [];  // {type:'edit', target, clause, field, quote, text, time, unit_original, unit_text}
+const FIELD_NAMES = {core:'核心监管要求', intl:'内化判定依据', analysis:'判定分析', diff:'差异说明', remedy:'整改建议', external:'外规原文'};
+function nowStamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); }
+function toast(msg){
+  const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
+  document.body.appendChild(t);
+  requestAnimationFrame(()=>t.classList.add('show'));
+  setTimeout(()=>{ t.classList.remove('show'); setTimeout(()=>t.remove(), 250); }, 2600);
+}
+function clauseOf(el){ const c=el.closest('.card'); return c ? c.dataset.clause : ''; }
+function selFor(target){ return '.editable[data-ann-id="'+(window.CSS && CSS.escape ? CSS.escape(target) : target)+'"]'; }
+function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// —— 选中文字 → 浮出工具条 ——
+const selbar = document.getElementById('selbar');
+let pendingSel = null;  // {unit, text}
+function getSelectionUnit(){
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  const elOf = n => (n.nodeType === 3 ? n.parentElement : n);
+  const a = elOf(range.startContainer), b = elOf(range.endContainer);
+  if (!a || !b || !a.closest || !b.closest) return null;
+  const u1 = a.closest('.editable[data-ann-id]');
+  const u2 = b.closest('.editable[data-ann-id]');
+  if (!u1 || u1 !== u2) return null;  // 只支持同一单元内的选区
+  const text = sel.toString();
+  if (!text.trim()) return null;
+  return {unit: u1, text: text, rect: range.getBoundingClientRect()};
+}
+function updateSelbar(){
+  if (LAYERS.some(id=>{ const x=document.getElementById(id); return x && !x.hidden; })) return;  // 弹层开着时不弹工具条
+  const s = getSelectionUnit();
+  if (!s){ hideSelbar(); return; }
+  pendingSel = s;
+  selbar.hidden = false;
+  const r = s.rect, w = selbar.offsetWidth, h = selbar.offsetHeight;
+  const x = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width/2 - w/2));
+  const y = (r.top - h - 8 >= 8) ? (r.top - h - 8) : (r.bottom + 8);
+  selbar.style.left = x + 'px';
+  selbar.style.top = y + 'px';
+}
+function hideSelbar(){ selbar.hidden = true; }
+selbar.addEventListener('mousedown', e=>e.preventDefault());  // 点按钮不清选区
+selbar.addEventListener('click', e=>{
+  const b = e.target.closest('[data-selbar]');
+  if (!b || !pendingSel) return;
+  if (b.dataset.selbar === 'edit') openEditModal(); else openCommentModal();
+});
+document.addEventListener('mouseup', e=>{
+  if (!selbar.contains(e.target)) updateSelbar();  // 同步弹出工具条,零延迟
+});
+window.addEventListener('scroll', ()=>{ hideSelbar(); hideNotePop(); }, true);  // 滚动时收起(位置随滚动失效)
+
+// —— 编辑 / 批注 弹窗 ——
+const editModal = document.getElementById('edit-modal');
+const commentModal = document.getElementById('comment-modal');
+const editQuote = document.getElementById('edit-quote');
+const editInput = document.getElementById('edit-input');
+const commentQuote = document.getElementById('comment-quote');
+const commentAuthor = document.getElementById('comment-author');
+const commentInput = document.getElementById('comment-input');
+function openEditModal(){
+  if (!pendingSel) return;
+  editQuote.textContent = pendingSel.text;
+  editInput.value = '';
+  openLayer(editModal, editInput);
+}
+function openCommentModal(){
+  if (!pendingSel) return;
+  commentQuote.textContent = pendingSel.text;
+  commentInput.value = '';  // 署名保留上次输入,便于连续批注
+  openLayer(commentModal, commentInput);
+}
+document.getElementById('edit-cancel').addEventListener('click', ()=>closeLayer(editModal));
+document.getElementById('comment-cancel').addEventListener('click', ()=>closeLayer(commentModal));
+document.getElementById('edit-save').addEventListener('click', ()=>{
+  if (!pendingSel){ closeLayer(editModal); return; }
+  const val = editInput.value.trim();
+  if (!val){ toast('请输入修改后的文字'); editInput.focus(); return; }
+  const unit = pendingSel.unit, quote = pendingSel.text;
+  const cur = unit.innerText;
+  const idx = cur.indexOf(quote);
+  if (idx < 0){ toast('未找到选中文字,请重新选择'); closeLayer(editModal); return; }
+  const next = cur.slice(0, idx) + val + cur.slice(idx + quote.length);
+  unit.innerText = next;
+  unit.classList.add('edited');
+  const fieldKey = unit.dataset.annId.split(':')[1];
+  editLogs.push({type:'edit', target:unit.dataset.annId, clause:clauseOf(unit),
+    field:FIELD_NAMES[fieldKey] || fieldKey, quote:quote, text:val, time:nowStamp(),
+    unit_original:unit.dataset.original, unit_text:next});
+  renderNotes(); renderQuoteMarks(); saveAnnLocal();
+  closeLayer(editModal);
+  window.getSelection().removeAllRanges();
+  toast('已保存修改,修改处黄底标记');
+});
+editInput.addEventListener('keydown', e=>{
+  if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); document.getElementById('edit-save').click(); }
+});
+document.getElementById('comment-save').addEventListener('click', ()=>{
+  if (!pendingSel){ closeLayer(commentModal); return; }
+  const val = commentInput.value.trim();
+  if (!val){ toast('请输入批注内容'); commentInput.focus(); return; }
+  const unit = pendingSel.unit;
+  const fieldKey = unit.dataset.annId.split(':')[1];
+  comments.push({type:'comment', target:unit.dataset.annId, clause:clauseOf(unit),
+    field:FIELD_NAMES[fieldKey] || fieldKey, quote:pendingSel.text,
+    author:commentAuthor.value.trim() || '匿名', text:val, time:nowStamp()});
+  renderNotes(); renderQuoteMarks(); saveAnnLocal();
+  const card = unit.closest('.card');
+  const box = card && card.querySelector('.notes');
+  if (box) flashNote(box.querySelector('.note:last-child'));  // 保存后直接带到新便签
+  closeLayer(commentModal);
+  window.getSelection().removeAllRanges();
+  toast('批注已添加,便签贴在卡片底部');
+});
+
+// —— 批注便签(卡片底部)与文中引用标记 ——
+function renderNotes(){
+  document.querySelectorAll('.notes').forEach(box=>{
+    const target = box.dataset.notesFor;
+    const list = comments.filter(c=>c.target === target);
+    box.innerHTML = '';
+    list.forEach(c=>{
+      const note = document.createElement('div'); note.className = 'note';
+      const head = document.createElement('div'); head.className = 'note-head';
+      const author = document.createElement('span'); author.className = 'note-author'; author.textContent = '👤 ' + (c.author || '匿名');
+      const time = document.createElement('span'); time.className = 'note-time'; time.textContent = '⏱ ' + (c.time || '');
+      head.append(author, time);
+      note.appendChild(head);
+      if (c.quote){
+        const q = document.createElement('div'); q.className = 'note-quote'; q.textContent = '「 ' + c.quote + ' 」';
+        note.appendChild(q);
+      }
+      const text = document.createElement('div'); text.className = 'note-text'; text.textContent = c.text;
+      note.appendChild(text);
+      const del = document.createElement('button'); del.type = 'button'; del.className = 'note-del'; del.textContent = '✕'; del.title = '删除批注';
+      del.addEventListener('click', ()=>{ comments = comments.filter(x=>x !== c); renderNotes(); renderQuoteMarks(); saveAnnLocal(); });
+      note.appendChild(del);
+      box.appendChild(note);
+    });
+    box.classList.toggle('has-notes', list.length > 0);
+  });
+}
+function renderQuoteMarks(){
+  // 先还原旧标记,再按批注引用重新包 span(同单元多处引用全标,重叠引用只标首个)
+  document.querySelectorAll('.quote-mark').forEach(m=>m.replaceWith(document.createTextNode(m.textContent)));
+  const byUnit = {};
+  comments.forEach(c=>{ if (c.quote && c.target) (byUnit[c.target] = byUnit[c.target] || []).push(c.quote); });
+  Object.keys(byUnit).forEach(t=>{
+    const el = document.querySelector(selFor(t));
+    if (!el) return;
+    const text = el.textContent;
+    const ranges = [];
+    byUnit[t].forEach(q=>{
+      const i = text.indexOf(q);
+      if (i >= 0 && !ranges.some(r=> i < r.end && r.start < i + q.length)) ranges.push({start:i, end:i + q.length});
+    });
+    if (!ranges.length) return;
+    ranges.sort((a,b)=>a.start - b.start);
+    let html = '', pos = 0;
+    ranges.forEach(r=>{
+      html += escHtml(text.slice(pos, r.start)) + '<span class="quote-mark" title="💬 点击查看批注">' + escHtml(text.slice(r.start, r.end)) + '</span>';
+      pos = r.end;
+    });
+    html += escHtml(text.slice(pos));
+    el.innerHTML = html;
+  });
+}
+function flashNote(n){
+  if (!n) return;
+  n.scrollIntoView({behavior:'smooth', block:'center'});
+  n.classList.add('flash');
+  setTimeout(()=>n.classList.remove('flash'), 1300);
+}
+const notePop = document.getElementById('note-pop');
+function hideNotePop(){ notePop.hidden = true; }
+function showNotePop(mk){
+  const unit = mk.closest('.editable[data-ann-id]');
+  if (!unit){ hideNotePop(); return; }
+  const target = unit.dataset.annId, quote = mk.textContent;
+  const list = comments.filter(c=>c.target === target && c.quote === quote);
+  if (!list.length){ hideNotePop(); return; }
+  notePop.innerHTML = '';
+  list.forEach(c=>{
+    const item = document.createElement('div'); item.className = 'pop-item';
+    const head = document.createElement('div'); head.className = 'pop-head';
+    const author = document.createElement('span'); author.className = 'pop-author'; author.textContent = '👤 ' + (c.author || '匿名');
+    const time = document.createElement('span'); time.className = 'pop-time'; time.textContent = '⏱ ' + (c.time || '');
+    head.append(author, time);
+    const text = document.createElement('div'); text.className = 'pop-text'; text.textContent = c.text;
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'pop-del'; del.textContent = '✕'; del.title = '删除批注';
+    del.addEventListener('click', ()=>{
+      comments = comments.filter(x=>x !== c);
+      renderNotes(); renderQuoteMarks(); saveAnnLocal();
+      const rest = comments.filter(x=>x.target === target && x.quote === quote);
+      if (rest.length) item.remove(); else hideNotePop();
+    });
+    item.append(head, text, del);
+    notePop.appendChild(item);
+  });
+  notePop.dataset.for = target + '|' + quote;
+  notePop.hidden = false;
+  // 气泡贴着标记下方,放不下放上方,水平方向夹在视口内
+  const r = mk.getBoundingClientRect();
+  const w = notePop.offsetWidth, h = notePop.offsetHeight;
+  const x = Math.max(8, Math.min(window.innerWidth - w - 8, r.left));
+  let y = r.bottom + 8;
+  if (y + h > window.innerHeight - 8) y = Math.max(8, r.top - h - 8);
+  notePop.style.left = x + 'px';
+  notePop.style.top = y + 'px';
+}
+document.addEventListener('click', e=>{
+  if (!notePop.hidden && !notePop.contains(e.target) && !e.target.closest('.quote-mark')) hideNotePop();
+  const mk = e.target.closest('.quote-mark');
+  if (!mk) return;
+  const unit = mk.closest('.editable[data-ann-id]');
+  const key = (unit ? unit.dataset.annId : '') + '|' + mk.textContent;
+  if (!notePop.hidden && notePop.dataset.for === key) hideNotePop();  // 再点同一个标记收起
+  else showNotePop(mk);
+});
+
+// —— 导出 / 导入 / 本地暂存 ——
+function saveAnnLocal(){
+  try{ localStorage.setItem(ANN_KEY, JSON.stringify({generated_at:EXPORT_DATA.generated_at, annotations:editLogs.concat(comments)})); }catch(e){}
+}
+function exportNotes(){
+  const all = editLogs.concat(comments);
+  if (!all.length){ toast('还没有修改或批注:选中文字后可编辑或添加批注'); return; }
+  const payload = {
+    tool:'内规检索复核', format:'review-annotations', version:2,
+    page:{ external:EXPORT_DATA.name, generated_at:EXPORT_DATA.generated_at },
+    exported_at:nowStamp(),
+    counts:{ edits:editLogs.length, comments:comments.length },
+    annotations:all
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = EXPORT_DATA.name + '.批注.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  toast('已导出 ' + all.length + ' 条(修改 ' + editLogs.length + ' · 批注 ' + comments.length + ')');
+}
+function applyAnnotations(list){
+  let applied = 0, skipped = 0;
+  (list || []).forEach(a=>{
+    if (a && a.type === 'edit' && a.target){
+      const el = document.querySelector(selFor(a.target));
+      if (el && typeof a.unit_text === 'string' && (a.unit_original == null || a.unit_original === el.dataset.original)){
+        // 标准存档:整单元最终文本直接回填(页面原文一致才应用,防止错位)
+        el.innerText = a.unit_text;
+        el.classList.toggle('edited', a.unit_text !== el.dataset.original);
+        const fieldKey = el.dataset.annId.split(':')[1];
+        editLogs.push({type:'edit', target:a.target, clause:a.clause || clauseOf(el),
+          field:a.field || FIELD_NAMES[fieldKey] || fieldKey, quote:a.quote || '', text:a.text || '',
+          time:a.time || '', unit_original:el.dataset.original, unit_text:a.unit_text});
+        applied++;
+      } else if (el && typeof a.quote === 'string' && typeof a.text === 'string' && el.innerText.indexOf(a.quote) >= 0){
+        // 手写/旧版存档:按引用片段替换
+        const i = el.innerText.indexOf(a.quote);
+        const next = el.innerText.slice(0, i) + a.text + el.innerText.slice(i + a.quote.length);
+        el.innerText = next; el.classList.add('edited');
+        editLogs.push({type:'edit', target:a.target, clause:a.clause || clauseOf(el),
+          field:a.field || '', quote:a.quote, text:a.text, time:a.time || '',
+          unit_original:el.dataset.original, unit_text:next});
+        applied++;
+      } else skipped++;  // 单元不存在或原文已变,跳过
+    } else if (a && a.type === 'comment' && a.target && a.text){
+      const dup = comments.some(c=>c.target === a.target && c.text === a.text && c.time === a.time && c.quote === a.quote);
+      if (dup) skipped++;
+      else { comments.push({type:'comment', target:a.target, clause:a.clause || '', field:a.field || '',
+        quote:a.quote || '', author:a.author || '匿名', text:a.text, time:a.time || ''}); applied++; }
+    } else skipped++;
+  });
+  renderNotes(); renderQuoteMarks();
+  return {applied:applied, skipped:skipped};
+}
+document.getElementById('export-notes').addEventListener('click', exportNotes);
+document.getElementById('import-notes').addEventListener('click', ()=>document.getElementById('import-file').click());
+document.getElementById('import-file').addEventListener('change', e=>{
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = ()=>{
+    let data = null;
+    try{ data = JSON.parse(rd.result); }catch(err){}
+    if (!data || !Array.isArray(data.annotations)){ toast('导入失败:不是有效的批注 JSON 文件'); return; }
+    const r = applyAnnotations(data.annotations);
+    saveAnnLocal();
+    toast('导入完成:生效 ' + r.applied + ' 条,跳过 ' + r.skipped + ' 条');
+  };
+  rd.readAsText(f, 'utf-8');
+});
+function loadAnnLocal(){
+  let data = null;
+  try{ data = JSON.parse(localStorage.getItem(ANN_KEY) || 'null'); }catch(e){}
+  if (!data || data.generated_at !== EXPORT_DATA.generated_at) return;  // 页面已重新生成,旧批注不自动恢复
+  applyAnnotations(data.annotations);
+}
+// ── 使用说明弹窗:进入页面自动弹,5 秒倒计时自动关,点「我知道了」/✕ 立即关 ──
+const intro = document.getElementById('intro');
+const introAuto = document.querySelector('#intro .intro-auto');
+let introTimer = null;       // 倒计时 interval(5→1)
+let introCloseTimer = null;  // 5 秒到点关闭
+function closeIntro(){
+  if (intro.hidden) return;
+  if (introTimer){ clearInterval(introTimer); introTimer = null; }
+  if (introCloseTimer){ clearTimeout(introCloseTimer); introCloseTimer = null; }
+  closeLayer(intro);
+}
+function showIntro(){
+  openLayer(intro);
+  let left = 5;
+  introAuto.textContent = '⏳ 5 秒后自动关闭';
+  introTimer = setInterval(()=>{
+    left -= 1;
+    if (left > 0){
+      introAuto.textContent = '⏳ ' + left + ' 秒后自动关闭';
+      introAuto.classList.remove('tick'); void introAuto.offsetWidth; introAuto.classList.add('tick');
+    }
+  }, 1000);
+  introCloseTimer = setTimeout(closeIntro, 5000);
+}
+document.querySelectorAll('[data-intro-close]').forEach(b=>b.addEventListener('click', closeIntro));
+renderNotes();
+renderQuoteMarks();
+loadAnnLocal();
+showIntro();
 // 卡片入场动效逐张错开(最多 8 张封顶,避免长列表尾部久等)。
 document.querySelectorAll('.card').forEach((c,i)=>{ c.style.animationDelay = (Math.min(i,8)*60) + 'ms'; });
 </script>
