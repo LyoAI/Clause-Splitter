@@ -219,7 +219,9 @@ def test_ground_episode_missing_new_fields_defaults_empty():
     assert r["internalization_reason"] == ""
     assert r["difference_analysis"] == ""
     assert r["core_regulatory_requirements"] == ""
-    assert r.get("remedy_suggestion", "") == ""  # 整改建议不再产出(旧契约字段已移除)
+    # status=缺失 且 agent 未给整改建议 → 缺省建议新建/修订内规条款(不落空)。
+    from clause_splitter.compare.ground import _NOT_COVERED_REMEDY
+    assert r["remedy_suggestion"] == _NOT_COVERED_REMEDY
     from clause_splitter.models import MatchResult
 
     m = MatchResult(**r)
@@ -272,6 +274,20 @@ def test_ground_episode_passes_through_core_regulatory_requirements():
     )
     assert r["core_regulatory_requirements"] == "1）、建立数据分类分级制度\n2）、实施数据安全管理"
     assert r["status"] == CoverageStatus.FULLY_COVERED
+
+
+def test_ground_episode_passes_through_remedy_suggestion():
+    """episode 产出的整改建议(编号逐条、换行分隔)原样透传;部分覆盖不再落空。"""
+    store = _mini_store()
+    r = ground_episode(
+        _mk_result(
+            "部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID],
+            extra={"remedy_suggestion": "1）、补充访问控制要求\n2）、加严数据存储标准"},
+        ),
+        store, EXT,
+    )
+    assert r["remedy_suggestion"] == "1）、补充访问控制要求\n2）、加严数据存储标准"
+    assert r["status"] == CoverageStatus.PARTIALLY_COVERED
 
 
 def test_ground_episode_normalizes_preventive_to_need():

@@ -29,6 +29,8 @@ _DOWNGRADE_ANALYSIS = (
 )
 #: agent 未给出分析文案时的缺省说明(MatchResult.analysis 要求非空)。
 _NOT_COVERED_ANALYSIS = "内规库中未检索到承接该外规义务的条款，判定为缺失。"
+#: status=缺失 时 agent 未给出整改建议 → 缺省建议新建/修订内规条款承接。
+_NOT_COVERED_REMEDY = "建议新增或修订内规条款，承接该外规义务。"
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 
@@ -108,16 +110,20 @@ def ground_episode(
         "clause_type": _norm_str(ext.clause_type),
         "internalization_decision": normalize_internalization_decision(_norm_str(ext.internalization_decision)),
         "internalization_reason": _norm_str(ext.internalization_reason),
-        # difference_analysis / core_regulatory_requirements 仍由 episode 产出
-        # (差异说明依赖比对结果;核心监管要求为外规义务提取)。
+        # difference_analysis / core_regulatory_requirements / remedy_suggestion
+        # 仍由 episode 产出(差异说明依赖比对结果;核心监管要求为外规义务提取;
+        # 整改建议针对覆盖缺口)。
         "difference_analysis": _norm_str(parsed.get("difference_analysis") if parsed else ""),
         "core_regulatory_requirements": _norm_str(parsed.get("core_regulatory_requirements") if parsed else ""),
+        "remedy_suggestion": _norm_str(parsed.get("remedy_suggestion") if parsed else ""),
     }
 
     # 缺失:无承接 —— 直接返回(claimed ids 即使有也不落地)。
     if status == CoverageStatus.NOT_COVERED:
         if not base["analysis"].strip():
             base["analysis"] = _NOT_COVERED_ANALYSIS
+        if not base["remedy_suggestion"].strip():
+            base["remedy_suggestion"] = _NOT_COVERED_REMEDY
         return base
 
     # 覆盖性判定 → 必须 grounding。
