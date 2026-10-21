@@ -1,51 +1,48 @@
 [project]
 name = "clause-splitter"
-version = "0.3.0"
+version = "0.5.0"
 description = "条款拆分与内外规比对智能体 —— 条款级比对 + 可插拔检索 + 防幻觉 grounding"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # LLM & agent
+    # LLM
     "openai==2.38.0",
     "pydantic==2.13.4",
     "python-dotenv==1.2.2",
     "colorlog==6.10.1",
     "pyyaml==6.0.3",
-    "tenacity==9.1.4",
-    "tiktoken==0.13.0",
-    # PingAn intranet gateway signing (only needed on the intranet path)
-    "pycryptodome==3.23.0",
     "json-repair==0.60.1",
     "requests==2.34.2",
-    # HTML 复核页模板
-    "jinja2==3.1.6",
-    # Parsing
-    "mineru[pipeline]>=3.4.4",   # local document parser (PDF / docx / pptx / xlsx / images)
-    # Retrieval
-    "pyserini>=0.44.0",          # BM25 (Lucene) — requires JDK 21 (JAVA_HOME in .env)
-    "pyjnius>=1.7.0",            # pyserini's JVM bridge
-    "faiss-cpu>=1.8.0",          # dense (FAISS) index
-    "jieba==0.42.1",             # Chinese tokenizer for BM25 pretokenized mode
-    "sentence-transformers>=5.7.0",  # qwen3-embedding-0.6b / bge-m3 dense embeddings
+    # PingAn intranet gateway signing (only needed on the intranet path)
+    "pycryptodome==3.23.0",
+    # RAG engine (vendored chillrag/) — engine deps installed alongside
+    "pyserini>=0.44.0",              # BM25 (Lucene) — requires JDK 21 (JAVA_HOME in .env)
+    "pyjnius>=1.7.0",
+    "faiss-cpu>=1.8.0",
+    "jieba==0.42.1",                 # zh/en tokenizer for BM25 pretokenized mode
+    "sentence-transformers>=5.7.0",
+    "transformers>=4.44.0",
     "numpy==2.4.6",
-    # Document parsing / export
-    "pdfplumber==0.11.9",
-    "pymupdf==1.27.2.3",
-    "python-docx==1.1.2",
-    "pdfminer-six==20251230",
-    "openpyxl==3.1.5",
-    "pandas==3.0.3",
+    "rich==15.0.0",
+    "mineru[pipeline]>=3.4.4,<4",    # local document parser (PDF / docx / pptx / images)
+    "torchvision>=0.28.0",
     "lxml==6.1.1",
-    # FastAPI thin shell
+    # Business document handling
+    "pdfplumber==0.11.9",
+    "python-docx>=1.1.2",
+    "openpyxl==3.1.5",
+    # FastAPI service
     "fastapi==0.136.3",
     "uvicorn==0.49.0",
     "python-multipart==0.0.32",
-    # CLI / misc
-    "rich==15.0.0",
+    "loguru==0.7.3",
+    "motor==3.7.1",
+    "jinja2==3.1.6",                 # review-page template
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.0.3"]
+dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

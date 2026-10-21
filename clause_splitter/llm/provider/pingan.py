@@ -11,7 +11,6 @@ from clause_splitter.utils import get_logger
 import base64
 import hmac
 import binascii
-import requests
 import json
 import json_repair
 import time
@@ -38,7 +37,7 @@ class PingAnLLMProvider(LLMProvider):
         self.request_id = self.extra_headers.pop("requestId", "")
         self.model_name = self.extra_headers.pop("model_name", "")
 
-        logger.info(f"app_key = {self.app_key}, app_secret = {self.app_secret}, scene_id = {self.scene_id}, "
+        logger.info(f"app_key = {self.app_key}, scene_id = {self.scene_id}, "
                     f"request_id = {self.request_id}, model_name = {self.model_name}")
         
         self.default_model = default_model

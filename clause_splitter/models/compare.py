@@ -11,8 +11,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from clause_splitter.models.clause import ClauseSplitResult
-
 
 # ── Enums ─────────────────────────────────────────────────────────────────
 
@@ -285,17 +283,3 @@ class CompareResult(BaseModel):
             "total_internal_obligations": self.total_internal_obligations,
             "details": [m.model_dump(exclude={"retrieved_candidates"}) for m in self.matches],
         }
-
-
-# ── Pipeline result ───────────────────────────────────────────────────────
-
-class PipelineResult(BaseModel):
-    """Complete pipeline result: split + compare + summary."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    document_name: str = Field(default="")
-    split_result: ClauseSplitResult | None = Field(default=None)
-    compare_result: CompareResult | None = Field(default=None)
-    summary_report: str = Field(default="", description="Markdown gap analysis report")
-    summary_report_path: str = Field(default="", description="Path to saved report .md file")

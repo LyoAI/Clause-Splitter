@@ -12,25 +12,15 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 from clause_splitter.config import get_settings
 from clause_splitter.models import ClauseObligation, ObligationRule
-from clause_splitter.split import prompts
-from clause_splitter.split.plan import plan_batches  # noqa: F401  (re-export for pipeline)
+from clause_splitter.prompts import load, render
 from clause_splitter.utils import get_logger
 from clause_splitter.utils.file.json_utils import parse_json_from_text
-from clause_splitter.utils.skill_loader import load_skill
 
 logger = get_logger()
-
-_SPLIT_SKILL_PATH = Path(__file__).resolve().parent.parent / "skills" / "split" / "SKILL.md"
-
-
-def get_split_skill_content() -> str:
-    """读取 split 的 SKILL.md 核心拆分规范(去 frontmatter)。"""
-    return load_skill(_SPLIT_SKILL_PATH)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -74,17 +64,33 @@ async def decompose_batch(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _batch_user_prompt(articles: list[dict[str, Any]]) -> str:
+    """批量条款的用户消息 —— 每条义务须标注源条款编号。"""
+    lines = [
+        f"请逐一拆分以下 {len(articles)} 个条款。每个条款的每条义务记录中必须正确标注对应的条款编号。",
+        "",
+    ]
+    for art in articles:
+        lines += [
+            "---",
+            f"条款编号：{art.get('article_id', '?')}",
+            f"条款文本：{art.get('full_text', '')}",
+            "",
+        ]
+    return "\n".join(lines)
+
+
 async def _decompose_simple(
     batch: list[dict[str, Any]],
     document_name: str,
     llm: Any,
 ) -> list[dict[str, Any]]:
-    system_prompt = prompts._fill(
-        prompts.DECOMPOSE_SIMPLE_SYSTEM_PROMPT_TEMPLATE,
-        skill_content=get_split_skill_content(),
+    system_prompt = render(
+        "obligation_decompose_simple",
+        skill_content=load("obligation_spec"),
         document_name=document_name,
     )
-    user_prompt = prompts.format_batch_user_prompt(batch)
+    user_prompt = _batch_user_prompt(batch)
 
     try:
         content = await _llm_call(llm, [
@@ -111,9 +117,9 @@ async def _decompose_complex(
     llm: Any,
 ) -> list[dict[str, Any]]:
     settings = get_settings()
-    system_prompt = prompts._fill(
-        prompts.DECOMPOSE_COMPLEX_SYSTEM_PROMPT_TEMPLATE,
-        skill_content=get_split_skill_content(),
+    system_prompt = render(
+        "obligation_decompose_complex",
+        skill_content=load("obligation_spec"),
         document_name=document_name,
     )
     max_iterations = settings.max_react_iterations
@@ -126,7 +132,9 @@ async def _decompose_complex(
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompts.format_decompose_complex_user_prompt(article_id, article_text)},
+            {"role": "user", "content": (
+                f"请拆分以下复杂条款：\n\n条款编号：{article_id}\n条款文本：\n{article_text}"
+            )},
         ]
 
         for iteration in range(max_iterations):
@@ -147,13 +155,13 @@ async def _decompose_complex(
                     messages.append({"role": "assistant", "content": content[:500]})
                     messages.append({
                         "role": "user",
-                        "content": prompts.format_validation_error_feedback("记录不符合 schema"),
+                        "content": "验证失败：记录不符合 schema\n请修正后重新输出。",
                     })
                 else:
                     messages.append({"role": "assistant", "content": content[:500]})
                     messages.append({
                         "role": "user",
-                        "content": prompts.format_unparseable_output_feedback(),
+                        "content": "无法解析输出。请严格按照 YAML 格式重新输出。",
                     })
             except Exception as e:
                 logger.error("条款 %s ReAct 迭代 %d 出错: %s", article_id, iteration + 1, e)

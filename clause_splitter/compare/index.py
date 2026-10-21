@@ -1,27 +1,36 @@
-"""内规库数据准备 —— mineru 解析 + 层级分块 → 检索单元 + 三种索引.
+"""Internal-library preparation — MinerU parse + per-条 chunking → indexes.
 
-数据源是内规库的**原始文档**(pdf / docx / pptx / xlsx 多制度容器 / 图片)。
-流程照搬 FinIndicator ``run_prepare_docs.py`` 的 ``prepare_docs``:
+Input is the raw internal-regulation documents (pdf / docx / pptx / xlsx
+containers / images):
 
-    parse  MinerU 本地 CLI → blocks(.xlsx 走 ``split_workbook`` 拆成每制度一个文档)
-    chunk  层级感知分块 → 检索单元(统一按条:每条第X条一个 chunk,章节进 meta.section)
-    store  DocumentStore → JSONL(``store/``) + 每块 .txt(``chunks/``) + 源清单(``sources.json``)
-    embed  chunks → faiss 向量索引(``faiss/``)
-    index  chunks → BM25 Lucene 索引(``bm25/``)
+    parse  local MinerU CLI → blocks (.xlsx goes through ``split_workbook``,
+           one document per 制度)
+    chunk  hierarchy-aware chunking → retrieval units (unified per-article:
+           one chunk per 第X条, chapter path in meta.section)
+    store  DocumentStore → JSONL (``store/``) + per-chunk .txt (``chunks/``)
+           + source manifest (``sources.json``)
+    embed  chunks → faiss vector index (``faiss/``)
+    index  chunks → BM25 Lucene index (``bm25/``)
 
-**增量更新**:``prepare_docs`` 读上一次的 ``store/sources.json``,与当前目录逐文件
-sha256 比对,分出 added / modified / unchanged / removed:
+**Incremental updates**: ``prepare_docs`` reads the previous
+``store/sources.json`` and diffs the directory file-by-file by sha256 into
+added / modified / unchanged / removed:
 
-- 只解析 added+modified(mineru 的 ``skip_existing`` 复用 unchanged 的 md 缓存;
-  modified 先删除其旧 md 缓存再重解析)。re-chunk 全部现文档,廉价无 LLM/OCR。
-- faiss:纯新增(无 modified/removed)→ 读旧索引 append 新向量;有 modified/removed
-  → 全量重嵌入。
-- bm25:有变更 → 从全量 store 重建(~1s);无变更 → 复用缓存。
-- ``rebuild=True`` 强制全量:删除全部 md 缓存 + 全量重嵌入。
+- Only added+modified files are re-parsed (MinerU ``skip_existing`` reuses the
+  unchanged md cache; modified files have their stale cache removed first).
+  Re-chunking covers all current documents — cheap, no LLM/OCR.
+- faiss: pure additions → embed only the new chunks and ``append_to_index``;
+  any modification/removal → full re-embed.
+- bm25: any change → rebuild from the full store (~1s); else reuse the cache.
+- ``rebuild=True`` forces a full rebuild (drop all md caches + re-embed).
 
-**自定义存储位置**:``index_root``(或 ``INDEX_CACHE_DIR`` / CLI ``--index-dir``)
-决定 ``<root>/<name>/{store,chunks,bm25,faiss,md}``;``store/meta.json`` 记录
-``index_root``,``load_store`` 供比对侧直接装载既有索引,无需重复 mineru 解析。
+**Custom storage location**: ``index_root`` (or ``INDEX_CACHE_DIR``) decides
+``<root>/<name>/{store,chunks,bm25,faiss,md}``; ``store/meta.json`` records
+``index_root``, and ``load_store`` lets the compare side mount an existing
+index without re-running MinerU.
+
+Embedding / BM25 primitives come from the vendored chillrag engine; the
+sha256-based incremental diff is this module's business policy.
 """
 
 from __future__ import annotations
@@ -30,25 +39,20 @@ import json
 import shutil
 from pathlib import Path
 
-from clause_splitter.config import (
-    EMBED_DEVICE,
-    EMBED_MODEL,
-    MINERU_MD_DIRNAME,
-    doc_cache_dir,
-)
+from chillrag.config import EMBED_DEVICE, EMBED_MODEL
+from chillrag.tools.searcher import DocumentStore, append_to_index, embed_store
+from chillrag.tools.searcher.bm25_search import BM25Searcher
+from chillrag.tools.searcher.embed import Embedder
+
+from clause_splitter.config import MINERU_MD_DIRNAME, doc_cache_dir
+from clause_splitter.docprep.ingest import _file_sha256, ingest, scan_supported_docs
 from clause_splitter.utils import get_logger
-from ..tools.parser.ingest import ingest, scan_supported_docs
-from ..tools.searcher import DocumentStore, embed_store
-from ..tools.searcher.bm25_search import BM25Searcher
-from ..tools.searcher.embed import Embedder
 
 logger = get_logger()
 
 
 def _scan_sources(internal_dir: str | Path) -> dict[Path, str]:
     """{source file: sha256} for every supported document under ``internal_dir``."""
-    from ..tools.parser.ingest import _file_sha256
-
     return {p: _file_sha256(p) for p in scan_supported_docs(internal_dir)}
 
 
@@ -59,8 +63,41 @@ def _load_sources(cache_root: Path) -> dict[str, dict]:
         try:
             return json.loads(f.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 — a corrupt manifest is treated as empty
-            logger.warning("sources.json 无法解析,视为空: %s", f)
+            logger.warning("sources.json unreadable, treating as empty: %s", f)
     return {}
+
+
+def _refresh_faiss(
+    store: DocumentStore,
+    cache_root: Path,
+    *,
+    rebuild: bool,
+    modified: list[Path],
+    removed: list[str],
+    embed_model: str | None,
+) -> None:
+    """faiss incremental policy: pure additions append only the new chunks;
+    any modification/removal (or a forced rebuild) re-embeds everything."""
+    faiss_dir = cache_root / "faiss"
+    reembed = rebuild or bool(modified or removed)
+    try:
+        embedder = Embedder(model_name=embed_model or EMBED_MODEL, device=EMBED_DEVICE)
+        if reembed or not (faiss_dir / "index.faiss").exists():
+            embed_store(store, embedder, index_dir=faiss_dir, rebuild=reembed)
+            return
+        # Pure addition: embed only chunks missing from vector_ids, append in
+        # place (no full-corpus re-embed).
+        ids_file = faiss_dir / "vector_ids.json"
+        existing = set(json.loads(ids_file.read_text(encoding="utf-8")))
+        new_chunks = [c for c in store.all_chunks() if c.chunk_id not in existing]
+        if not new_chunks:
+            logger.info("no new chunks for the faiss index, skipping")
+            return
+        logger.info("faiss incremental: appending %d new chunk(s)", len(new_chunks))
+        vectors = embedder.encode_batch([c.text for c in new_chunks])
+        append_to_index(faiss_dir, [c.chunk_id for c in new_chunks], vectors)
+    except Exception as e:  # noqa: BLE001 — a missing model must not block grep/bm25
+        logger.warning("faiss index skipped (embedding unavailable): %s", e)
 
 
 def prepare_docs(
@@ -99,7 +136,7 @@ def prepare_docs(
     if rebuild:
         md_dir = cache_root / MINERU_MD_DIRNAME
         if md_dir.exists():
-            logger.info("--rebuild: 清除全部 mineru 解析缓存 %s", md_dir)
+            logger.info("--rebuild: dropping all MinerU parse caches %s", md_dir)
             shutil.rmtree(md_dir, ignore_errors=True)
         added = list(current)
         modified: list[Path] = []
@@ -115,18 +152,19 @@ def prepare_docs(
             if str(p) in prev_hash and prev_hash[str(p)] != current[p]
         ]
         removed = [f for f in prev_hash if f not in {str(p) for p in current}]
-        # 已变更文件:删掉其旧 md 缓存,``parse_docs(skip_existing)`` 才会重新解析。
-        # unchanged 文件缓存直接复用 → 增量只跑新/改文件的 mineru。
+        # Changed files: drop their stale md cache so parse_docs(skip_existing)
+        # re-parses them. Unchanged files reuse the cache directly — the
+        # incremental run only pays MinerU for new/modified files.
         md_dir = cache_root / MINERU_MD_DIRNAME
         for p in modified:
             stale = md_dir / p.stem
             if stale.exists():
-                logger.info("文件已变更,清除旧解析缓存: %s", p.name)
+                logger.info("file changed, dropping stale parse cache: %s", p.name)
                 shutil.rmtree(stale, ignore_errors=True)
 
     changed = bool(added or modified or removed)
     logger.info(
-        "增量差分 %s: added=%d modified=%d removed=%d → changed=%s",
+        "incremental diff %s: added=%d modified=%d removed=%d → changed=%s",
         name, len(added), len(modified), len(removed), changed,
     )
 
@@ -135,20 +173,8 @@ def prepare_docs(
 
     store = ingest(list(current), name=name, persist=True, index_root=index_root)
 
-    # faiss:纯新增 append;modified/removed/rebuild → 全量重嵌入(否则旧行残留,
-    # 且改过的 chunk_id 会漂移造成重复向量)。
-    reembed = rebuild or bool(modified or removed)
-    try:
-        embed_store(
-            store,
-            Embedder(model_name=embed_model or EMBED_MODEL, device=EMBED_DEVICE),
-            index_dir=cache_root / "faiss",
-            rebuild=reembed,
-            append_new=(not reembed and bool(added)),
-        )
-    except Exception as e:  # noqa: BLE001 — 模型缺失不阻塞 grep/bm25
-        logger.warning("faiss 索引跳过(embedding 不可用): %s", e)
-
+    _refresh_faiss(store, cache_root, rebuild=rebuild, modified=modified,
+                   removed=removed, embed_model=embed_model)
     BM25Searcher(store, index_dir=cache_root / "bm25", rebuild=changed)
     return store
 
@@ -160,9 +186,9 @@ def load_store(
     """Load a previously built store + its persisted provenance, or None.
 
     Only the serialized store is read — no MinerU parse, no index rebuild — so
-    ``run_compare`` can reuse an existing internal-library index directly. The
-    store's ``index_root`` comes from ``store/meta.json``, keeping the faiss /
-    bm25 / chunks locations aligned with whatever ``run_index --index-dir`` used.
+    the comparison stage can reuse an existing internal-library index directly.
+    The store's ``index_root`` comes from ``store/meta.json``, keeping the
+    faiss / bm25 / chunks locations aligned with whichever root built it.
 
     Args:
         name: Store identity (``<root>/<name>/``).
@@ -175,5 +201,6 @@ def load_store(
     if not (store_dir / "chunks.jsonl").exists():
         return None
     store = DocumentStore.load_from_jsonl(store_dir)
-    logger.info("已装载既有内规索引库 %s (%d 文档 / %d 检索单元)", name, len(store.docs), len(store.all_chunks()))
+    logger.info("loaded existing internal index %s (%d docs / %d units)",
+                name, len(store.docs), len(store.all_chunks()))
     return store

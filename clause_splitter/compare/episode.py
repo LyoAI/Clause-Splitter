@@ -1,8 +1,9 @@
-"""条款 episode —— 每条外规条款 = 一个 agent episode.
+"""Clause episode — one external clause = one agent episode.
 
-question 含:制度名 / 章节 / 条款号 / 条款原文 + 该条款拆分出的义务要素摘要
-(subject / action_verb / action_target / obligation_rule / trigger_condition),
-供 agent 判断每项义务是否被内规承接。
+The question carries: 制度名 / section / clause number / clause text plus the
+obligation elements split from the clause (subject / action_verb /
+action_target / obligation_rule / trigger_condition), so the agent can judge
+whether each obligation is adopted by an internal clause.
 """
 
 from __future__ import annotations
@@ -10,16 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from clause_splitter.agent import AgentResult, ReActAgent
-
 
 @dataclass
 class ExternalClause:
-    """一条外规条款,作为一次比对的输入单元。
+    """One external clause — the input unit of one comparison.
 
     ``clause_type`` / ``internalization_decision`` / ``internalization_reason``
-    由**前置内化判定阶段**(检索之前)填充;未判定时为空串(视为需内化处理,
-    保守纳入覆盖率口径)。
+    are filled by the pre-internalization stage (before retrieval); empty
+    means not yet judged (conservatively treated as needing internalization
+    and counted in coverage).
     """
 
     document_name: str = ""
@@ -33,13 +33,32 @@ class ExternalClause:
 
     @property
     def clause_id(self) -> str:
-        """全局外规条款 id,如 '网络数据安全风险评估办法#第一条'。"""
+        """Global clause id, e.g. '网络数据安全风险评估办法#第一条'."""
         doc = self.document_name or "未命名外规"
         return f"{doc}#{self.clause_number or '全文'}"
 
 
+@dataclass
+class EpisodeResult:
+    """Compare-domain view of an episode — an adapter over chillrag's AgentResult.
+
+    chillrag's ``answer`` is the verbatim final assistant message; the compare
+    side calls it ``raw_answer`` and the ``<answer>`` JSON is parsed by
+    ``ground.parse_answer_json`` (the engine carries no answer_parser — the
+    answer contract is business logic and stays clause-side).
+    """
+
+    question: str
+    raw_answer: str
+    trajectory: list  # list[chillrag.agent.AgentTurn]
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    num_tool_calls: int = 0
+    total_tokens: int = 0
+    terminated: str = "answer"  # "answer" | "max_tool_calls" | "error"
+
+
 def _obligation_summary(obligations: list[dict[str, Any]], max_items: int = 12) -> str:
-    """把该条款的拆分义务压成摘要行(防 prompt 过长)。"""
+    """Compress the clause's split obligations into summary lines."""
     if not obligations:
         return "（无拆分义务记录）"
     lines = []
@@ -56,7 +75,7 @@ def _obligation_summary(obligations: list[dict[str, Any]], max_items: int = 12) 
 
 
 def build_compare_episode_prompt(clause: ExternalClause) -> str:
-    """组装一条外规条款的 episode 提问(user 消息)。"""
+    """Assemble the episode question (user message) for one external clause."""
     section = clause.section or "/"
     return (
         "请分析以下【外部规定条款】在内部规章制度中的承接情况。\n\n"
@@ -71,6 +90,15 @@ def build_compare_episode_prompt(clause: ExternalClause) -> str:
     )
 
 
-async def run_clause_episode(agent: ReActAgent, clause: ExternalClause) -> AgentResult:
-    """跑一条外规条款的 episode。"""
-    return await agent.arun(build_compare_episode_prompt(clause))
+async def run_clause_episode(agent, clause: ExternalClause) -> EpisodeResult:
+    """Run one clause episode and map the result to the compare-domain type."""
+    r = await agent.arun(build_compare_episode_prompt(clause))
+    return EpisodeResult(
+        question=r.question,
+        raw_answer=r.answer,
+        trajectory=r.trajectory,
+        messages=r.messages,
+        num_tool_calls=r.num_tool_calls,
+        total_tokens=r.total_tokens,
+        terminated=r.terminated,
+    )

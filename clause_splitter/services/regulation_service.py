@@ -1,0 +1,156 @@
+"""Regulation use-cases — upload / stage orchestration / overrides.
+
+Routes call these; they own preconditions (409), re-run resets and enqueue
+atomicity (per-regulation lock around check + enqueue).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import shutil
+from pathlib import Path
+
+from api.base_fastapi import ApiError
+
+from clause_splitter.pipeline.contexts import DERIVED_FIELDS, DOWNSTREAM, STAGES
+from clause_splitter.storage import (
+    regulation_dir,
+    safe_filename,
+    source_dir,
+)
+from clause_splitter.utils import get_logger
+
+logger = get_logger()
+
+REGULATION_SUFFIXES = {".pdf", ".docx", ".doc", ".txt", ".md"}
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+async def upload(
+    data: bytes,
+    filename: str,
+    title: str,
+    *,
+    repos=None,
+) -> tuple[dict, bool]:
+    """Store one regulation upload; sha256 dedupe returns the existing row."""
+    repos = repos or _repos()
+    suffix = Path(filename).suffix.lower()
+    if suffix not in REGULATION_SUFFIXES:
+        raise ApiError(415, f"unsupported file type: {suffix or '(none)'}; allowed: {sorted(REGULATION_SUFFIXES)}")
+
+    sha = _sha256(data)
+    existing = await repos.regulations.get_by_sha256(sha)
+    if existing is not None:
+        return existing, False
+
+    reg_id = (await repos.regulations.create({
+        "title": "",
+        "source_filename": filename,
+        "source_path": "",
+        "file_sha256": sha,
+        **{f"{s}_state": "not_run" for s in STAGES},
+    }))["_id"]
+
+    path = source_dir(reg_id) / safe_filename(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+    await repos.regulations.update(reg_id, {
+        "title": (title or Path(filename).stem).strip(),
+        "source_path": str(path),
+        **DERIVED_FIELDS["applicability"],
+        **DERIVED_FIELDS["split"],
+        **DERIVED_FIELDS["internalization"],
+        **DERIVED_FIELDS["analysis"],
+    })
+    return await repos.regulations.get(reg_id), True
+
+
+async def delete_regulation(reg_id: str, *, repos=None) -> None:
+    repos = repos or _repos()
+    if await repos.jobs.has_active_for_regulation(reg_id):
+        raise ApiError(409, "a job is active for this regulation; wait or let it finish first")
+    if await repos.regulations.get(reg_id) is None:
+        raise ApiError(404, "regulation not found")
+    await repos.clauses.delete_for_regulation(reg_id)
+    await repos.regulations.delete(reg_id)
+    shutil.rmtree(regulation_dir(reg_id), ignore_errors=True)
+
+
+async def override_applicability(
+    reg_id: str, applicable: bool, reason: str, *, repos=None
+) -> dict:
+    """Human decision after 需人工复核 — marks the stage done."""
+    repos = repos or _repos()
+    reg = await repos.regulations.get(reg_id)
+    if reg is None:
+        raise ApiError(404, "regulation not found")
+    await repos.regulations.update(reg_id, {
+        "applicability_applicable": bool(applicable),
+        "applicability_reason": reason,
+        "applicability_confidence": 1.0,
+        "applicability_state": "done",
+    })
+    return await repos.regulations.get(reg_id)
+
+
+async def start_stage(reg_id: str, job_type: str, *, force: bool = False,
+                      payload: dict | None = None) -> dict:
+    """Validate preconditions, reset downstream, enqueue one stage / chain."""
+    runner = _runner()
+    repos = runner.repos
+    async with runner.lock_for(reg_id):
+        reg = await repos.regulations.get(reg_id)
+        if reg is None:
+            raise ApiError(404, "regulation not found")
+        if await repos.jobs.has_active_for_regulation(reg_id):
+            raise ApiError(409, "a job is already queued/running for this regulation")
+        _check_precondition(reg, job_type, force)
+        await _reset(reg_id, job_type, repos)
+        return await runner.enqueue(job_type, regulation_id=reg_id, payload=payload)
+
+
+def _check_precondition(reg: dict, job_type: str, force: bool) -> None:
+    def state(stage: str) -> str:
+        return reg.get(f"{stage}_state") or "not_run"
+
+    if job_type == "applicability":
+        return
+    if job_type == "split":
+        if state("applicability") != "done":
+            raise ApiError(409, "run the applicability stage first")
+        if reg.get("applicability_applicable") is not True and not force:
+            raise ApiError(409, "regulation not applicable (or needs review); pass {\"force\": true} to split anyway")
+    elif job_type == "internalization":
+        if state("split") != "done":
+            raise ApiError(409, "run the split stage first")
+    elif job_type == "analysis":
+        if state("internalization") != "done":
+            raise ApiError(409, "run the internalization stage first")
+    elif job_type != "chain":
+        raise ApiError(400, f"unknown job type: {job_type}")
+
+
+async def _reset(reg_id: str, job_type: str, repos) -> None:
+    """Stage → pending; downstream stages → not_run with derived data cleared."""
+    fields: dict = {f"{job_type}_state": "pending"}
+    for stage in DOWNSTREAM.get(job_type, ()):
+        fields[f"{stage}_state"] = "not_run"
+        fields.update(DERIVED_FIELDS.get(stage, {}))
+    await repos.regulations.update(reg_id, fields)
+
+
+def _runner():
+    from clause_splitter.services.context import get_runner
+
+    return get_runner()
+
+
+def _repos():
+    from clause_splitter.services.context import get_repos
+
+    return get_repos()

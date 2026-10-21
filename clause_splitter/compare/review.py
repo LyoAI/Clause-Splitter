@@ -76,6 +76,7 @@ from clause_splitter.models.compare import (
     RetrievedCandidate,
     normalize_internalization_decision,
 )
+from clause_splitter.prompts import load
 from clause_splitter.utils import get_logger
 from clause_splitter.utils.file.json_utils import parse_json_from_text
 from .retrieve import highlight
@@ -100,18 +101,7 @@ _BADGE = {
 # 候选相关性过滤 —— LLM 判断 top-k 候选是否与外规条款「有一点关联」
 # ═══════════════════════════════════════════════════════════════════════
 
-_RELEVANCE_SYSTEM = (
-    "你是一名合规比对审核助手,负责对外规条款的检索召回候选做「相关/不相关」的严格二分类。\n"
-    "你会看到一条外规条款,以及若干候选内规条款(每条含:所属制度文件标题、条款号、条款内容摘录)。\n"
-    "请依据「制度文件标题 + 条款内容」判断每个候选内规条款与此外规条款是否真正相关:\n"
-    "- 判定为「相关」:两者属于同一监管主题/合规领域,且候选条款内容实质性承接、呼应或覆盖了该外规要求"
-    "(例如外规要求数据分类分级,候选正是数据分类分级管理制度下直接相关的条款)。\n"
-    "- 判定为「不相关」:仅因关键词相似被召回,但制度标题或条款内容与该外规不属同一合规领域、无实质承接关系"
-    "(例如外规是数据安全,候选是财务报销、人事考勤);或条款内容只是泛泛提及、未实质性涉及外规要求。\n"
-    "宁可漏判不可误留:对无法明确判定相关性的候选,一律判为不相关并剔除,避免页面展示无关信息。\n"
-    '只输出 JSON,不要任何解释文字。格式:{"related": [候选编号...]},编号从 1 到候选总数;'
-    '没有相关的就输出 {"related": []}。'
-)
+_RELEVANCE_SYSTEM = load("relevance_filter")
 
 
 def _truncate(text: str, max_chars: int) -> str:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -139,24 +138,6 @@ class ClauseObligation(BaseModel):
         if not stripped or stripped in ("无", "None", ""):
             return "无歧义"
         return stripped
-
-    def to_excel_row(self) -> list[Any]:
-        """Return 13-column list (A-M) for Excel export."""
-        return [
-            self.index,
-            self.trigger_condition,
-            self.trigger_sub_condition,
-            self.subject,
-            self.object,
-            self.obligation_rule.value,
-            self.action_verb,
-            self.action_target,
-            self.method,
-            self.document_name,
-            self.clause_number,
-            self.source_text,
-            self.ambiguity_note,
-        ]
 
 
 # ── Split result ──────────────────────────────────────────────────────────

@@ -23,10 +23,11 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from clause_splitter.tools.parser import chunk_doc
-from clause_splitter.tools.parser.containers import split_workbook
-from clause_splitter.tools.parser.headings import infer_regulation_headings
-from clause_splitter.tools.parser.ingest import ingest
+from chillrag.tools.parser import chunk_doc
+
+from clause_splitter.docprep.containers import split_workbook
+from clause_splitter.docprep.headings import infer_regulation_headings
+from clause_splitter.docprep.ingest import ingest
 
 
 def _break_dimension_ref(path: Path) -> None:
@@ -94,7 +95,7 @@ def test_container_blocks_chunk_per_article(tmp_path: Path) -> None:
         ],
     )
     reg = split_workbook(wb_path)[0]
-    chunks = chunk_doc(reg.doc_id, infer_regulation_headings(reg.blocks), min_tokens=0)
+    chunks = chunk_doc(reg.doc_id, infer_regulation_headings(reg.blocks), level=4, min_tokens=0)
     assert [c.meta["section"] for c in chunks] == ["第一条", "第二条"]
     assert len(chunks) == 2
     # The cell already leads with "第一条　" — the label is not duplicated.
@@ -212,7 +213,7 @@ def test_real_layout_ignores_full_doc_text_column(tmp_path: Path) -> None:
         ("title", "第一节"), ("paragraph", "第一条　外包人员的准入条件…"),
         ("title", "第二节"), ("paragraph", "第二条　外包人员须签署保密协议…"),
     ]
-    chunks = chunk_doc(reg.doc_id, infer_regulation_headings(reg.blocks), min_tokens=0)
+    chunks = chunk_doc(reg.doc_id, infer_regulation_headings(reg.blocks), level=4, min_tokens=0)
     # 条款名称(节)作为 section 父级,正文里的真实条号(第一条)作为叶子。
     assert [c.meta["section"] for c in chunks] == ["第一节 > 第一条", "第二节 > 第二条"]
     # 制度内容(整篇全文)绝不能进 chunk。

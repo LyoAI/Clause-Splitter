@@ -1,8 +1,8 @@
-"""差距分析报告生成 —— 子 agent 分 batch 总结 + skills/summary/SKILL.md + LLM。
+"""差距分析报告生成 —— 子 agent 分 batch 总结 + prompts/gap_report.md + LLM。
 
 报告是比对的最后产物。``generate_gap_report`` 先让多个「子 agent」(每次
 ``llm.invoke``,无工具)分 batch 总结比对结果 —— 每次调用只吃该批条款,单次
-输入远小于上下文窗口;再由最终模型按 ``skills/summary/SKILL.md`` 拿全部批次
+输入远小于上下文窗口;再由最终模型按 ``prompts/gap_report.md`` 拿全部批次
 总结 + 确定性统计撰写正式报告(语气专业、证据引用承接内规原文)。LLM 失败或
 未注入时,回退到确定性的 ``_template_report`` —— 纯模板拼装,统计表 + 全部
 MatchResult 逐行呈现,证据原文直接引用,绝不空谈。
@@ -13,24 +13,24 @@ MatchResult 逐行呈现,证据原文直接引用,绝不空谈。
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from clause_splitter.config import REPORT_BATCH_SIZE, REPO_ROOT
+from clause_splitter.config import REPORT_BATCH_SIZE
 from clause_splitter.models import (
     CompareResult,
     CoverageStatus,
     MatchResult,
     normalize_internalization_decision,
 )
+from clause_splitter.prompts import load, render
 from clause_splitter.utils import get_logger
-from clause_splitter.utils.skill_loader import load_skill
-from ..tools.searcher.store import DocumentStore
+from chillrag.tools.searcher.store import DocumentStore
 
 logger = get_logger()
 
 _REPORT_FILENAME = "内外规合规差距分析报告.md"
-_SKILLS_DIR = REPO_ROOT / "clause_splitter" / "skills"
 
 #: 模板回退用状态中文映射(status 枚举值本身已是中文,直接复用)。
 _STATUS_LABEL = {
@@ -45,23 +45,7 @@ _STATUS_LABEL = {
 # ═══════════════════════════════════════════════════════════════════════
 
 #: 批总结子 agent 的 system prompt:只产出该批条款的紧凑素材,不写整篇报告框架。
-_BATCH_SUMMARY_SYSTEM = (
-    "你是一名合规比对助手。你会收到一批「外规条款 vs 内规条款」的比对结果"
-    "(每条含 external_source_text / status / matched_internal_document_name / "
-    "matched_internal_clause_number / matched_internal_source_text / analysis / "
-    "clause_type / internalization_decision / internalization_reason / difference_analysis / "
-    "core_regulatory_requirements)。\n"
-    "请为这一批条款输出紧凑的中文总结,作为后续报告撰写者的素材:\n"
-    "- 逐条列出:外规出处+条款号 → 覆盖状态(完全覆盖/部分覆盖/缺失) → 承接内规"
-    "(制度名+条款号;缺失写「无」) → 内化判定(需要内化/无需内化,标注条款性质)"
-    " → 核心监管要求(合规义务)要点。\n"
-    "- 判定为「无需内化」的条款单独列出,不当作差距处理;覆盖率只统计需内化处理的条款。\n"
-    "- 部分覆盖的条目必须带上 difference_analysis 的要点(内外规差异:遗漏子项/约束更松/主体范围不一致等)。\n"
-    "- 凡被承接(完全/部分覆盖)的条目,必须用「>」引用 matched_internal_source_text 的关键句作证据,"
-    "证明承接成立;缺失的条目说明缺失原因。\n"
-    "- 只输出该批素材,不要输出报告标题/摘要/统计表/结论等整篇报告框架,不要重复外规原文全文。\n"
-    "- 保持精炼,每条尽量控制在 1-3 行。"
-)
+_BATCH_SUMMARY_SYSTEM = load("report_batch")
 
 
 def _build_external_clause_md(matches: list[MatchResult]) -> str:
@@ -366,8 +350,7 @@ def generate_gap_report(
 
     if llm is not None:
         try:
-            skill = load_skill(_SKILLS_DIR / "summary" / "SKILL.md")
-            skill = skill.replace("{datetime}", __import__("datetime").date.today().isoformat())
+            skill = render("gap_report", datetime=date.today().isoformat())
             # 子 agent 分 batch 总结:每次调用只吃该批条款,单次输入远小于上下文窗口。
             summaries: list[str] = []
             for i, batch in enumerate(_batches(result.matches, REPORT_BATCH_SIZE), 1):

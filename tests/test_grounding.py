@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 
-from clause_splitter.agent import AgentResult, AgentTurn
-from clause_splitter.compare.episode import ExternalClause
+from chillrag.agent import AgentTurn
+
+from clause_splitter.compare.episode import EpisodeResult, ExternalClause
 from clause_splitter.compare.ground import _segment_label, ground_episode
 from clause_splitter.models import CoverageStatus
-from clause_splitter.tools.searcher.store import Chunk, DocumentStore
+from chillrag.tools.searcher.store import Chunk, DocumentStore
 
 EXT = ExternalClause(document_name="外规", clause_number="第一条", full_text="测试条款")
 
@@ -40,7 +41,7 @@ def _mini_store() -> DocumentStore:
 
 
 def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试", remedy="测试",
-               extra: dict | None = None) -> AgentResult:
+               extra: dict | None = None) -> EpisodeResult:
     """构造一个 agent episode:轨迹只返回 seen_chunk_ids,答案声称 claimed_ids。
 
     ``extra`` 可并入答案 JSON(覆盖/新增键),用于测试内化判定等新字段透传。
@@ -67,7 +68,7 @@ def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试",
         ensure_ascii=False,
     )
     raw = f"<answer>{answer_body}</answer>"
-    return AgentResult(question="q", answer=answer_body, unit="", raw_answer=raw, trajectory=trajectory)
+    return EpisodeResult(question="q", raw_answer=raw, trajectory=trajectory)
 
 
 def test_fake_claimed_id_downgrades_to_missing():

@@ -20,8 +20,8 @@ import re
 from clause_splitter.config import REVIEW_TOP_K
 from clause_splitter.models.compare import RetrievedCandidate
 from clause_splitter.utils import get_logger
-from ..tools.searcher.base import Hit
-from ..tools.searcher.store import DocumentStore
+from chillrag.tools.searcher import DocumentStore
+from chillrag.tools.searcher.base import Hit
 from .ground import _segment_label
 
 logger = get_logger()

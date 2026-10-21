@@ -16,7 +16,7 @@ from typing import Any
 
 from clause_splitter.config import get_settings
 from clause_splitter.models import ArticleInfo, ComplexityLabel, DocumentStructure
-from clause_splitter.split import prompts
+from clause_splitter.prompts import load
 from clause_splitter.utils import get_logger
 
 logger = get_logger()
@@ -96,11 +96,16 @@ def _llm_segment(raw_text: str, llm: Any) -> list[ArticleInfo] | None:
     settings = get_settings()
     max_input = settings.llm_max_input_chars
     text_snippet = raw_text[:max_input]
-    user_prompt = prompts.format_structure_user_prompt(text_snippet, len(raw_text), max_input)
+    user_prompt = f"请分析以下文档的结构：\n\n{text_snippet}"
+    if len(raw_text) > max_input:
+        user_prompt += (
+            f"\n\n（注意：原文共 {len(raw_text)} 字符，此处仅展示前 {max_input} 字符。"
+            f"请基于已有内容识别所有可见条款，并用'...'标记截断位置。）"
+        )
 
     try:
         response = llm.invoke([
-            {"role": "system", "content": prompts.STRUCTURE_SYSTEM_PROMPT},
+            {"role": "system", "content": load("split_structure")},
             {"role": "user", "content": user_prompt},
         ])
         content = response.content if hasattr(response, "content") else str(response)

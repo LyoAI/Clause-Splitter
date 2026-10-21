@@ -22,8 +22,8 @@ from clause_splitter.models.compare import (
     MatchResult,
     RetrievedCandidate,
 )
-from clause_splitter.tools.searcher.base import BaseSearcher, Hit
-from clause_splitter.tools.searcher.store import Chunk, DocumentStore
+from chillrag.tools.searcher.base import BaseSearcher, Hit
+from chillrag.tools.searcher.store import Chunk, DocumentStore
 
 
 class FakeSearcher(BaseSearcher):

@@ -1,4 +1,4 @@
-"""Pydantic data models for split, compare and the API boundary."""
+"""Pydantic data models for split and compare engines."""
 
 from .clause import (
     ArticleInfo,
@@ -13,11 +13,9 @@ from .compare import (
     CompareResult,
     CoverageStatus,
     MatchResult,
-    PipelineResult,
     RetrievedCandidate,
     normalize_internalization_decision,
 )
-from .task import TaskInfo, TaskStatusEnum
 
 __all__ = [
     "ArticleInfo",
@@ -30,9 +28,6 @@ __all__ = [
     "CompareResult",
     "CoverageStatus",
     "MatchResult",
-    "PipelineResult",
     "RetrievedCandidate",
     "normalize_internalization_decision",
-    "TaskInfo",
-    "TaskStatusEnum",
 ]

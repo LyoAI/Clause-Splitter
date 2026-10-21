@@ -22,9 +22,9 @@ Design under test:
 
 from __future__ import annotations
 
-from clause_splitter.tools.parser import chunk_doc
-from clause_splitter.tools.parser.blocks import Block
-from clause_splitter.tools.parser.headings import infer_regulation_headings
+from chillrag.tools.parser import Block, chunk_doc
+
+from clause_splitter.docprep.headings import infer_regulation_headings
 
 
 def p(text: str, block_id: str = "p") -> Block:
@@ -77,7 +77,7 @@ def test_articles_open_own_chunks_with_section_path() -> None:
         p("第二章　一般规定"),
         p("**第八条**　丙。"),
     ]
-    chunks = chunk_doc("内规.docx", infer_regulation_headings(blocks), min_tokens=0)
+    chunks = chunk_doc("内规.docx", infer_regulation_headings(blocks), level=4, min_tokens=0)
     assert _sections(chunks) == [
         "第一章　总则 > 第一条",
         "第一章　总则 > 第二条",
@@ -102,7 +102,7 @@ def test_chapter_less_regulation_opens_one_chunk_per_article() -> None:
         ("title", "第二条", 1),
         ("paragraph", "乙。", None),
     ]
-    chunks = chunk_doc("内规.docx", out, min_tokens=0)
+    chunks = chunk_doc("内规.docx", out, level=4, min_tokens=0)
     assert _sections(chunks) == ["第一条", "第二条"]
 
 
@@ -152,7 +152,7 @@ def test_augments_real_mineru_titles_with_marker_articles() -> None:
         ("title", "第一条", 2),
         ("paragraph", "甲。", None),
     ]
-    chunks = chunk_doc("内规.docx", out, min_tokens=0)
+    chunks = chunk_doc("内规.docx", out, level=4, min_tokens=0)
     assert _sections(chunks) == ["第一章　总则 > 第一条"]
 
 
@@ -186,7 +186,7 @@ def test_doc_title_becomes_bare_level1_heading_and_is_dropped() -> None:
         p("第二章　一般规定"),
         p("**第八条**　乙。"),
     ]
-    chunks = chunk_doc("内规.docx", infer_regulation_headings(blocks), min_tokens=0)
+    chunks = chunk_doc("内规.docx", infer_regulation_headings(blocks), level=4, min_tokens=0)
     assert _sections(chunks) == [
         "第一章　总则 > 第一条",
         "第二章　一般规定 > 第八条",
@@ -235,7 +235,7 @@ def test_dunhao_numbering_fallback() -> None:
         ("title", "三、安全保护措施", 1),
         ("paragraph", "应当落实访问控制、加密等安全措施。", None),
     ]
-    chunks = chunk_doc("内规.docx", out, min_tokens=0)
+    chunks = chunk_doc("内规.docx", out, level=4, min_tokens=0)
     assert _sections(chunks) == ["一、总则", "二、数据分类分级", "三、安全保护措施"]
 
 
