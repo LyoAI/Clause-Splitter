@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from clause_splitter.db.repo import (
+from clause_splitter.db import (
     ClauseRepo,
     InternalDocRepo,
     JobRepo,

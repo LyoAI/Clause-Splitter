@@ -18,7 +18,7 @@ import html
 import re
 
 from clause_splitter.config import REVIEW_TOP_K
-from clause_splitter.models.compare import RetrievedCandidate
+from clause_splitter.models import RetrievedCandidate
 from clause_splitter.utils import get_logger
 from chillrag.tools.searcher import DocumentStore
 from chillrag.tools.searcher.base import Hit

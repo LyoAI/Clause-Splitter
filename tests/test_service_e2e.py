@@ -15,7 +15,7 @@ import pytest
 from api.base_fastapi import ApiError
 from clause_splitter.services import context as services
 from clause_splitter.services import regulation_service
-from clause_splitter.jobs.runner import JobRunner
+from clause_splitter.jobs import JobRunner
 from tests.fakes import (
     CLAUSE_SPECS,
     PipelineFakeLLM,

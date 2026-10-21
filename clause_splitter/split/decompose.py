@@ -18,7 +18,7 @@ from clause_splitter.config import get_settings
 from clause_splitter.models import ClauseObligation, ObligationRule
 from clause_splitter.prompts import load, render
 from clause_splitter.utils import get_logger
-from clause_splitter.utils.file.json_utils import parse_json_from_text
+from clause_splitter.utils.json_utils import parse_json_from_text
 
 logger = get_logger()
 

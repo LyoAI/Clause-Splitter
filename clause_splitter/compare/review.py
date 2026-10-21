@@ -69,7 +69,7 @@ from clause_splitter.config import (
     REVIEW_FILTER_EXTERNAL_MAX_CHARS,
     REVIEW_MIN_CANDIDATES,
 )
-from clause_splitter.models.compare import (
+from clause_splitter.models import (
     CompareResult,
     CoverageStatus,
     MatchResult,
@@ -78,7 +78,7 @@ from clause_splitter.models.compare import (
 )
 from clause_splitter.prompts import load
 from clause_splitter.utils import get_logger
-from clause_splitter.utils.file.json_utils import parse_json_from_text
+from clause_splitter.utils.json_utils import parse_json_from_text
 from .retrieve import highlight
 
 logger = get_logger()

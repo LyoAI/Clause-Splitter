@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from clause_splitter.db.repo import (
+from clause_splitter.db import (
     ClauseRepo,
     InternalDocRepo,
     JobRepo,

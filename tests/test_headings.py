@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from chillrag.tools.parser import Block, chunk_doc
 
-from clause_splitter.docprep.headings import infer_regulation_headings
+from clause_splitter.compare.headings import infer_regulation_headings
 
 
 def p(text: str, block_id: str = "p") -> Block:

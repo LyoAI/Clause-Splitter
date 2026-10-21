@@ -1,6 +1,6 @@
 """In-process async job runner — queue + bounded workers, state in Mongo.
 
-Jobs are persisted rows (db.repo.JobRepo); the queue holds ids only. One
+Jobs are persisted rows (db.JobRepo); the queue holds ids only. One
 queued/running job per regulation is enforced upstream (409); the runner owns
 job state transitions and progress writes (throttled). Stage stage-states are
 managed by the stage functions / chain for chain jobs, by the runner for
@@ -14,9 +14,9 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from clause_splitter.utils import get_logger
-from ..orchestrator import run_chain
-from ..pipeline import applicability, analysis, internalize, split_stage
-from ..pipeline.contexts import Repos, StageContext, StageError
+from clause_splitter.orchestrator import run_chain
+from clause_splitter.pipeline import applicability, analysis, internalize, split_stage
+from clause_splitter.pipeline.contexts import Repos, StageContext, StageError
 
 logger = get_logger()
 
@@ -236,8 +236,8 @@ class JobRunner:
             await self._notify_done(job)
 
     async def _pinned_store(self, ctx: StageContext) -> Any:
-        from ..compare.index import load_store
-        from ..storage import internal_index_root
+        from clause_splitter.compare.index import load_store
+        from clause_splitter.storage import internal_index_root
 
         store = await asyncio.to_thread(load_store, "internal", internal_index_root())
         if store is None:

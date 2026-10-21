@@ -45,7 +45,7 @@ from chillrag.tools.searcher.bm25_search import BM25Searcher
 from chillrag.tools.searcher.embed import Embedder
 
 from clause_splitter.config import MINERU_MD_DIRNAME, doc_cache_dir
-from clause_splitter.docprep.ingest import _file_sha256, ingest, scan_supported_docs
+from .ingest import _file_sha256, ingest, scan_supported_docs
 from clause_splitter.utils import get_logger
 
 logger = get_logger()

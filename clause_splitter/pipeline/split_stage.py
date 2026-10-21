@@ -64,7 +64,7 @@ async def run(ctx: StageContext) -> dict[str, Any]:
 
     if not clauses:
         from clause_splitter.config import get_settings
-        from clause_splitter.utils.file.doc_parser import extract_text
+        from clause_splitter.utils.doc_parser import extract_text
 
         mode = "llm"
         raw = await asyncio.to_thread(extract_text, src, max_chars=get_settings().llm_max_input_chars)

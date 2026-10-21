@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from clause_splitter.jobs.runner import AsyncRWLock, JobRunner
+from clause_splitter.jobs import AsyncRWLock, JobRunner
 from clause_splitter.pipeline.contexts import StageError
 from tests.fakes import fake_repos
 

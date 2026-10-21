@@ -71,7 +71,7 @@ MINERU_MD_DIRNAME = "md"
 # Structure chunking: a ``title`` block with level <= CHUNK_LEVEL opens a new
 # chunk; deeper sub-headings stay inside the current chunk. Default 4 = the
 # deepest regulation marker level (编=1 章=2 节=3 条=4, as leveled by
-# docprep.headings) — every 第X条 becomes its own retrieval unit.
+# compare.headings) — every 第X条 becomes its own retrieval unit.
 CHUNK_LEVEL = int(os.getenv("CHUNK_LEVEL", "4"))
 # Soft token budget per chunk (oversized sections are split, tables kept whole).
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))

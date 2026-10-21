@@ -2,7 +2,7 @@
 
 Two responsibilities, one file:
 
-1. **Engine wiring (seam)**: the only place (besides the docprep.ingest /
+1. **Engine wiring (seam)**: the only place (besides the compare.ingest /
    compare.index preparation modules) that imports the vendored ``chillrag``.
    Searchers, tool registry and the ReAct agent are all built here; business
    code depends only on these products. ChillRAG stays generic — the compare

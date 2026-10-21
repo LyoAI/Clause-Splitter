@@ -8,7 +8,7 @@ import pytest
 
 import config.config_app as config_app_mod
 from api.base_fastapi import ApiError
-from clause_splitter.jobs.runner import JobRunner
+from clause_splitter.jobs import JobRunner
 from clause_splitter.services import context as services
 from clause_splitter.services import integration_service
 import clause_splitter.pipeline.split_stage as split_stage_mod

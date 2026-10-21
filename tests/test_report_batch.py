@@ -19,7 +19,7 @@ from clause_splitter.compare.report import (
     generate_gap_report,
 )
 from clause_splitter.models import CompareResult, CoverageStatus, MatchResult
-from clause_splitter.models.compare import RetrievedCandidate
+from clause_splitter.models import RetrievedCandidate
 
 
 def _mk_match(i: int, status: CoverageStatus = CoverageStatus.FULLY_COVERED) -> MatchResult:

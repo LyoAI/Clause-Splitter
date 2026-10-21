@@ -152,7 +152,7 @@ def clauses_from_document(path: Path, out_dir: Path | str = "") -> list[External
     from chillrag.tools.parser.mineru_parse import parse_docs
 
     from clause_splitter.config import MINERU_MD_DIRNAME, doc_cache_dir
-    from clause_splitter.docprep.headings import infer_regulation_headings
+    from .headings import infer_regulation_headings
 
     out_dir = Path(out_dir) if out_dir else path.parent
     out_dir.mkdir(parents=True, exist_ok=True)

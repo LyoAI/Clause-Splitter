@@ -150,6 +150,6 @@ async def index_status() -> dict[str, Any]:
 
 
 def _now():
-    from clause_splitter.db.repo import now
+    from clause_splitter.db import now
 
     return now()

@@ -25,9 +25,9 @@ import pytest
 
 from chillrag.tools.parser import chunk_doc
 
-from clause_splitter.docprep.containers import split_workbook
-from clause_splitter.docprep.headings import infer_regulation_headings
-from clause_splitter.docprep.ingest import ingest
+from clause_splitter.compare.containers import split_workbook
+from clause_splitter.compare.headings import infer_regulation_headings
+from clause_splitter.compare.ingest import ingest
 
 
 def _break_dimension_ref(path: Path) -> None:

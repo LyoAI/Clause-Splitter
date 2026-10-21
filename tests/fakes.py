@@ -133,7 +133,7 @@ class FakeDb:
 
 
 def fake_repos() -> Repos:
-    from clause_splitter.db.repo import ClauseRepo, InternalDocRepo, JobRepo, RegulationRepo
+    from clause_splitter.db import ClauseRepo, InternalDocRepo, JobRepo, RegulationRepo
 
     db = FakeDb()
     return Repos(

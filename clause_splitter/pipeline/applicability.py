@@ -16,7 +16,7 @@ from config.config_app import CONFIG_APP
 from clause_splitter.config import LLM_TIMEOUT_S
 from clause_splitter.prompts import render
 from clause_splitter.utils import get_logger
-from clause_splitter.utils.file.doc_parser import extract_text
+from clause_splitter.utils.doc_parser import extract_text
 from ..compare.ground import _norm_str, parse_answer_json
 from .contexts import StageContext
 

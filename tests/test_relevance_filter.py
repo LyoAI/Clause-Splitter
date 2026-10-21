@@ -19,7 +19,7 @@ from clause_splitter.compare.review import (
     filter_relevant_candidates,
 )
 from clause_splitter.models import CompareResult, CoverageStatus, MatchResult
-from clause_splitter.models.compare import RetrievedCandidate
+from clause_splitter.models import RetrievedCandidate
 
 
 def _cand(i: int, *, adopted: bool = False, doc: str = "内部制度") -> RetrievedCandidate:

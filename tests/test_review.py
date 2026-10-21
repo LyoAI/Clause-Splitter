@@ -16,7 +16,7 @@ from pathlib import Path
 
 from clause_splitter.compare.retrieve import highlight, pre_retrieve
 from clause_splitter.compare.review import _min_display_candidates, render_review_html
-from clause_splitter.models.compare import (
+from clause_splitter.models import (
     CompareResult,
     CoverageStatus,
     MatchResult,

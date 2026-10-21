@@ -42,8 +42,8 @@ async def lifespan(app: FastAPI):
     CONFIG_APP.data_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Service starting, env=%s data_dir=%s", RUN_ENV, CONFIG_APP.data_dir)
 
-    from clause_splitter.db.repo import ensure_indexes
-    from clause_splitter.jobs.runner import JobRunner
+    from clause_splitter.db import ensure_indexes
+    from clause_splitter.jobs import JobRunner
     from clause_splitter.pipeline.contexts import default_repos
     from clause_splitter.services import context as services
     from clause_splitter.services import integration_service, library_service
