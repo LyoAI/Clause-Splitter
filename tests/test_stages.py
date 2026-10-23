@@ -84,7 +84,7 @@ async def test_split_llm_fallback_creates_rows(tmp_path):
         reg = await _mk_regulation(repos, tmp_path)
         out = await split_stage.run(_ctx(reg, None, repos))
         assert out["article_count"] == 5
-        assert out["split_mode"] == "llm"
+        assert out["split_mode"] == "builtin"  # no LLM → deterministic scheme wins
         rows, total = await repos.clauses.list_for_regulation(reg["_id"])
         assert total == 5
         assert rows[0]["clause_number"].startswith("第一")

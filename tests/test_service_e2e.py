@@ -56,10 +56,10 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
         # Keep the split stage on the deterministic LLM-fallback path (no MinerU).
         import clause_splitter.pipeline.split_stage as split_stage_mod
 
-        def _no_mineru(path, out_dir=""):
+        async def _no_mineru(src, llm):
             raise RuntimeError("MinerU disabled in tests")
 
-        monkeypatch.setattr(split_stage_mod, "clauses_from_document", _no_mineru)
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
 
         try:
             reg, created = await regulation_service.upload(

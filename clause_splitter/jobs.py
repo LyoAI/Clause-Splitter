@@ -109,9 +109,10 @@ class JobRunner:
 
     @staticmethod
     def _default_llm() -> Any:
+        from clause_splitter.config import get_settings
         from clause_splitter.llm import get_llm
 
-        return get_llm()
+        return get_llm(get_settings().default_model)
 
     def register(self, job_type: str, handler: Callable[[StageContext], Awaitable[dict[str, Any]]]) -> None:
         """Register an extra job type (e.g. ``index_build``)."""

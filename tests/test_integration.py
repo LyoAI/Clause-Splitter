@@ -36,7 +36,7 @@ class NoApplicabilityLLM(PipelineFakeLLM):
         return await super().ainvoke(messages, tools, **kwargs)
 
 
-def _no_mineru(path, out_dir=""):
+async def _no_mineru(src, llm):
     raise RuntimeError("MinerU disabled in tests")
 
 
@@ -63,7 +63,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
             return store
 
         monkeypatch.setattr(runner, "_pinned_store", pinned_store)
-        monkeypatch.setattr(split_stage_mod, "clauses_from_document", _no_mineru)
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
         object.__setattr__(config_app_mod.CONFIG_APP, "backend_callback_url", "http://cb")
         delivered: list[dict] = []
         monkeypatch.setattr(
@@ -116,7 +116,7 @@ async def test_auto_push_downloads_from_url(tmp_path, monkeypatch):
 
             reg = await repos.regulations.get(result["regulation_id"])
             assert reg["title"] == "测试外规管理办法"
-            assert reg["source_filename"].endswith(".pdf")  # attname has no suffix → default
+            assert reg["source_filename"].endswith(".txt")  # utf-8 sniffed, not attname's lie
             assert reg["push_opt_type"] == 1
             job = await repos.jobs.get(result["job_id"])
             assert job["state"] == "queued" and job["job_type"] == "chain"
@@ -141,6 +141,78 @@ async def test_push_without_content_or_url_rejected(tmp_path):
             services.reset()
 
 
+async def test_url_wins_over_doccontent(tmp_path, monkeypatch):
+    """Both present → the URL's bytes are the document (old-version parity),
+    with the suffix sniffed from magic bytes."""
+    with data_dir(tmp_path):
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: PipelineFakeLLM())
+        services.init(repos, runner)
+        try:
+            monkeypatch.setattr(integration_service, "_fetch", lambda url: b"PK\x03\x04docx-bytes")
+            result = await integration_service.handle_push({"args": {
+                "OptType": 1, "docId": "docA", "taskId": "tA",
+                "doclobsUrl": "http://iobs.example/a?attname=%E5%88%B6%E5%BA%A6.pdf",
+                "docContent": "第一条　URL 与内容并存时不应使用我。",
+            }})
+            reg = await repos.regulations.get(result["regulation_id"])
+            assert reg["source_filename"].endswith(".docx")  # PK magic, not the .pdf attname
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_bad_url_falls_back_to_doccontent(tmp_path, monkeypatch):
+    with data_dir(tmp_path):
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: PipelineFakeLLM())
+        services.init(repos, runner)
+        try:
+            def boom(url):
+                raise OSError("connection refused")
+
+            monkeypatch.setattr(integration_service, "_fetch", boom)
+            result = await integration_service.handle_push({"args": {
+                "OptType": 1, "docId": "docB", "taskId": "tB",
+                "doclobsUrl": "http://iobs.example/dead-link", "docContent": SOURCE_TEXT,
+            }})
+            reg = await repos.regulations.get(result["regulation_id"])
+            assert reg["source_filename"] == "docB.txt"
+
+            # no docContent to fall back on → hard 502
+            with pytest.raises(ApiError) as exc:
+                await integration_service.handle_push({"args": {
+                    "OptType": 1, "docId": "docC", "taskId": "tC",
+                    "doclobsUrl": "http://iobs.example/dead-link",
+                }})
+            assert exc.value.status_code == 502
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+def test_sniff_suffix_and_local_path_fetch(tmp_path):
+    import pytest as _pytest
+
+    sniff = integration_service._sniff_suffix
+    assert sniff(b"%PDF-1.7...") == ".pdf"
+    assert sniff(b"PK\x03\x04rest") == ".docx"
+    assert sniff(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") == ".doc"
+    assert sniff("第一条　纯文本。".encode("utf-8")) == ".txt"
+    with _pytest.raises(ApiError) as exc:
+        sniff(b"\xff\xfe\x80binary")  # invalid UTF-8, no known magic
+    assert exc.value.status_code == 415
+
+    # non-http scheme = local mount path, read as bytes
+    local = tmp_path / "mounted.pdf"
+    local.write_bytes(b"%PDF-local")
+    assert integration_service._fetch(str(local)) == b"%PDF-local"
+
+    # docContent str → file bytes adapter (old-service <br/> line breaks)
+    assert integration_service._materialize_text("第一条　甲。<br/>第二条　乙。<br>") == \
+        "第一条　甲。\n第二条　乙。\n".encode("utf-8")
+
+
 async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatch):
     """Flat (unwrapped) body + auto dispatch: OptType=1 parks in scheduled
     until drain_scheduled admits it; the chain then runs and build_result
@@ -158,7 +230,7 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
             return store
 
         monkeypatch.setattr(runner, "_pinned_store", pinned_store)
-        monkeypatch.setattr(split_stage_mod, "clauses_from_document", _no_mineru)
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
         await runner.start()
         try:
             # Flat field map (no "args" wrapper) — spec shape pending.

@@ -10,6 +10,7 @@ adjusting them must not touch the pipeline.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -30,9 +31,6 @@ logger = get_logger()
 #: Mapping awaiting backend confirmation; flip here if reversed.
 OPT_MANUAL = 0
 DOWNLOAD_TIMEOUT_S = 60
-#: Fallback suffix when the download filename carries none (docType→suffix
-#: mapping awaiting backend confirmation).
-DEFAULT_SUFFIX = ".pdf"
 
 
 def _title_from_url(url: str) -> str:
@@ -42,29 +40,61 @@ def _title_from_url(url: str) -> str:
 
 
 def _fetch(url: str) -> bytes:
-    resp = requests.get(url, timeout=DOWNLOAD_TIMEOUT_S)
-    resp.raise_for_status()
-    return resp.content
+    """http(s) via requests; anything else = a local mount path (old-version parity)."""
+    if urlparse(url).scheme in ("http", "https"):
+        resp = requests.get(url, timeout=DOWNLOAD_TIMEOUT_S)
+        resp.raise_for_status()
+        return resp.content
+    return Path(url).read_bytes()
+
+
+def _sniff_suffix(data: bytes) -> str:
+    """Suffix from magic bytes — pushed filenames/URLs lie about the format
+    (the old service saw .pdf names carrying docx bodies)."""
+    if data.startswith(b"%PDF-"):
+        return ".pdf"
+    if data.startswith(b"PK\x03\x04"):
+        return ".docx"
+    if data.startswith(b"\xd0\xcf\x11\xe0"):
+        return ".doc"
+    try:
+        data.decode("utf-8")
+        return ".txt"
+    except UnicodeDecodeError:
+        raise ApiError(415, "unsupported download format (magic bytes unrecognized)")
+
+
+def _materialize_text(text: str) -> bytes:
+    """docContent (a plain str arg, not a file) → file bytes.
+
+    Adapter for the file-driven pipeline: this is our internal representation,
+    not a claim about the source format. Normalizes old-service ``<br/>``
+    line breaks; the sha256 dedup still holds for repeated pushes.
+    """
+    return re.sub(r"<br\s*/?>", "\n", text).encode("utf-8")
 
 
 async def _ensure_content(args: dict[str, Any]) -> tuple[bytes, str, str]:
-    """(content, filename, title) — docContent wins; else download doclobsUrl."""
-    text = str(args.get("docContent") or "").strip()
-    if text:
-        title = str(args.get("docId") or "pushed-document")
-        return text.encode("utf-8"), f"{title}.txt", title
-
+    """(content, filename, title) — doclobsUrl first (old-version parity),
+    docContent as the fallback when it is absent or the download fails."""
+    doc_content = str(args.get("docContent") or "").strip()
     url = str(args.get("doclobsUrl") or "").strip()
-    if not url:
+    if not url and not doc_content:
         raise ApiError(400, "push args needs either docContent or doclobsUrl")
-    title = _title_from_url(url) or str(args.get("docId") or "pushed-document")
-    try:
-        content = await asyncio.to_thread(_fetch, url)
-    except Exception as exc:  # noqa: BLE001 — any download failure is a 502
-        raise ApiError(502, f"failed to download doclobsUrl: {exc}") from exc
-    suffix = Path(title).suffix.lower()
-    filename = title if suffix in regulation_service.REGULATION_SUFFIXES else f"{title}{DEFAULT_SUFFIX}"
-    return content, filename, title
+
+    title = Path(str(args.get("docId") or "pushed-document")).stem
+    if url:
+        url_title = Path(_title_from_url(url) or title).stem
+        try:
+            content = await asyncio.to_thread(_fetch, url)
+            return content, f"{url_title}{_sniff_suffix(content)}", url_title
+        except ApiError:
+            raise  # e.g. 415 unknown format — retrying via docContent won't help
+        except Exception as exc:  # noqa: BLE001 — degrade to docContent
+            if not doc_content:
+                raise ApiError(502, f"failed to download doclobsUrl: {exc}") from exc
+            logger.warning("doclobsUrl download failed, using docContent: %s", exc)
+    return _materialize_text(doc_content), f"{title}.txt", title
 
 
 async def handle_push(body: dict[str, Any]) -> dict[str, Any]:

@@ -136,40 +136,44 @@ async def load_external_clauses(external: str, output_dir: str, llm) -> list[Ext
     return clauses_from_document(path, output_dir)
 
 
+def clauses_from_blocks(doc_id: str, blocks: list) -> list[ExternalClause]:
+    """Heading-classified blocks → per-article clauses (same CHUNK contract
+    as the internal library: level/size/min_tokens from config)."""
+    from chillrag.tools.parser import chunk_doc
+
+    from clause_splitter.config import CHUNK_LEVEL, CHUNK_MIN_TOKENS, CHUNK_SIZE
+
+    chunks = chunk_doc(
+        doc_id, blocks, level=CHUNK_LEVEL, chunk_size=CHUNK_SIZE, min_tokens=CHUNK_MIN_TOKENS
+    )
+    return [
+        c for c in (_external_clause_from_chunk(doc_id, chunk) for chunk in chunks)
+        if c.full_text.strip()
+    ]
+
+
 def clauses_from_document(path: Path, out_dir: Path | str = "") -> list[ExternalClause]:
-    """docx/pdf/txt → MinerU 解析 + 按条分块(与内规库同一套解析链,零 LLM 解构)。
+    """Any supported source file → blocks → builtin 编章节条 headings →
+    per-article clauses; writes ``{stem}_structure.json`` for reuse.
 
-    解析质量高于轻量 extract_text,且按"第X条"标题确定性分 chunk,不做义务
-    解构。MinerU 原始产物落 ``.cache/external/md/<stem>/``;条款清单同时落盘为
-    ``{out_dir}/{stem}_structure.json``(与拆分产物同格式,可回看/复用)。
-
-    Sync + 重型(MinerU 子进程);async 调用方应经 ``asyncio.to_thread`` 调用。
+    Deterministic path (zero LLM): MinerU / markdown / text per suffix.
+    MinerU artifacts land in ``.cache/external/md/<stem>/``.
 
     Raises:
-        ValueError: 解析后没有任何条款分块(供上层以普通异常处理)。
+        ValueError: no clause chunks after parsing.
     """
-    from chillrag.tools.parser import chunk_doc
-    from chillrag.tools.parser.mineru_parse import parse_docs
+    from clause_splitter.split.scheme import get_blocks
 
-    from clause_splitter.config import MINERU_MD_DIRNAME, doc_cache_dir
     from .headings import infer_regulation_headings
 
     out_dir = Path(out_dir) if out_dir else path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"═══ 外规 MinerU 解析: {path.name} ═══")
-    md_dir = doc_cache_dir("external") / MINERU_MD_DIRNAME
-    blocks_map = parse_docs([path], out_dir=md_dir)
-    blocks = infer_regulation_headings(blocks_map[path.name])
-
+    blocks = infer_regulation_headings(get_blocks(path))
     doc_id = _clean_doc_name(path.name)
-    clauses = [
-        c for c in (_external_clause_from_chunk(doc_id, chunk) for chunk in chunk_doc(doc_id, blocks))
-        if c.full_text.strip()
-    ]
+    clauses = clauses_from_blocks(doc_id, blocks)
     if not clauses:
-        raise ValueError(f"外规 {path.name} MinerU 解析后未产生任何条款分块,无法比对。")
-    print(f"MinerU 解析 + 按条分块完成: {len(clauses)} 条\n")
+        raise ValueError(f"外规 {path.name} 解析后未产生任何条款分块,无法比对。")
 
     _write_external_structure(out_dir, doc_id, clauses)
     return clauses

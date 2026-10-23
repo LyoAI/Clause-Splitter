@@ -60,8 +60,9 @@ REVIEW_FILTER_CANDIDATE_MAX_CHARS = int(os.getenv("REVIEW_FILTER_CANDIDATE_MAX_C
 # score regardless of relevance, so a clause never shows an empty recall list merely
 # because the strict filter dropped everything.
 REVIEW_MIN_CANDIDATES = int(os.getenv("REVIEW_MIN_CANDIDATES", "3"))
-# Parallel clause episodes during a comparison run.
-COMPARE_CONCURRENCY = int(os.getenv("COMPARE_CONCURRENCY", "4"))
+# Parallel clause episodes during a comparison run. Default 2 = the intranet
+# qwen3.8-27b serves exactly 2 concurrent slots — raise only if ops does.
+COMPARE_CONCURRENCY = int(os.getenv("COMPARE_CONCURRENCY", "2"))
 # Gap-analysis report: external clauses per batch-summary sub-agent call.
 REPORT_BATCH_SIZE = int(os.getenv("REPORT_BATCH_SIZE", "20"))
 
@@ -156,7 +157,7 @@ class Settings:
     max_react_iterations: int = 5
 
     # LLM
-    default_model: str = "qwen3-max"
+    default_model: str = "qwen3.8-27b"  # intranet model; needs config/llm/qwen3.8-27b.yaml
     llm_max_input_chars: int = 12000  # max chars sent to LLM in structure analysis
 
     # Obligation rule keyword mapping
