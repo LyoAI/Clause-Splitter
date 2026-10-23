@@ -12,10 +12,10 @@
 
 ```json
 {
-  "code": 0,          // 0=成功,非 0=失败
-  "status": "SUCCESS",
-  "data": { ... },    // 业务数据,失败时为 null
-  "msg": ""           // 失败时的错误说明
+  "code": "200",          // "200"=请求被正确处理;错误时为 HTTP 状态码字符串
+  "status": "success",    // success | error
+  "data": { ... },        // 业务数据;错误时为 {"error_code": "...", "details": {...}}
+  "msg": ""               // 提示信息
 }
 ```
 
@@ -198,73 +198,17 @@ GET    /library/index            → {doc_count, chunk_count, ...}
 
 ---
 
-## 4. 后端对接 `/integration`(系统后端调用)
+## 4. 后端对接
 
-### 4.1 推送文档
+后端对接契约(推送入参、结果报文、ESG 回调)以 `assets/外规内化服务接口文档.docx` 为准,本文不再重复。要点:
 
-```
-POST /integration/push
-```
-
-入参(后端推送格式,原样透传):
-
-```json
-{
-  "args": {
-    "OptType": 0,
-    "docContent": "",
-    "docType": "3",
-    "docId": "2ef71e627aee466bb351545033df3050",
-    "doclobsUrl": "http://iobs.paic.com.cn/download/...?attname=平科办〔2017〕8号附件4：培训供应商管理细则（2017版）",
-    "taskId": "170b82cd89de48c0a112b3ad0b69b659",
-    "uid": "9760fde4-bf16-4caf-91d0-978360485df5"
-  }
-}
-```
-
-| 字段 | 必填 | 说明 |
+| 接口 | 方法 | 路径 |
 |---|---|---|
-| docId | 是 | 后端文档 id |
-| taskId / uid | 否 | 任务与用户标识,回调时原样带回 |
-| docContent | 否* | 有值时直接作为文档内容落库(按纯文本处理) |
-| doclobsUrl | 否* | docContent 为空时必填;从链接下载文档,标题取 `attname` 参数 |
-| docType | 否 | 文档类型(当前未参与逻辑) |
-| OptType | 否 | 0=手动(视为一定适用于平安科技,**跳过阶段1判定**)/ 1=自动(走完整四阶段) |
+| 法规推送 | POST | `/regulations/push` |
+| 结果查询 | GET | `/regulations/{docId}/result` |
+| 结果回调 | POST | `{ESG_OPEN_END_POINT}/paerm/paermModelReturn` |
 
-\* docContent 与 doclobsUrl 至少一个,否则 400。
-
-响应 202:
-
-```json
-{ "code": 0, "data": { "regulation_id": "a1b2c3", "job_id": "d4e5f6",
-                       "task_id": "170b...", "manual": true, "duplicate": false } }
-```
-
-### 4.2 结果回调(草案,以后端最终契约为准)
-
-配置 `BACKEND_CALLBACK_URL` 后,push 发起的整链任务到达终态(成功或失败)时,服务端 POST 回调:
-
-```json
-{
-  "args": { "docId": "...", "taskId": "...", "uid": "..." },
-  "status": "done",
-  "error": "",
-  "regulationId": "a1b2c3",
-  "applicable": true,
-  "summary": { "coverage_rate": 0.5, "...": "同 analysis_summary" },
-  "clauses": [
-    { "clauseNumber": "第一条", "text": "...", "decision": "需要内化",
-      "coverage": "完全覆盖", "analysis": "...", "differenceAnalysis": "...",
-      "remedySuggestion": "..." }
-  ]
-}
-```
-
-> ⚠️ 待与后端对齐的点(都收敛在 `clause_splitter/services/integration_service.py` 一个文件里,调整不影响流水线):
-> 1. `OptType` 0/1 与手动/自动的对应关系(当前按 0=手动);
-> 2. `docContent` 的语义(纯文本 / base64);
-> 3. `docType` 与文件后缀的映射(当前从 attname 后缀推断,无后缀默认 `.pdf`);
-> 4. 回调的最终字段契约与鉴权方式。
+`/regulations/*` 其余路由、`/library`、`/jobs` 为内部运维接口。
 
 ---
 
@@ -280,12 +224,12 @@ GET /healthz        → 200
 
 ```
 后端                          本服务
- │ POST /integration/push ────▶│ (下载/落库,排队整链任务)
+ │ POST /regulations/push ────▶│ (下载/落库,排队整链任务)
  │◀── 202 {job_id} ────────────│
  │                             │ 阶段1 适用性 → 阶段2 拆条 → 阶段3 内化判定 → 阶段4 分析+报告
  │ (可选) GET /jobs/{job_id} ─▶│ 轮询进度 progress/step
  │◀── {state:"done"} ──────────│
- │◀── POST 回调(最终结果)──────│ 配置 BACKEND_CALLBACK_URL 时
+ │◀── POST ESG 回调(最终结果)─│ 失败可 GET /regulations/{docId}/result
  │ (可选) GET .../artifacts ──▶│ 下载 gap_report.md / review.html / episodes
 ```
 
