@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -89,10 +90,37 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
 
             assert len(delivered) == 1
             payload = delivered[0]
-            assert payload["args"]["taskId"] == "task1"
-            assert payload["status"] == "done"
-            assert payload["applicable"] is True
-            assert len(payload["clauses"]) == len(CLAUSE_SPECS)
+            assert payload["code"] == "1" and payload["msg"] == "成功"
+            assert payload["metadata"] == {
+                "docId": "doc1", "taskId": "task1", "uid": "u1",
+                "docType": "3", "optType": 0,
+            }
+            assert payload["stages"] == {
+                "applicability": "done", "split": "done",
+                "internalization": "done", "analysis": "done",
+            }
+            data = payload["data"]
+            assert data["applicability"]["applicable"] is True
+            split = data["split"]
+            assert split["clauseCount"] == len(CLAUSE_SPECS)
+            assert [c["clauseName"] for c in split["clauses"]] == [
+                s["clause_number"] for s in CLAUSE_SPECS
+            ]
+            assert split["clauses"][0]["clauseId"] == "doc1_1"
+            assert split["clauses"][0]["orderNum"] == 1
+            assert "term" not in json.dumps(payload)  # clause naming only
+
+            intl = data["internalization"]["clauses"]
+            assert len(intl) == len(CLAUSE_SPECS)
+            assert intl[0]["internalize"] == "需要内化"
+
+            analysis = data["analysis"]
+            covered = analysis["fullyCoveredCount"] + analysis["partiallyCoveredCount"]
+            assert analysis["coverageRate"] == f"{covered}/{analysis['internalizableCount']}"
+            assert {c["coverageStatus"] for c in analysis["clauses"]} >= {"完全覆盖", "部分覆盖"}
+            first = analysis["clauses"][0]
+            assert first["relationClauses"], "adopted internal clauses must be reported"
+            assert first["relationClauses"][0]["internalClauseId"].startswith("数据安全管理办法")
         finally:
             await runner.stop()
             services.reset()
@@ -241,18 +269,103 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
             assert result["dispatch"] == "scheduled"
             job = await repos.jobs.get(result["job_id"])
             assert job["state"] == "scheduled"
-            # docId pull before admission → reflects the scheduled job
+            # docId pull before admission → processing, every stage pending
             early = await integration_service.build_result("doc3")
-            assert early["status"] == "scheduled"
+            assert early["code"] == "2" and early["msg"] == "处理中"
+            assert set(early["stages"].values()) == {"pending"}
+            assert early["data"] is None
 
             assert await runner.drain_scheduled() == 1
             done = await _wait(repos, result["job_id"])
             assert done["state"] == "done", done["error"]
 
             payload = await integration_service.build_result("doc3")
-            assert payload["args"]["docId"] == "doc3"
-            assert payload["status"] == "done"
-            assert len(payload["clauses"]) == len(CLAUSE_SPECS)
+            assert payload["metadata"]["docId"] == "doc3"
+            assert payload["code"] == "1"
+            assert len(payload["data"]["split"]["clauses"]) == len(CLAUSE_SPECS)
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_not_applicable_stops_chain_with_null_stages(tmp_path, monkeypatch):
+    """Not applicable → clean stop: code 1, downstream stages done with null data."""
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "immediate")
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: PipelineFakeLLM(applicable=False))
+        services.init(repos, runner)
+        store = build_store()
+
+        async def pinned_store(ctx):
+            return store
+
+        monkeypatch.setattr(runner, "_pinned_store", pinned_store)
+        try:
+            await runner.start()
+            result = await integration_service.handle_push({"args": {
+                "OptType": 1, "docContent": SOURCE_TEXT, "docId": "docX", "taskId": "tX",
+            }})
+            done = await _wait(repos, result["job_id"])
+            assert done["state"] == "done", done["error"]
+
+            payload = await integration_service.build_result("docX")
+            assert payload["code"] == "1"
+            assert "不适用于本公司" in payload["msg"]
+            assert payload["stages"] == {
+                "applicability": "done", "split": "done",
+                "internalization": "done", "analysis": "done",
+            }
+            assert payload["data"]["applicability"]["applicable"] is False
+            assert payload["data"]["split"] is None
+            assert payload["data"]["internalization"] is None
+            assert payload["data"]["analysis"] is None
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_failed_stage_delivers_partial_results(tmp_path, monkeypatch):
+    """Internalization fails → code 0, split results still delivered."""
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "immediate")
+        repos = fake_repos()
+        llm = PipelineFakeLLM()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: llm)
+        services.init(repos, runner)
+        store = build_store()
+        patch_registry(monkeypatch, store)
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
+
+        async def pinned_store(ctx):
+            return store
+
+        monkeypatch.setattr(runner, "_pinned_store", pinned_store)
+
+        async def boom(ctx):
+            raise RuntimeError("internalization boom")
+
+        import clause_splitter.pipeline.internalize as internalize_mod
+
+        monkeypatch.setattr(internalize_mod, "run", boom)
+        try:
+            await runner.start()
+            result = await integration_service.handle_push({"args": {
+                "OptType": 1, "docContent": SOURCE_TEXT, "docId": "docY", "taskId": "tY",
+            }})
+            done = await _wait(repos, result["job_id"])
+            assert done["state"] == "failed"
+
+            payload = await integration_service.build_result("docY")
+            assert payload["code"] == "0"
+            assert "internalization boom" in payload["msg"]
+            assert payload["stages"] == {
+                "applicability": "done", "split": "done",
+                "internalization": "failed", "analysis": "done",
+            }
+            assert len(payload["data"]["split"]["clauses"]) == len(CLAUSE_SPECS)
+            assert payload["data"]["internalization"] is None
+            assert payload["data"]["analysis"] is None
         finally:
             await runner.stop()
             services.reset()

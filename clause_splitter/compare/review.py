@@ -508,7 +508,10 @@ def render_review_html(
         ext_docs=ext_docs,
         store_name=store_name,
         generated_at=generated_at,
-        coverage_rate=f"{result.coverage_rate:.1%}",
+        coverage_rate=(
+            f"{result.fully_covered_count + result.partially_covered_count}"
+            f"/{result.internalizable_count}"
+        ),
         internalizable_count=result.internalizable_count,
         no_internalization_count=result.no_internalization_count,
         stats=stats,

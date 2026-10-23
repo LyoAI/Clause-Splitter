@@ -76,6 +76,7 @@ episode 语义:主谓宾拆解只作为分析期提示燃料,不改变条级拆�
 - docContent 是 str 不是文件:`_materialize_text` 显式适配(`<br/>`→换行)写内部文件,流水线保持文件驱动。
 - 非 http(s) 的 doclobsUrl 视为本地挂载路径直接读。
 - 回调整篇一次,按 taskId;token 缓存 + 13012 刷新重试 + 13016 睡 60s 重试(≤5 次)。
+- 出参报文(回调与 `GET /{docId}/result` 共用)见 [callback-contract.md](callback-contract.md):`code/msg/metadata/stages/data` 五段式,阶段结果只放在 `data` 下。
 
 ## 6. 模块地图
 

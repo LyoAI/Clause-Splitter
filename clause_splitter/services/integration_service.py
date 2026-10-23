@@ -136,6 +136,15 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── result payload (shared by ESG callback and the docId pull) ──────────
+#
+# Contract lives in docs/callback-contract.md. Shape:
+#   {code, msg, metadata, stages, data{applicability,split,internalization,analysis}}
+# Every stage is ``done|failed|pending``; a stage with no results has its
+# data field set to null (never an empty object).
+
+STAGES = ("applicability", "split", "internalization", "analysis")
+#: Job states still in flight — payload reports code "2" (处理中).
+_PENDING_JOB_STATES = ("queued", "running", "scheduled")
 
 
 async def build_result(doc_id: str) -> dict[str, Any]:
@@ -146,17 +155,227 @@ async def build_result(doc_id: str) -> dict[str, Any]:
     jobs, _total = await get_repos().jobs.list(
         regulation_id=reg["_id"], job_type="chain", limit=1,
     )
-    if not jobs:
-        return {"args": _push_args(reg), "status": "pending", "clauses": []}
-    return await _build_callback(reg, jobs[0])
+    return await _build_callback(reg, jobs[0] if jobs else None)
 
 
-def _push_args(reg: dict[str, Any]) -> dict[str, str]:
+def _metadata(reg: dict[str, Any]) -> dict[str, Any]:
+    """Push identifiers echoed back verbatim — the backend's only locators."""
     return {
         "docId": reg.get("push_doc_id", ""),
         "taskId": reg.get("push_task_id", ""),
         "uid": reg.get("push_uid", ""),
+        "docType": reg.get("push_doc_type", ""),
+        "optType": reg.get("push_opt_type"),
     }
+
+
+def _stage_status(reg: dict[str, Any], job: dict[str, Any] | None, name: str) -> str:
+    """done / failed / pending.
+
+    ``done`` = settled: the stage ran, or an upstream branch decided it never
+    will (orchestrator stamps ``skipped``; a terminal job leaves it blank).
+    ``pending`` = still to come (queued / running / interrupted-and-resumable).
+    """
+    state = reg.get(f"{name}_state") or ""
+    if state == "failed":
+        return "failed"
+    if state in ("done", "skipped"):
+        return "done"
+    job_state = (job or {}).get("state", "")
+    if job_state in _PENDING_JOB_STATES or not job_state:
+        return "pending"
+    return "done"
+
+
+def _code(job: dict[str, Any] | None) -> str:
+    """1 = finished (including a clean "not applicable" stop), 0 = failed,
+    2 = processing."""
+    state = (job or {}).get("state", "")
+    if state == "failed":
+        return "0"
+    if state in _PENDING_JOB_STATES or not state:
+        return "2"
+    return "1"
+
+
+def _message(code: str, reg: dict[str, Any], job: dict[str, Any] | None) -> str:
+    if code == "2":
+        return "处理中"
+    if code == "0":
+        return str((job or {}).get("error") or "处理失败")
+    applicable = reg.get("applicability_applicable")
+    if applicable is False:
+        return "法规不适用于本公司,未执行拆条与内化分析"
+    if applicable is None:
+        return "适用性待人工复核,未执行拆条与内化分析"
+    return "成功"
+
+
+def _chapter(row: dict[str, Any]) -> str:
+    """Section path without the leaf when the leaf is the clause label."""
+    name = (row.get("clause_number") or "").strip()
+    parts = [p.strip() for p in (row.get("section") or "").split(" > ") if p.strip()]
+    if parts and name and parts[-1] == name:
+        parts.pop()
+    return " > ".join(parts)
+
+
+def _relation_clauses(row: dict[str, Any]) -> list[dict[str, str]]:
+    """Internal clauses the episode adopted as coverage (mirrors review.py)."""
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for cand in row.get("candidates") or []:
+        if not cand.get("adopted"):
+            continue
+        cid = cand.get("chunk_id") or ""
+        if cid in seen:
+            continue
+        seen.add(cid)
+        out.append({
+            "internalClauseId": cid,
+            "docName": cand.get("doc_name", ""),
+            "clauseName": cand.get("clause_label", ""),
+            "clauseContent": cand.get("full_text") or cand.get("snippet") or "",
+        })
+    if out:
+        return out
+    ids = row.get("matched_internal_clause_ids") or []
+    if row.get("matched_internal_id") or ids:
+        out.append({
+            "internalClauseId": row.get("matched_internal_id") or str(ids[0]),
+            "docName": row.get("matched_internal_document_name", ""),
+            "clauseName": row.get("matched_internal_clause_number", ""),
+            "clauseContent": row.get("matched_internal_source_text", ""),
+        })
+    return out
+
+
+def _analysis_counts(reg: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Stored summary when present, else derived from the clause rows."""
+    summary = reg.get("analysis_summary") or {}
+    if summary:
+        return {
+            "fullyCoveredCount": int(summary.get("fully_covered_count", 0)),
+            "partiallyCoveredCount": int(summary.get("partially_covered_count", 0)),
+            "missingCount": int(summary.get("missing_count", 0)),
+            "internalizableCount": int(summary.get("internalizable_count", 0)),
+            "noInternalizationCount": int(summary.get("no_internalization_count", 0)),
+        }
+    internalizable = [r for r in rows if (r.get("internalization_decision") or "") != "无需内化"]
+    statuses = [r.get("status") for r in rows]
+    return {
+        "fullyCoveredCount": statuses.count("完全覆盖"),
+        "partiallyCoveredCount": statuses.count("部分覆盖"),
+        "missingCount": sum(
+            1 for r in internalizable if r.get("status") == "缺失"
+        ),
+        "internalizableCount": len(internalizable),
+        "noInternalizationCount": sum(
+            1 for r in rows if r.get("internalization_decision") == "无需内化"
+        ),
+    }
+
+
+def _result_data(
+    reg: dict[str, Any], rows: list[dict[str, Any]], doc_id: str,
+) -> dict[str, Any]:
+    """Per-stage results; ``None`` when a stage produced nothing."""
+    applicable = reg.get("applicability_applicable")
+    applicability = None
+    if applicable is not None or reg.get("applicability_reason"):
+        applicability = {
+            "applicable": applicable,
+            "reason": reg.get("applicability_reason") or "",
+        }
+
+    split = None
+    if rows:
+        clauses = []
+        for row in rows:
+            order = int(row.get("seq", 0)) + 1
+            name = (row.get("clause_number") or "").strip()
+            clauses.append({
+                "clauseId": f"{doc_id}_{order}",
+                "orderNum": order,
+                "chapter": _chapter(row),
+                "clauseName": name,
+                "clauseContent": row.get("clause_text") or "",
+            })
+        split = {"clauseCount": len(clauses), "clauses": clauses}
+
+    internalization = None
+    judged = [
+        r for r in rows
+        if r.get("clause_type") or r.get("internalization_decision")
+    ]
+    if judged:
+        internalization = {"clauses": [
+            {
+                "clauseId": f"{doc_id}_{int(r.get('seq', 0)) + 1}",
+                "clauseType": r.get("clause_type") or "",
+                "internalize": r.get("internalization_decision") or "",
+                "internalizeReason": r.get("internalization_reason") or "",
+            }
+            for r in judged
+        ]}
+
+    analysis = None
+    analyzed = [r for r in rows if r.get("status")]
+    if analyzed or reg.get("analysis_summary"):
+        counts = _analysis_counts(reg, rows)
+        covered = counts["fullyCoveredCount"] + counts["partiallyCoveredCount"]
+        analysis = {
+            # covered / internalizable — same fraction the review page shows.
+            "coverageRate": f"{covered}/{counts['internalizableCount']}",
+            **counts,
+            "clauses": [
+                {
+                    "clauseId": f"{doc_id}_{int(r.get('seq', 0)) + 1}",
+                    "coverageStatus": r.get("status") or "",
+                    "analysis": r.get("analysis") or "",
+                    "differenceAnalysis": r.get("difference_analysis") or "",
+                    "coreRequirements": r.get("core_regulatory_requirements") or "",
+                    "remedySuggestion": r.get("remedy_suggestion") or "",
+                    "relationClauses": _relation_clauses(r),
+                }
+                for r in analyzed
+            ],
+        }
+
+    data = {
+        "applicability": applicability,
+        "split": split,
+        "internalization": internalization,
+        "analysis": analysis,
+    }
+    return data if any(v is not None for v in data.values()) else None
+
+
+async def _build_callback(
+    reg: dict[str, Any], job: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Callback / pull body — see docs/callback-contract.md."""
+    rows, _total = await get_repos().clauses.list_for_regulation(reg["_id"])
+    rows.sort(key=lambda r: r.get("seq", 0))
+    metadata = _metadata(reg)
+    doc_id = metadata["docId"] or reg["_id"]
+    code = _code(job)
+    return {
+        "code": code,
+        "msg": _message(code, reg, job),
+        "metadata": metadata,
+        "stages": {name: _stage_status(reg, job, name) for name in STAGES},
+        "data": _result_data(reg, rows, doc_id),
+    }
+
+
+def _post_callback(url: str, payload: dict[str, Any]) -> None:
+    resp = requests.post(url, json=payload, timeout=30)
+    resp.raise_for_status()
+    logger.info(
+        "backend callback delivered (task %s, http %s)",
+        payload.get("metadata", {}).get("taskId"), resp.status_code,
+    )
 
 
 # ── result callback ─────────────────────────────────────────────────────
@@ -195,41 +414,7 @@ def _deliver_callback(payload: dict[str, Any]) -> None:
         result = client.post_callback(payload)
         logger.info(
             "esg callback delivered (task %s, ret %s)",
-            payload.get("args", {}).get("taskId"), result.get("ret"),
+            payload.get("metadata", {}).get("taskId"), result.get("ret"),
         )
         return
     _post_callback(CONFIG_APP.backend_callback_url, payload)
-
-
-async def _build_callback(reg: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Draft callback body — the final contract is defined by the backend."""
-    rows, _total = await get_repos().clauses.list_for_regulation(reg["_id"])
-    return {
-        "args": _push_args(reg),
-        "status": job.get("state", ""),
-        "error": job.get("error", ""),
-        "regulationId": reg["_id"],
-        "applicable": reg.get("applicability_applicable"),
-        "summary": reg.get("analysis_summary") or {},
-        "clauses": [
-            {
-                "clauseNumber": r.get("clause_number", ""),
-                "text": r.get("clause_text", ""),
-                "decision": r.get("internalization_decision", ""),
-                "coverage": r.get("status", ""),
-                "analysis": r.get("analysis", ""),
-                "differenceAnalysis": r.get("difference_analysis", ""),
-                "remedySuggestion": r.get("remedy_suggestion", ""),
-            }
-            for r in rows
-        ],
-    }
-
-
-def _post_callback(url: str, payload: dict[str, Any]) -> None:
-    resp = requests.post(url, json=payload, timeout=30)
-    resp.raise_for_status()
-    logger.info(
-        "backend callback delivered (task %s, http %s)",
-        payload.get("args", {}).get("taskId"), resp.status_code,
-    )
