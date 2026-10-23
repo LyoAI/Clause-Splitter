@@ -13,7 +13,10 @@ from typing import Any
 
 from common.mongo_async import get_mongo_db
 
-JOB_ACTIVE_STATES = ("queued", "running")
+#: States that block a new job on the same regulation.
+JOB_ACTIVE_STATES = ("queued", "running", "scheduled")
+#: States that cannot survive a restart — ``scheduled`` is future work, it persists.
+JOB_INTERRUPTIBLE_STATES = ("queued", "running")
 
 
 def new_id() -> str:
@@ -43,6 +46,10 @@ class RegulationRepo:
 
     async def get_by_sha256(self, sha256: str) -> dict[str, Any] | None:
         return await self._col.find_one({"file_sha256": sha256}, sort=[("created_at", -1)])
+
+    async def get_by_push_doc_id(self, doc_id: str) -> dict[str, Any] | None:
+        """Latest regulation pushed under a backend docId (newest re-push wins)."""
+        return await self._col.find_one({"push_doc_id": doc_id}, sort=[("created_at", -1)])
 
     async def list(self, *, limit: int = 20, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
         total = await self._col.count_documents({})
@@ -116,12 +123,13 @@ class JobRepo:
         job_type: str,
         regulation_id: str = "",
         payload: dict[str, Any] | None = None,
+        state: str = "queued",
     ) -> dict[str, Any]:
         doc = {
             "_id": new_id(),
             "job_type": job_type,
             "regulation_id": regulation_id,
-            "state": "queued",
+            "state": state,
             "progress": 0.0,
             "step": "",
             "payload": payload or {},
@@ -159,7 +167,7 @@ class JobRepo:
         return await cursor.to_list(length=limit), total
 
     async def has_active_for_regulation(self, reg_id: str) -> bool:
-        """Any queued/running job on this regulation (409 upstream)."""
+        """Any queued/running/scheduled job on this regulation (409 upstream)."""
         return await self._col.count_documents(
             {"regulation_id": reg_id, "state": {"$in": list(JOB_ACTIVE_STATES)}}
         ) > 0
@@ -167,10 +175,26 @@ class JobRepo:
     async def mark_interrupted(self) -> int:
         """Startup crash recovery: queued/running jobs can't survive a restart."""
         result = await self._col.update_many(
-            {"state": {"$in": list(JOB_ACTIVE_STATES)}},
+            {"state": {"$in": list(JOB_INTERRUPTIBLE_STATES)}},
             {"$set": {"state": "failed", "error": "interrupted by restart", "updated_at": now()}},
         )
         return result.modified_count
+
+    async def claim_scheduled(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Flip scheduled jobs to queued (FIFO) and return the admitted rows.
+
+        Single-process dispatch (``--workers 1``); a plain list+update is
+        enough — the worker re-checks state before running.
+        """
+        rows, _total = await self.list(state="scheduled", limit=limit)
+        rows.reverse()  # list() is newest-first; admit oldest first
+        for job in rows:
+            await self._col.update_one(
+                {"_id": job["_id"], "state": "scheduled"},
+                {"$set": {"state": "queued", "updated_at": now()}},
+            )
+            job["state"] = "queued"
+        return rows
 
 
 class InternalDocRepo:

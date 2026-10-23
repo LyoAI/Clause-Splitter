@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     from clause_splitter.jobs import JobRunner
     from clause_splitter.pipeline.contexts import default_repos
     from clause_splitter.services import context as services
-    from clause_splitter.services import integration_service, library_service
+    from clause_splitter.services import dispatcher, integration_service, library_service
 
     repos = default_repos()
     runner = JobRunner(repos, workers=CONFIG_APP.job_workers)
@@ -59,8 +59,13 @@ async def lifespan(app: FastAPI):
         logger.warning("Mongo unavailable at startup (deferred): %s", exc)
 
     await runner.start()
-    yield
-    await runner.stop()
+    scheduler = dispatcher.start_scheduler(runner)
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+        await runner.stop()
     services.reset()
     from common.mongo_async import close_mongo
 

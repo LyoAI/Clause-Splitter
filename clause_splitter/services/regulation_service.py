@@ -99,8 +99,12 @@ async def override_applicability(
 
 
 async def start_stage(reg_id: str, job_type: str, *, force: bool = False,
-                      payload: dict | None = None) -> dict:
-    """Validate preconditions, reset downstream, enqueue one stage / chain."""
+                      payload: dict | None = None, defer: bool = False) -> dict:
+    """Validate preconditions, reset downstream, enqueue one stage / chain.
+
+    ``defer=True`` parks the job in ``scheduled`` (cron admission) instead of
+    the live queue — used by backend pushes under cron/auto dispatch.
+    """
     runner = _runner()
     repos = runner.repos
     async with runner.lock_for(reg_id):
@@ -111,6 +115,13 @@ async def start_stage(reg_id: str, job_type: str, *, force: bool = False,
             raise ApiError(409, "a job is already queued/running for this regulation")
         _check_precondition(reg, job_type, force)
         await _reset(reg_id, job_type, repos)
+        if defer:
+            job = await repos.jobs.create(
+                job_type=job_type, regulation_id=reg_id,
+                payload=payload or {}, state="scheduled",
+            )
+            logger.info("job scheduled: %s (%s) for %s", job["_id"], job_type, reg_id)
+            return job
         return await runner.enqueue(job_type, regulation_id=reg_id, payload=payload)
 
 

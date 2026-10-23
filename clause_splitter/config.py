@@ -85,6 +85,20 @@ CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", "50"))
 CACHE_DIR = REPO_ROOT / ".cache"
 INDEX_CACHE_DIR = os.getenv("INDEX_CACHE_DIR", "")
 
+# ── Backend integration (push → dispatch → ESG callback) ────────────────
+# How pushed regulations reach the chain: immediate | cron | auto.
+# auto = OptType 0 (manual) pushes run immediately, the rest wait for cron.
+CHAIN_DISPATCH = os.getenv("CHAIN_DISPATCH", "auto")
+# 5-field crontab admitting scheduled chain jobs (see services.dispatcher).
+CHAIN_CRON = os.getenv("CHAIN_CRON", "0 20 * * mon-sat")
+# ESG open-platform gateway for the result callback. Empty ESG_OPEN_END_POINT
+# disables the gateway; BACKEND_CALLBACK_URL then acts as a plain dev fallback.
+ESG_AUTH_END_POINT = os.getenv("ESG_AUTH_END_POINT", "")
+ESG_OPEN_END_POINT = os.getenv("ESG_OPEN_END_POINT", "")
+ESG_CLIENT_ID = os.getenv("ESG_CLIENT_ID", "")
+ESG_CLIENT_SECRET = os.getenv("ESG_CLIENT_SECRET", "")
+ESG_CALLBACK_PATH = os.getenv("ESG_CALLBACK_PATH", "/paerm/paermModelReturn")
+
 
 def doc_cache_dir(store_name: str, root: str | Path | None = None) -> Path:
     """Root for one corpus's derived artifacts: materialized chunk txt,

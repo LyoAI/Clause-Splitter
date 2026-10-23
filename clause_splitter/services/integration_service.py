@@ -1,9 +1,10 @@
-"""Backend push integration — receive doc pushes, kick the chain, call back.
+"""Backend push integration — receive doc pushes, dispatch the chain, call back.
 
-The system backend pushes regulation documents here (``POST /integration/push``)
-and receives the final result through one callback interface. Push / callback
-field semantics are still being aligned with the backend team, so every
-assumption lives in this module — adjusting them must not touch the pipeline.
+The system backend pushes regulation documents here (``POST /regulations/push``)
+and receives the final result through the ESG callback (or pulls
+``GET /regulations/{docId}/result``). Push / callback field semantics are still
+being aligned with the backend team, so every assumption lives in this module —
+adjusting them must not touch the pipeline.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from api.base_fastapi import ApiError
 
 from clause_splitter.services import regulation_service
 from clause_splitter.services.context import get_repos
+from clause_splitter.services.dispatcher import dispatch_mode
+from clause_splitter.services.esg_client import get_esg_client
 from clause_splitter.utils import get_logger
 
 logger = get_logger()
@@ -65,8 +68,12 @@ async def _ensure_content(args: dict[str, Any]) -> tuple[bytes, str, str]:
 
 
 async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
-    """One backend push → one regulation + one chain job (manual skips stage 1)."""
-    args = dict(body.get("args") or {})
+    """One backend push → one regulation + one chain job (manual skips stage 1).
+
+    Accepts both ``{"args": {...}}`` and a flat field map — the wrapper is a
+    draft detail pending the backend spec.
+    """
+    args = body.get("args") if isinstance(body.get("args"), dict) else body
     if not args.get("docId"):
         raise ApiError(400, "push args.docId is required")
 
@@ -82,16 +89,43 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
         "push_doc_type": str(args.get("docType") or ""),
         "push_opt_type": args.get("OptType"),
     })
+    mode = dispatch_mode(manual)
     job = await regulation_service.start_stage(
         reg["_id"], "chain",
         payload={"skip_applicability": True} if manual else None,
+        defer=mode == "scheduled",
     )
     return {
         "regulation_id": reg["_id"],
         "job_id": job["_id"],
         "task_id": str(args.get("taskId") or ""),
         "manual": manual,
+        "dispatch": mode,
         "duplicate": not created,
+    }
+
+
+# ── result payload (shared by ESG callback and the docId pull) ──────────
+
+
+async def build_result(doc_id: str) -> dict[str, Any]:
+    """Result payload for one pushed docId — same shape as the callback."""
+    reg = await get_repos().regulations.get_by_push_doc_id(doc_id)
+    if reg is None:
+        raise ApiError(404, f"no pushed regulation for docId {doc_id}")
+    jobs, _total = await get_repos().jobs.list(
+        regulation_id=reg["_id"], job_type="chain", limit=1,
+    )
+    if not jobs:
+        return {"args": _push_args(reg), "status": "pending", "clauses": []}
+    return await _build_callback(reg, jobs[0])
+
+
+def _push_args(reg: dict[str, Any]) -> dict[str, str]:
+    return {
+        "docId": reg.get("push_doc_id", ""),
+        "taskId": reg.get("push_task_id", ""),
+        "uid": reg.get("push_uid", ""),
     }
 
 
@@ -108,8 +142,8 @@ async def _on_job_done(job: dict[str, Any]) -> None:
 
     if job.get("job_type") != "chain" or not job.get("regulation_id"):
         return
-    if not CONFIG_APP.backend_callback_url:
-        return
+    if get_esg_client() is None and not CONFIG_APP.backend_callback_url:
+        return  # callback disabled (no gateway, no dev fallback)
     repos = get_repos()
     fresh = await repos.jobs.get(job["_id"])
     reg = await repos.regulations.get(job["regulation_id"])
@@ -117,20 +151,31 @@ async def _on_job_done(job: dict[str, Any]) -> None:
         return
     payload = await _build_callback(reg, fresh or job)
     try:
-        await asyncio.to_thread(_post_callback, CONFIG_APP.backend_callback_url, payload)
+        await asyncio.to_thread(_deliver_callback, payload)
     except Exception as exc:  # noqa: BLE001 — callback is best-effort
         logger.error("backend callback failed for %s: %s", job["regulation_id"], exc)
+
+
+def _deliver_callback(payload: dict[str, Any]) -> None:
+    """ESG gateway first; plain URL as the dev fallback (tests patch this seam)."""
+    from config.config_app import CONFIG_APP
+
+    client = get_esg_client()
+    if client is not None:
+        result = client.post_callback(payload)
+        logger.info(
+            "esg callback delivered (task %s, ret %s)",
+            payload.get("args", {}).get("taskId"), result.get("ret"),
+        )
+        return
+    _post_callback(CONFIG_APP.backend_callback_url, payload)
 
 
 async def _build_callback(reg: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     """Draft callback body — the final contract is defined by the backend."""
     rows, _total = await get_repos().clauses.list_for_regulation(reg["_id"])
     return {
-        "args": {
-            "docId": reg.get("push_doc_id", ""),
-            "taskId": reg.get("push_task_id", ""),
-            "uid": reg.get("push_uid", ""),
-        },
+        "args": _push_args(reg),
         "status": job.get("state", ""),
         "error": job.get("error", ""),
         "regulationId": reg["_id"],

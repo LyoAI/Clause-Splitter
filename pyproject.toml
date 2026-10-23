@@ -13,6 +13,7 @@ dependencies = [
     "pyyaml==6.0.3",
     "json-repair==0.60.1",
     "requests==2.34.2",
+    "APScheduler>=3.11,<4",
     # PingAn intranet gateway signing (only needed on the intranet path)
     "pycryptodome==3.23.0",
     # RAG engine (vendored chillrag/) — engine deps installed alongside

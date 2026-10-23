@@ -22,3 +22,5 @@ data/
 # Per-model LLM credentials (yaml) — commit only *.example templates
 config/llm/*
 !config/llm/*.example
+# Old-rule reference service (local only, not part of the repo)
+previous-version/

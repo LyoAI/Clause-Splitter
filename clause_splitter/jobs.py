@@ -173,6 +173,15 @@ class JobRunner:
         logger.info("job queued: %s (%s) for %s", job["_id"], job_type, regulation_id or "-")
         return job
 
+    async def drain_scheduled(self, limit: int = 100) -> int:
+        """Admit scheduled jobs onto the queue (cron tick / manual trigger)."""
+        admitted = await self.repos.jobs.claim_scheduled(limit)
+        for job in admitted:
+            await self._queue.put(job["_id"])
+        if admitted:
+            logger.info("dispatcher admitted %d scheduled job(s)", len(admitted))
+        return len(admitted)
+
     # ── workers ───────────────────────────────────────────────────────────
 
     async def _worker(self) -> None:
