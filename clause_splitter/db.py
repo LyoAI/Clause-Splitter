@@ -29,7 +29,7 @@ def now() -> datetime:
 
 class RegulationRepo:
     def __init__(self, db: Any | None = None) -> None:
-        self._col = (db or get_mongo_db()).regulations
+        self._col = (get_mongo_db() if db is None else db).regulations
 
     async def create(self, doc: dict[str, Any]) -> dict[str, Any]:
         doc = {
@@ -65,7 +65,7 @@ class RegulationRepo:
 
 class ClauseRepo:
     def __init__(self, db: Any | None = None) -> None:
-        self._col = (db or get_mongo_db()).clauses
+        self._col = (get_mongo_db() if db is None else db).clauses
 
     async def replace_for_regulation(self, reg_id: str, clauses: list[dict[str, Any]]) -> int:
         """One generation per split run: drop old rows, insert the new batch."""
@@ -115,7 +115,7 @@ class ClauseRepo:
 
 class JobRepo:
     def __init__(self, db: Any | None = None) -> None:
-        self._col = (db or get_mongo_db()).jobs
+        self._col = (get_mongo_db() if db is None else db).jobs
 
     async def create(
         self,
@@ -199,7 +199,7 @@ class JobRepo:
 
 class InternalDocRepo:
     def __init__(self, db: Any | None = None) -> None:
-        self._col = (db or get_mongo_db()).internal_docs
+        self._col = (get_mongo_db() if db is None else db).internal_docs
 
     async def create(self, doc: dict[str, Any]) -> dict[str, Any]:
         doc = {
@@ -239,7 +239,7 @@ class InternalDocRepo:
 
 async def ensure_indexes(db: Any | None = None) -> None:
     """Idempotent index creation; called once at startup."""
-    _db = db or get_mongo_db()
+    _db = get_mongo_db() if db is None else db
     await _db.regulations.create_index("file_sha256")
     await _db.clauses.create_index([("regulation_id", 1), ("seq", 1)])
     await _db.jobs.create_index([("regulation_id", 1), ("state", 1)])
@@ -249,5 +249,5 @@ async def ensure_indexes(db: Any | None = None) -> None:
 
 def default_repos(db: Any | None = None) -> tuple[RegulationRepo, ClauseRepo, JobRepo, InternalDocRepo]:
     """Build the repo bundle from one shared db handle."""
-    _db = db or get_mongo_db()
+    _db = get_mongo_db() if db is None else db
     return RegulationRepo(_db), ClauseRepo(_db), JobRepo(_db), InternalDocRepo(_db)

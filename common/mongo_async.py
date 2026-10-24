@@ -21,7 +21,7 @@ def _resolve_password() -> str:
 def get_mongo_client() -> AsyncIOMotorClient:
     global _client
     if _client is None:
-        _client = AsyncIOMotorClient(CONFIG_Mongo.uri(_resolve_password()))
+        _client = AsyncIOMotorClient(CONFIG_MONGO.uri(_resolve_password()))
         logger.info("MongoDB client created for %s:%s/%s", CONFIG_MONGO.host, CONFIG_MONGO.port, CONFIG_MONGO.database)
     return _client
 

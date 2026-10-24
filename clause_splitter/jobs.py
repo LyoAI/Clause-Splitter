@@ -212,7 +212,8 @@ class JobRunner:
             return
 
         regulation: dict[str, Any] = {"_id": job["regulation_id"], "title": ""}
-        if job["regulation_id"]:
+        # index_build uses the "__library__" sentinel; it has no regulation row.
+        if job["regulation_id"] and job_type != "index_build":
             doc = await self.repos.regulations.get(job["regulation_id"])
             if doc is None:
                 await self.repos.jobs.update(job["_id"], {"state": "failed", "error": "regulation not found"})

@@ -201,6 +201,13 @@ def load_store(
     if not (store_dir / "chunks.jsonl").exists():
         return None
     store = DocumentStore.load_from_jsonl(store_dir)
+    # Restore the corpus identity + cache root: load_from_jsonl rebuilds chunks
+    # only, so without these the searchers resolve indexes under the wrong dir.
+    store.name = name
+    store.index_root = str(index_root) if index_root else ""
+    manifest_file = cache_root / "chunks" / "manifest.json"
+    if manifest_file.exists():
+        store.manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     logger.info("loaded existing internal index %s (%d docs / %d units)",
                 name, len(store.docs), len(store.all_chunks()))
     return store
