@@ -97,9 +97,9 @@ rebuild takes the writer lock.
 ## Run
 
 ```bash
-# local
-pip install -r requirements.txt
-python serving.py                     # 0.0.0.0:18998
+# local (uv; creates .venv from uv.lock)
+uv sync --extra dev
+uv run python serving.py              # 0.0.0.0:18998
 
 # docker (PingAn intranet; needs the sidecar detector)
 docker build -t clause-splitter . && bash docker_cmd.sh
@@ -113,7 +113,7 @@ Copy `.env.example` → `.env` for LLM keys and service knobs. Key settings
 ## Development
 
 ```bash
-.venv/bin/python -m pytest tests/ -q    # 141 tests, fully offline (fake LLM + in-memory Mongo)
+uv run --extra dev python -m pytest tests/ -q    # 126 tests, fully offline (fake LLM + in-memory Mongo)
 ```
 
 The e2e test drives the real chain (upload → applicability → split → judge →

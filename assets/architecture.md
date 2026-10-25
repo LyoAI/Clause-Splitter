@@ -6,7 +6,7 @@
 
 ```
 系统后端(平安 ESG)
-   │ ① POST /api/v1/regulations/push          (docId/doclobsUrl/docContent/OptType…)
+   │ ① POST /api/v1/regulations/push          (docId/doclobsUrl/docContent/OptType/extraParams…)
    ▼
 FastAPI(api/)──► IntegrationService ──► 取内容(doclobsUrl 优先,docContent 兜底)
    │                    │                    魔数嗅探定后缀(URL 名不可信)
@@ -75,8 +75,9 @@ episode 语义:主谓宾拆解只作为分析期提示燃料,不改变条级拆�
 - **魔数嗅探**:`%PDF-`→.pdf、`PK\x03\x04`→.docx、`D0CF11E0`→.doc、可 UTF-8 解码→.txt、其余 415;文件名 = 标题(attname 或 docId)+ 嗅探后缀。
 - docContent 是 str 不是文件:`_materialize_text` 显式适配(`<br/>`→换行)写内部文件,流水线保持文件驱动。
 - 非 http(s) 的 doclobsUrl 视为本地挂载路径直接读。
+- `extraParams`(可选 JSON 对象)原样存储,并在回调/查询报文的顶层 `extraParams` 字段回显;不参与流程判定,未传为 `{}`。
 - 回调整篇一次,按 taskId;token 缓存 + 13012 刷新重试 + 13016 睡 60s 重试(≤5 次)。
-- 出参报文(回调与 `GET /{docId}/result` 共用)见 [callback-contract.md](callback-contract.md):`code/msg/metadata/stages/data` 五段式,阶段结果只放在 `data` 下。
+- 出参报文(回调与 `GET /{docId}/result` 共用)见 [callback-contract.md](callback-contract.md):`code/msg/extraParams/metadata/stages/data` 六段式,阶段结果只放在 `data` 下。
 
 ## 6. 模块地图
 

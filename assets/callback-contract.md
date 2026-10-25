@@ -8,6 +8,7 @@
 {
   "code": "1",
   "msg": "成功",
+  "extraParams": { "source": "iobs", "batch": "2026-10" },
   "metadata": { "docId": "D001", "taskId": "T001", "uid": "U1", "docType": "2", "optType": 1 },
   "stages": { "applicability": "done", "split": "done", "internalization": "done", "analysis": "done" },
   "data": { "applicability": {}, "split": {}, "internalization": {}, "analysis": {} }
@@ -18,6 +19,7 @@
 |---|---|
 | `code` | `"1"` 链条执行完毕(含"不适用"的正常终止);`"0"` 技术失败;`"2"` 处理中(排队/执行中) |
 | `msg` | `code=1` 时为 `"成功"` 或具体终止原因;`code=0` 为错误摘要;`code=2` 为 `"处理中"` |
+| `extraParams` | 推送入参 `extraParams` 原样回显(JSON 对象,顶层字段);未传时为 `{}`。请勿放入 token、密钥等敏感信息——回调报文会原样转发。 |
 | `metadata` | 推送入参回显,后端定位法规的唯一依据:`docId` / `taskId` / `uid` / `docType` / `optType`(`doclobsUrl` 不回显——可能含下载令牌) |
 | `stages` | 四阶段状态,取值只有 `done` / `failed` / `pending` |
 | `data` | 按阶段组织的结果;**某阶段无结果时该字段为 `null`**;四个阶段都无结果时 `data` 本身为 `null` |
@@ -106,6 +108,7 @@
 {
   "code": "1",
   "msg": "法规不适用于本公司,未执行拆条与内化分析",
+  "extraParams": { "source": "iobs", "batch": "2026-10" },
   "metadata": { "docId": "D001", "taskId": "T001", "uid": "U1", "docType": "2", "optType": 1 },
   "stages": { "applicability": "done", "split": "done", "internalization": "done", "analysis": "done" },
   "data": {

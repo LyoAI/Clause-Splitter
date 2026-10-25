@@ -1,6 +1,6 @@
 # 外规内化服务 · 接口文档
 
-版本 0.4.0 · 基础路径 `http://<host>:18998/api/v1` · 更新日期 2026-10-20
+版本 0.4.0 · 基础路径 `http://<host>:18998/api/v1` · 更新日期 2026-10-25
 
 ---
 
@@ -207,6 +207,8 @@ GET    /library/index            → {doc_count, chunk_count, ...}
 | 法规推送 | POST | `/regulations/push` |
 | 结果查询 | GET | `/regulations/{docId}/result` |
 | 结果回调 | POST | `{ESG_OPEN_END_POINT}/paerm/paermModelReturn` |
+
+推送入参新增可选字段 `extraParams`(JSON 对象):服务原样保存,并在回调/查询报文的**顶层** `extraParams` 字段回显;未传时为 `{}`,不参与任何流程判定。完整入参表见 `assets/外规内化服务接口文档.docx` 3.3 节。
 
 `/regulations/*` 其余路由、`/library`、`/jobs` 为内部运维接口。
 

@@ -76,6 +76,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
             result = await integration_service.handle_push({"args": {
                 "OptType": 0, "docContent": SOURCE_TEXT, "docType": "3",
                 "docId": "doc1", "taskId": "task1", "uid": "u1",
+                "extraParams": {"source": "iobs", "batch": "2026-10"},
             }})
             assert result["manual"] is True and result["task_id"] == "task1"
             done = await _wait(repos, result["job_id"])
@@ -86,6 +87,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
             assert reg["applicability_applicable"] is True
             assert "手动" in reg["applicability_reason"]
             assert reg["push_doc_id"] == "doc1" and reg["push_task_id"] == "task1"
+            assert reg["push_extra_params"] == {"source": "iobs", "batch": "2026-10"}
             assert "applicability" not in llm.calls
 
             assert len(delivered) == 1
@@ -95,6 +97,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
                 "docId": "doc1", "taskId": "task1", "uid": "u1",
                 "docType": "3", "optType": 0,
             }
+            assert payload["extraParams"] == {"source": "iobs", "batch": "2026-10"}
             assert payload["stages"] == {
                 "applicability": "done", "split": "done",
                 "internalization": "done", "analysis": "done",
@@ -167,6 +170,15 @@ async def test_push_without_content_or_url_rejected(tmp_path):
         finally:
             await runner.stop()
             services.reset()
+
+
+async def test_push_extra_params_must_be_object():
+    with pytest.raises(ApiError) as exc:
+        await integration_service.handle_push({
+            "args": {"docId": "d", "docContent": "x", "extraParams": ["bad"]},
+        })
+    assert exc.value.status_code == 400
+    assert "extraParams" in exc.value.message
 
 
 async def test_url_wins_over_doccontent(tmp_path, monkeypatch):

@@ -107,6 +107,15 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
     if not args.get("docId"):
         raise ApiError(400, "push args.docId is required")
 
+    # Backend-owned extensibility slot: stored verbatim and echoed at the top
+    # level of the result payload. It never influences the pipeline, so no
+    # schema is imposed beyond "object".
+    extra_params = args.get("extraParams")
+    if extra_params is None:
+        extra_params = {}
+    elif not isinstance(extra_params, dict):
+        raise ApiError(400, "push args.extraParams must be a JSON object")
+
     content, filename, title = await _ensure_content(args)
     repos = get_repos()
     reg, created = await regulation_service.upload(content, filename, title, repos=repos)
@@ -118,6 +127,7 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
         "push_uid": str(args.get("uid") or ""),
         "push_doc_type": str(args.get("docType") or ""),
         "push_opt_type": args.get("OptType"),
+        "push_extra_params": extra_params,
     })
     mode = dispatch_mode(manual)
     job = await regulation_service.start_stage(
@@ -354,7 +364,7 @@ def _result_data(
 async def _build_callback(
     reg: dict[str, Any], job: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Callback / pull body — see docs/callback-contract.md."""
+    """Callback / pull body — see assets/callback-contract.md."""
     rows, _total = await get_repos().clauses.list_for_regulation(reg["_id"])
     rows.sort(key=lambda r: r.get("seq", 0))
     metadata = _metadata(reg)
@@ -363,6 +373,7 @@ async def _build_callback(
     return {
         "code": code,
         "msg": _message(code, reg, job),
+        "extraParams": reg.get("push_extra_params") or {},
         "metadata": metadata,
         "stages": {name: _stage_status(reg, job, name) for name in STAGES},
         "data": _result_data(reg, rows, doc_id),
