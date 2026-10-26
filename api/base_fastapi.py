@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from api.prefix import API_PREFIX
 from common.loguru import configure_logger, logger, request_id
 from config.config_app import CONFIG_APP
 from config.config_env import RUN_ENV
@@ -82,7 +83,6 @@ app = FastAPI(
 
 from api.routes import integration, jobs, library, regulations  # noqa: E402
 
-API_PREFIX = "/api/v1"
 app.include_router(regulations.router, prefix=API_PREFIX)
 app.include_router(library.router, prefix=API_PREFIX)
 app.include_router(jobs.router, prefix=API_PREFIX)

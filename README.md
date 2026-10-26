@@ -51,7 +51,7 @@ data/
 └── internal/  docs/  ·  index/internal/{store, chunks, bm25, faiss, md}
 ```
 
-## API (mounted under `/api/v1`)
+## API (mounted under `/api/v1/clause_splitter`)
 
 All responses use the `{code, status, data, msg}` envelope; set `API_KEY` to
 require `X-API-Key` on every route.
@@ -68,7 +68,7 @@ GET    /regulations/{id}/jobs · GET /jobs?state=&job_type= · GET /jobs/{id}
 GET    /regulations/{id}/artifacts · GET /regulations/{id}/artifacts/{name}
 POST   /library/documents · GET /library/documents · DELETE /library/documents/{id}
 POST   /library/index {rebuild?} · GET /library/index
-POST   /integration/push                 backend doc push (docContent or doclobsUrl; OptType=manual
+POST   /regulations/push                 backend doc push (docContent or doclobsUrl; OptType=manual
                                            skips stage 1) → auto-runs the chain
 GET    /healthz
 ```
@@ -110,10 +110,24 @@ Copy `.env.example` → `.env` for LLM keys and service knobs. Key settings
 `COMPARE_CONCURRENCY`, `SEARCH_TOP_K`, `REVIEW_FILTER_RELEVANCE`,
 `COMPANY_PROFILE`, `MINERU_BACKEND`, `EMBED_MODEL`.
 
+## Smoke test
+
+With MongoDB and the service running, exercise the real HTTP API end to end:
+
+```bash
+./scripts/smoke_test.sh health       # /healthz + route prefix
+./scripts/smoke_test.sh library      # upload upload_materials/internal, build index
+./scripts/smoke_test.sh regulation   # upload upload_materials/external, run chain
+./scripts/smoke_test.sh push         # POST /regulations/push + docId result pull
+./scripts/smoke_test.sh              # all of the above
+```
+
+See `scripts/README.md` for environment overrides and supported file types.
+
 ## Development
 
 ```bash
-uv run --extra dev python -m pytest tests/ -q    # 126 tests, fully offline (fake LLM + in-memory Mongo)
+uv run --extra dev python -m pytest tests/ -q    # 127 tests, fully offline (fake LLM + in-memory Mongo)
 ```
 
 The e2e test drives the real chain (upload → applicability → split → judge →

@@ -1,6 +1,6 @@
 # 回调 / 拉取出参规范
 
-同一份报文用于两处:**ESG 网关回调**(`POST {esg_open_end_point}/paerm/paermModelReturn?access_token=…&request_id=…`)和 **`GET /api/v1/regulations/{docId}/result`**。后端只写一套解析器。
+同一份报文用于两处:**ESG 网关回调**(`POST {esg_open_end_point}/paerm/paermModelReturn?access_token=…&request_id=…`)和 **`GET /api/v1/clause_splitter/regulations/{docId}/result`**。后端只写一套解析器。
 
 ## 1. 顶层
 

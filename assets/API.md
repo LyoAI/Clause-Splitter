@@ -1,6 +1,6 @@
 # 外规内化服务 · 接口文档
 
-版本 0.4.0 · 基础路径 `http://<host>:18998/api/v1` · 更新日期 2026-10-25
+版本 0.4.0 · 基础路径 `http://<host>:18998/api/v1/clause_splitter` · 更新日期 2026-10-25
 
 ---
 
@@ -23,7 +23,7 @@
 
 ### 1.2 鉴权
 
-环境变量 `API_KEY` 非空时,所有 `/api/v1/*` 接口要求请求头 `X-API-Key: <key>`;未配置则不鉴权。错误返回 401。
+环境变量 `API_KEY` 非空时,所有 `/api/v1/clause_splitter/*` 接口要求请求头 `X-API-Key: <key>`;未配置则不鉴权。错误返回 401。
 
 ### 1.3 处理流水线
 
@@ -68,7 +68,7 @@ POST /regulations            Content-Type: multipart/form-data
 - 返回 `data`:外规对象(见 2.3)
 
 ```bash
-curl -X POST http://localhost:18998/api/v1/regulations \
+curl -X POST http://localhost:18998/api/v1/clause_splitter/regulations \
   -H "X-API-Key: $KEY" -F "file=@办法.pdf" -F "title=培训供应商管理细则"
 ```
 

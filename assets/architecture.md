@@ -6,7 +6,7 @@
 
 ```
 系统后端(平安 ESG)
-   │ ① POST /api/v1/regulations/push          (docId/doclobsUrl/docContent/OptType/extraParams…)
+   │ ① POST /api/v1/clause_splitter/regulations/push          (docId/doclobsUrl/docContent/OptType/extraParams…)
    ▼
 FastAPI(api/)──► IntegrationService ──► 取内容(doclobsUrl 优先,docContent 兜底)
    │                    │                    魔数嗅探定后缀(URL 名不可信)
@@ -23,7 +23,7 @@ JobRunner(clause_splitter/jobs.py, workers=1)
    │  每 job: 适用性 → 拆条 → 内化判定 → 差异分析(run_chain)
    ▼
 完成后:ESG 网关回调(token 流,13012 刷新/13016 退避重试)
-        或后端主动拉 GET /api/v1/regulations/{docId}/result
+        或后端主动拉 GET /api/v1/clause_splitter/regulations/{docId}/result
 ```
 
 - **对外只有两个接口**(backend 面):`POST /regulations/push` 收数、`GET /regulations/{docId}/result` 拉结果;结果主动推送走 ESG 固定 callback。`/regulations/*` 其余路由、`/library`、`/jobs` 都是内部运维接口。

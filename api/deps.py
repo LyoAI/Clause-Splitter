@@ -13,7 +13,7 @@ from config.config_app import CONFIG_APP
 
 
 async def require_api_key(request: Request) -> None:
-    """X-API-Key required on /api/v1/* when API_KEY is configured."""
+    """X-API-Key required on /api/v1/clause_splitter/* when API_KEY is configured."""
     if not CONFIG_APP.api_key:
         return
     if request.headers.get("X-API-Key") != CONFIG_APP.api_key:

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from api.base_fastapi import ApiError, ok
 from api.deps import clause_out, job_out, reg_out, require_api_key
+from api.prefix import API_PREFIX
 from clause_splitter.services import regulation_service
 from clause_splitter.storage import (
     ARTIFACTS,
@@ -167,7 +168,7 @@ async def list_artifacts(reg_id: str):
         stat = path.stat()
         items.append({
             "name": name,
-            "url": f"/api/v1/regulations/{reg_id}/artifacts/{name}",
+            "url": f"{API_PREFIX}/regulations/{reg_id}/artifacts/{name}",
             "size": stat.st_size,
             "created_at": stat.st_mtime,
         })
@@ -176,7 +177,7 @@ async def list_artifacts(reg_id: str):
         for f in sorted(episodes.glob("*.json")):
             items.append({
                 "name": f"episodes/{f.name}",
-                "url": f"/api/v1/regulations/{reg_id}/artifacts/episodes/{f.name}",
+                "url": f"{API_PREFIX}/regulations/{reg_id}/artifacts/episodes/{f.name}",
                 "size": f.stat().st_size,
                 "created_at": f.stat().st_mtime,
             })
