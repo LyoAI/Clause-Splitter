@@ -1,1 +1,1 @@
-"""Shared infrastructure ported from the PingAn http-server template."""
+"""Shared infrastructure: logging, credential vault, HTTP helpers."""

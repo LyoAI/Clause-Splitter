@@ -79,8 +79,6 @@ class StageContext:
     payload: dict[str, Any] = field(default_factory=dict)
     progress: Callable[[float, str], None] = field(default=lambda p, s: None)
     rag: Any = None
-    model: str = ""
-    provider: str = ""
 
     @property
     def reg_id(self) -> str:

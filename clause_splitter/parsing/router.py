@@ -15,7 +15,7 @@ from clause_splitter.config import PARSE_FALLBACK
 from clause_splitter.rag import RagError, RagService, get_rag_service
 from clause_splitter.utils import get_logger
 
-from .blocks import Block, blocks_from_markdown, blocks_from_remote, blocks_from_text
+from .blocks import Block, blocks_from_markdown, blocks_from_text
 from .local import extract_local_text
 from .normalize import normalize_text
 
@@ -67,26 +67,13 @@ def parse_document(
 
 
 def _from_remote(parsed, doc_id: str) -> ParsedDocument | None:
-    """ParsedDoc → blocks; markdown wins over plain text when both exist."""
-    if parsed.blocks:
-        blocks = blocks_from_remote(parsed.blocks, doc_id)
-        if blocks:
-            return ParsedDocument(
-                doc_id=doc_id, blocks=blocks,
-                text=normalize_text(parsed.text or parsed.markdown), source="remote",
-            )
-    if parsed.markdown.strip():
-        markdown = normalize_text(parsed.markdown)
-        return ParsedDocument(
-            doc_id=doc_id, blocks=blocks_from_markdown(markdown),
-            text=markdown, source="remote",
-        )
-    if parsed.text.strip():
-        text = normalize_text(parsed.text)
-        return ParsedDocument(
-            doc_id=doc_id, blocks=blocks_from_text(text), text=text, source="remote",
-        )
-    return None
+    """Providers return plain text; block types are inferred from it."""
+    if not parsed.text.strip():
+        return None
+    text = normalize_text(parsed.text)
+    return ParsedDocument(
+        doc_id=doc_id, blocks=blocks_from_text(text), text=text, source="remote",
+    )
 
 
 def _from_local(path: Path, doc_id: str) -> ParsedDocument:

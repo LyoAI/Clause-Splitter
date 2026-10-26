@@ -1,11 +1,6 @@
-"""条款义务拆分 —— 简单(批量 One-shot) / 复杂(逐条 ReAct).
+"""条款义务拆分 —— 简单批次走批量 One-shot,复杂批次逐条 ReAct 重试.
 
-批次按复杂度分派:
-- 简单批次:同批条款打包成一次 LLM 调用,输出合并 YAML。
-- 复杂批次:逐条款多步推理,验证失败反馈重试(≤ max_react_iterations)。
-
-LLM 调用统一走 ``ainvoke``(新 facade),无 LLM 时返回空列表(拆分必须依赖 LLM)。
-"""
+无 LLM 时返回空列表。"""
 
 from __future__ import annotations
 
@@ -23,26 +18,12 @@ from clause_splitter.utils.json_utils import parse_json_from_text
 logger = get_logger()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# 批次分派
-# ═══════════════════════════════════════════════════════════════════════
-
-
 async def decompose_batch(
     batch: list[dict[str, Any]],
     document_name: str = "",
     llm: Any = None,
 ) -> list[dict[str, Any]]:
-    """拆分一个批次,返回义务记录 dict 列表。
-
-    Args:
-        batch: 条款 dict 列表(含 article_id / full_text / complexity_score)。
-        document_name: 文档名称,填入"文件名称"字段。
-        llm: LLM 实例(需要 ``ainvoke``);None 时返回空列表并告警。
-
-    Returns:
-        list[ClauseObligation dict]。
-    """
+    """拆分一个批次,返回义务记录 dict 列表。"""
     if llm is None:
         logger.warning("decompose_batch: llm 为 None,跳过批次 %d 条条款", len(batch))
         return []
@@ -57,11 +38,6 @@ async def decompose_batch(
         return await _decompose_complex(batch, document_name, llm)
     logger.info("简单拆分: 批次内 %d 条条款 (批量)", len(batch))
     return await _decompose_simple(batch, document_name, llm)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# 简单批量
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def _batch_user_prompt(articles: list[dict[str, Any]]) -> str:
@@ -104,11 +80,6 @@ async def _decompose_simple(
     # 条款编号由 YAML 自身标注,空 article_id 仅作回退
     parsed = _parse_llm_output_to_obligations(content, "", document_name)
     return _validate_records(parsed)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# 复杂逐条(ReAct 多步 + 反馈重试)
-# ═══════════════════════════════════════════════════════════════════════
 
 
 async def _decompose_complex(
@@ -170,11 +141,6 @@ async def _decompose_complex(
     return new_obligations
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# LLM 调用封装
-# ═══════════════════════════════════════════════════════════════════════
-
-
 async def _llm_call(llm: Any, messages: list[dict[str, Any]]) -> str:
     """调用 LLM 并返回文本内容(兼容 ainvoke / invoke)。"""
     if hasattr(llm, "ainvoke"):
@@ -198,11 +164,6 @@ def _validate_records(
             if not silent:
                 logger.warning("义务验证失败: %s", e)
     return valid
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Schema 验证工具
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def validate_obligation_schema(obligations_json: str) -> dict[str, Any]:
@@ -231,11 +192,6 @@ def validate_obligation_schema(obligations_json: str) -> dict[str, Any]:
     return {"all_valid": len(errors) == 0, "total": len(data), "valid_count": valid_count, "errors": errors}
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# LLM 输出解析 / 字段标准化
-# ═══════════════════════════════════════════════════════════════════════
-
-
 def _parse_llm_output_to_obligations(
     content: str, article_id: str, document_name: str,
 ) -> list[dict[str, Any]]:
@@ -244,7 +200,7 @@ def _parse_llm_output_to_obligations(
 
     obligations: list[dict[str, Any]] = []
 
-    # 尝试1: 直接 YAML 解析
+    # 1) direct YAML
     try:
         parsed = yaml.safe_load(content)
         if isinstance(parsed, list):
@@ -258,7 +214,7 @@ def _parse_llm_output_to_obligations(
     except Exception:
         pass
 
-    # 尝试2: JSON 解析
+    # 2) JSON
     try:
         json_data = parse_json_from_text(content)
         if isinstance(json_data, list):
@@ -275,7 +231,7 @@ def _parse_llm_output_to_obligations(
     except Exception:
         pass
 
-    # 尝试3: 提取 YAML 块
+    # 3) fenced YAML block
     yaml_match = re.search(r"```(?:yaml)?\s*([\s\S]+?)\s*```", content)
     if yaml_match:
         try:
@@ -294,8 +250,8 @@ def _parse_llm_output_to_obligations(
 def _normalize_obligation(
     raw: dict[str, Any], article_id: str, document_name: str,
 ) -> dict[str, Any] | None:
-    """将 SKILL.md YAML 格式的 dict 标准化为 ClauseObligation 字段。"""
-    # 处理 "记录1: { ... }" 嵌套格式
+    """将 LLM 结构化 dict 标准化为 ClauseObligation 字段。"""
+    # Unwrap the "记录1: {...}" nesting.
     for key in list(raw.keys()):
         if key.startswith("记录") and isinstance(raw[key], dict):
             raw = raw[key]

@@ -1,4 +1,4 @@
-"""MongoDB connection settings (PingAn managed cluster, password via CyberArk)."""
+"""MongoDB connection settings (password can come from CyberArk)."""
 
 import os
 from dataclasses import dataclass

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Iterable
 
 
 @dataclass
@@ -141,28 +141,3 @@ def blocks_from_markdown(text: str) -> list[Block]:
 def _is_table_separator(line: str) -> bool:
     cells = [c.strip() for c in line.strip("|").split("|")]
     return bool(cells) and all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c)
-
-
-def blocks_from_remote(rows: list[dict[str, Any]], doc_id: str = "") -> list[Block]:
-    """Convert a remote ``blocks`` array into :class:`Block` objects."""
-    blocks: list[Block] = []
-    for i, row in enumerate(rows):
-        if not isinstance(row, dict):
-            continue
-        text = str(row.get("text") or row.get("content") or "").strip()
-        if not text:
-            continue
-        level = row.get("level")
-        try:
-            level = int(level) if level is not None else None
-        except (TypeError, ValueError):
-            level = None
-        blocks.append(Block(
-            block_id=str(row.get("block_id") or f"{doc_id or 'd'}t{i}"),
-            type=str(row.get("type") or ("title" if level else "paragraph")),
-            text=text,
-            page=int(row.get("page") or 0),
-            order=i,
-            level=level,
-        ))
-    return blocks

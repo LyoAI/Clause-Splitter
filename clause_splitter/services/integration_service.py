@@ -1,11 +1,7 @@
-"""Backend push integration — receive doc pushes, dispatch the chain, call back.
+"""Backend push integration — receive docs, dispatch the chain, call back.
 
-The system backend pushes regulation documents here (``POST /regulations/push``)
-and receives the final result through the ESG callback (or pulls
-``GET /regulations/{docId}/result``). Both transports carry the same flat
-legacy-compatible payload: document fields at the top level, clause fields in
-``data[]``. Every shape assumption lives in this module — adjusting them must
-not touch the pipeline.
+The callback and the docId pull share one flat payload shape; all wire-format
+assumptions live here, not in the pipeline.
 """
 
 from __future__ import annotations
@@ -41,7 +37,7 @@ def _title_from_url(url: str) -> str:
 
 
 def _fetch(url: str) -> bytes:
-    """http(s) via requests; anything else = a local mount path (old-version parity)."""
+    """http(s) via requests; otherwise treat it as a local path."""
     if urlparse(url).scheme in ("http", "https"):
         resp = requests.get(url, timeout=DOWNLOAD_TIMEOUT_S)
         resp.raise_for_status()
@@ -50,8 +46,7 @@ def _fetch(url: str) -> bytes:
 
 
 def _sniff_suffix(data: bytes) -> str:
-    """Suffix from magic bytes — pushed filenames/URLs lie about the format
-    (the old service saw .pdf names carrying docx bodies)."""
+    """Suffix from magic bytes — pushed filenames often lie about the format."""
     if data.startswith(b"%PDF-"):
         return ".pdf"
     if data.startswith(b"PK\x03\x04"):
@@ -76,8 +71,7 @@ def _materialize_text(text: str) -> bytes:
 
 
 async def _ensure_content(args: dict[str, Any]) -> tuple[bytes, str, str]:
-    """(content, filename, title) — doclobsUrl first (old-version parity),
-    docContent as the fallback when it is absent or the download fails."""
+    """(content, filename, title) — prefer doclobsUrl, fall back to docContent."""
     doc_content = str(args.get("docContent") or "").strip()
     url = str(args.get("doclobsUrl") or "").strip()
     if not url and not doc_content:
@@ -101,8 +95,7 @@ async def _ensure_content(args: dict[str, Any]) -> tuple[bytes, str, str]:
 async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
     """One backend push → one regulation + one chain job (manual skips stage 1).
 
-    Accepts both ``{"args": {...}}`` and a flat field map — the wrapper is a
-    draft detail pending the backend spec.
+    Accepts both ``{"args": {...}}`` and a flat field map.
     """
     args = body.get("args") if isinstance(body.get("args"), dict) else body
     if not args.get("docId"):
@@ -232,7 +225,7 @@ def _relation_terms(row: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _clause_item(row: dict[str, Any], doc_id: str) -> dict[str, Any]:
-    """One ``data[]`` element — legacy clause fields plus the new analysis ones."""
+    """One ``data[]`` element — clause text plus analysis fields."""
     from clause_splitter.pipeline.doc_profile import term_keywords
 
     order = str(int(row.get("seq", 0)))

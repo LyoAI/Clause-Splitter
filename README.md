@@ -30,7 +30,7 @@ api/                    FastAPI app (PingAn http-server-template style)
   base_fastapi.py       app, {code,status,data,msg} envelope, request_id, loguru
   deps.py               auth + serializers        routes/{regulations,library,jobs}.py
 clause_splitter/
-  rag/                  external RAG client — types / protocols / HTTP impl (the only retrieval dep)
+  rag/                  external RAG abstraction (RagService) + providers/ (the only retrieval dep)
   parsing/              source document → blocks (remote parse first, local text fallback)
   agent/                in-repo ReAct agent + tool registry over the RAG service
   split/                split ladder (LLM scheme → headings → chunker) + per-article chunker
@@ -96,25 +96,26 @@ review).
 ## Retrieval (external RAG service)
 
 Parsing, chunking, indexing and search all run in an **external HTTP service**.
-This repo ships only the client (`clause_splitter/rag/`) and the wire contract
-it targets (`assets/rag-service-contract.md`). Point `RAG_API_BASE` at the
-service (local dev: your own chillrag HTTP service, e.g. `http://127.0.0.1:8000`);
-`RAG_API_KEY` is sent as a Bearer token.
+Business code depends only on the `RagService` interface
+(`clause_splitter/rag/base.py`); the configured implementation is a provider
+(`RAG_PROVIDER`, currently `chillrag`) and owns every wire detail. Set
+`RAG_API_BASE` (local dev: `http://127.0.0.1:9022`) plus `RAG_API_USER` /
+`RAG_API_PASSWORD`.
 
-- Split sends the document to `POST /parse`; when the service is unavailable or
-  returns nothing usable, `PARSE_FALLBACK=local` extracts plain text locally
+- Split sends the document to the provider's `parse`; when the service is
+  unavailable or unsupported, `PARSE_FALLBACK=local` extracts plain text locally
   (pdfplumber / python-docx / openpyxl / md / txt). `structure.json` records the
   chosen path as `parse_source`.
-- Internal-library uploads forward to `POST /documents`; Mongo keeps a mirror
-  row (remote doc id, chunk count, state). `POST /library/index` re-ingests every
-  stored file — also the recovery path after a service outage.
-- The agent picks per turn from `knowledge_search`, optional `get_context` /
-  `get_materials` (bound only when the service advertises them) and `calculate`.
-  Grounding resolves claimed chunk ids from the run's retrieval cache.
+- Internal-library uploads forward to `ingest`; Mongo keeps a mirror row (remote
+  doc id, chunk count, state). `POST /library/index` re-ingests every stored
+  file — also the recovery path after a service outage.
+- The agent picks per turn from `knowledge_search`, `get_context`,
+  `get_materials` and `calculate`. Grounding resolves claimed chunk ids from the
+  run's retrieval cache.
 
-When the internal team's API differs, adapt request/response mapping in
-`clause_splitter/rag/client.py` only — business code, split and output shape
-stay unchanged.
+To target a different service, add a provider under
+`clause_splitter/rag/providers/` and register it in `_PROVIDERS`; business code,
+split and output shape stay unchanged. See `assets/rag-service-contract.md`.
 
 ## Run
 
@@ -127,10 +128,11 @@ uv run python serving.py              # 0.0.0.0:18998
 docker build -t clause-splitter . && bash docker_cmd.sh
 ```
 
-Copy `.env.example` → `.env` for LLM keys and service knobs. Key settings
+Create a `.env` (gitignored) with the LLM keys and service knobs. Key settings
 (env-overridable): `DATA_DIR`, `MONGO_*`, `API_KEY`, `JOB_WORKERS`,
 `COMPARE_CONCURRENCY`, `SEARCH_TOP_K`, `REVIEW_FILTER_RELEVANCE`,
-`DOC_PROFILE_TIMEOUT_S`, `COMPANY_PROFILE`, `RAG_API_BASE`, `RAG_API_KEY`,
+`DOC_PROFILE_TIMEOUT_S`, `COMPANY_PROFILE`, `RAG_PROVIDER`, `RAG_API_BASE`,
+`RAG_API_USER`, `RAG_API_PASSWORD`, `RAG_CORPUS`, `RAG_PARSE_CORPUS`,
 `RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `PARSE_FALLBACK`.
 
 ## Smoke test

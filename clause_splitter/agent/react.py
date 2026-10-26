@@ -12,7 +12,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any
 
 from clause_splitter.llm.provider.base import LLMResponse, ToolCallRequest
 from clause_splitter.utils import get_logger
@@ -20,6 +20,9 @@ from clause_splitter.utils import get_logger
 from .registry import ToolRegistry
 
 logger = get_logger()
+
+_MAX_TOKENS = 4096
+_TOOL_CONCURRENCY = 4
 
 
 @dataclass
@@ -58,33 +61,20 @@ class ReActAgent:
         *,
         system_prompt: str,
         force_answer_msg: str,
-        max_tool_calls: int | None = None,
-        temperature: float = 0.0,
-        max_completion_tokens: int = 4096,
-        tool_concurrency: int = 4,
-        user_prompt: Callable[[str], str] | None = None,
+        max_tool_calls: int,
     ) -> None:
         self.llm = llm
         self.tools = tools
         self.system_prompt = system_prompt
         self.force_answer_msg = force_answer_msg
         self.max_tool_calls = max_tool_calls
-        self.temperature = temperature
-        self.max_completion_tokens = max_completion_tokens
-        self.tool_concurrency = tool_concurrency
-        self.user_prompt = user_prompt
 
-    async def arun(
-        self, question: str, history: list[dict[str, Any]] | None = None
-    ) -> AgentResult:
+    async def arun(self, question: str) -> AgentResult:
         """Run one episode for ``question``."""
-        messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
-        for turn in history or []:
-            messages.append({"role": turn["role"], "content": turn["content"]})
-        messages.append({
-            "role": "user",
-            "content": self.user_prompt(question) if self.user_prompt else question,
-        })
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": question},
+        ]
         trajectory: list[AgentTurn] = []
         total_tokens = 0
         num_tool_calls = 0
@@ -95,8 +85,8 @@ class ReActAgent:
             resp = await self.llm.ainvoke(
                 messages,
                 tools=tools,
-                temperature=self.temperature,
-                max_completion_tokens=self.max_completion_tokens,
+                temperature=0.0,
+                max_completion_tokens=_MAX_TOKENS,
             )
             total_tokens += resp.usage.get("total_tokens", 0)
             if resp.finish_reason == "error":
@@ -112,11 +102,8 @@ class ReActAgent:
             if not resp.has_tool_calls:
                 break
 
-            if self.max_tool_calls is None:
-                executed = resp.tool_calls
-            else:
-                executed = resp.tool_calls[: max(self.max_tool_calls - num_tool_calls, 0)]
-            sem = asyncio.Semaphore(self.tool_concurrency)
+            executed = resp.tool_calls[: max(self.max_tool_calls - num_tool_calls, 0)]
+            sem = asyncio.Semaphore(_TOOL_CONCURRENCY)
 
             async def _run_call(tc: ToolCallRequest) -> AgentTurn:
                 async with sem:
@@ -129,9 +116,7 @@ class ReActAgent:
                 trajectory.append(turn)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": turn.tool_result})
 
-            if self.max_tool_calls is not None and (
-                num_tool_calls >= self.max_tool_calls or len(executed) < len(resp.tool_calls)
-            ):
+            if num_tool_calls >= self.max_tool_calls or len(executed) < len(resp.tool_calls):
                 messages[-1]["tool_calls"] = [_tool_call_dict(tc) for tc in executed]
                 tools = None
                 messages.append({"role": "user", "content": self.force_answer_msg})

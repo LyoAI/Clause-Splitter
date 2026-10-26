@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 
-from clause_splitter.agent import AgentTurn
-from clause_splitter.compare.episode import EpisodeResult, ExternalClause
-from clause_splitter.compare.ground import _segment_label, ground_episode
+from clause_splitter.agent import AgentResult, AgentTurn
+from clause_splitter.compare.episode import ExternalClause
+from clause_splitter.compare.ground import ground_episode
 from clause_splitter.models import CoverageStatus
 from clause_splitter.rag import Chunk
+from clause_splitter.utils import segment_label
 
 EXT = ExternalClause(document_name="外规", clause_number="第一条", full_text="测试条款")
 
@@ -53,7 +54,7 @@ def _mini_store() -> _Lookup:
 
 
 def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试", remedy="测试",
-               extra: dict | None = None) -> EpisodeResult:
+               extra: dict | None = None) -> AgentResult:
     """构造一个 agent episode:轨迹只返回 seen_chunk_ids,答案声称 claimed_ids。
 
     ``extra`` 可并入答案 JSON(覆盖/新增键),用于测试内化判定等新字段透传。
@@ -80,7 +81,10 @@ def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试",
         ensure_ascii=False,
     )
     raw = f"<answer>{answer_body}</answer>"
-    return EpisodeResult(question="q", raw_answer=raw, trajectory=trajectory)
+    return AgentResult(
+        question="q", answer=raw, trajectory=trajectory,
+        num_tool_calls=len(trajectory), total_tokens=0, terminated="answer",
+    )
 
 
 def test_fake_claimed_id_downgrades_to_missing():
@@ -88,9 +92,9 @@ def test_fake_claimed_id_downgrades_to_missing():
     store = _mini_store()
 
     r = ground_episode(_mk_result("完全覆盖", [FAKE_ID], {FAKE_ID: "quote"}, [REAL_ID]), store, EXT)
-    assert r["status"] == CoverageStatus.NOT_COVERED
-    assert "降级" in r["analysis"]
-    assert r["matched_internal_id"] is None
+    assert r.status == CoverageStatus.NOT_COVERED
+    assert "降级" in r.analysis
+    assert r.matched_internal_id is None
 
 
 def test_real_id_outside_seen_set_downgrades():
@@ -98,7 +102,7 @@ def test_real_id_outside_seen_set_downgrades():
     store = _mini_store()
 
     r = ground_episode(_mk_result("部分覆盖", [REAL_ID], {REAL_ID: "q"}, [FAKE_ID]), store, EXT)
-    assert r["status"] == CoverageStatus.NOT_COVERED
+    assert r.status == CoverageStatus.NOT_COVERED
 
 
 def test_groundable_claim_keeps_coverage():
@@ -106,9 +110,9 @@ def test_groundable_claim_keeps_coverage():
     store = _mini_store()
 
     r = ground_episode(_mk_result("部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID]), store, EXT)
-    assert r["status"] == CoverageStatus.PARTIALLY_COVERED
-    assert r["matched_internal_id"] == REAL_ID
-    assert r["matched_internal_source_text"] == "数据处理者应当建立数据安全管理制度。"  # store 原文,非 agent 改写
+    assert r.status == CoverageStatus.PARTIALLY_COVERED
+    assert r.matched_internal_id == REAL_ID
+    assert r.matched_internal_source_text == "数据处理者应当建立数据安全管理制度。"  # store 原文,非 agent 改写
 
 
 def test_missing_status_passes_through():
@@ -116,8 +120,8 @@ def test_missing_status_passes_through():
     store = _mini_store()
 
     r = ground_episode(_mk_result("缺失", [], {}, [REAL_ID]), store, EXT)
-    assert r["status"] == CoverageStatus.NOT_COVERED
-    assert r["matched_internal_id"] is None
+    assert r.status == CoverageStatus.NOT_COVERED
+    assert r.matched_internal_id is None
 
 
 def test_not_covered_empty_analysis_falls_back():
@@ -129,13 +133,10 @@ def test_not_covered_empty_analysis_falls_back():
     store = _mini_store()
 
     r = ground_episode(_mk_result("缺失", [], {}, [], analysis="", remedy=""), store, EXT)
-    assert r["status"] == CoverageStatus.NOT_COVERED
-    assert r["analysis"].strip()  # 回填缺省文案,非空
+    assert r.status == CoverageStatus.NOT_COVERED
+    assert r.analysis.strip()  # 回填缺省文案,非空
 
-    from clause_splitter.models import MatchResult
-
-    m = MatchResult(**r)  # 不再抛 validation error
-    assert m.analysis
+    assert r.analysis
 
 
 def test_grounded_empty_analysis_still_nonempty():
@@ -146,8 +147,8 @@ def test_grounded_empty_analysis_still_nonempty():
         _mk_result("完全覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID], analysis=""),
         store, EXT,
     )
-    assert r["analysis"].strip()
-    assert r["analysis"].startswith("承接内规条款:")
+    assert r.analysis.strip()
+    assert r.analysis.startswith("承接内规条款:")
 
 
 # ── _segment_label 编号修正回归 ─────────────────────────────────────────
@@ -161,25 +162,25 @@ def _chunk(chunk_id: str, text: str, section: str = "", meta: dict | None = None
 def test_segment_label_excel_leaf_no_separator():
     """Excel 内规库 section 直接是 "第一条"(无 ` > ` 分隔符) → 返回 "第一条",
     而不是 0 起始的 chunk 序号(历史偏移 bug)。"""
-    assert _segment_label(_chunk("网络数据安全管理条例#0", "第一条 数据安全…", section="第一条")) == "第一条"
-    assert _segment_label(_chunk("网络数据安全管理条例#1", "第二条 数据出境…", section="第二条")) == "第二条"
+    assert segment_label(_chunk("网络数据安全管理条例#0", "第一条 数据安全…", section="第一条")) == "第一条"
+    assert segment_label(_chunk("网络数据安全管理条例#1", "第二条 数据出境…", section="第二条")) == "第二条"
 
 
 def test_segment_label_path_takes_last_leaf():
     """章节路径取末级标题。"""
-    assert _segment_label(_chunk("doc#0", "第三条…", section="第一章 总则 > 第三条")) == "第三条"
+    assert segment_label(_chunk("doc#0", "第三条…", section="第一章 总则 > 第三条")) == "第三条"
 
 
 def test_segment_label_no_section_extracts_article_from_text():
     """无 section 时从原文开头提取 "第X条"。"""
-    assert _segment_label(_chunk("doc#5", "第三条　处理者应当…", section="")) == "第三条"
-    assert _segment_label(_chunk("doc#5", "第二十条　…", section="")) == "第二十条"
+    assert segment_label(_chunk("doc#5", "第三条　处理者应当…", section="")) == "第三条"
+    assert segment_label(_chunk("doc#5", "第二十条　…", section="")) == "第二十条"
 
 
 def test_segment_label_fallback_is_1based():
     """既无 section 也无条款号 → 回退 1 起始段落号(第N段),不再显示 0。"""
-    assert _segment_label(_chunk("doc#0", "无编号的一段文字", section="")) == "第1段"
-    assert _segment_label(_chunk("doc#8", "无编号的一段文字", section="")) == "第9段"
+    assert segment_label(_chunk("doc#0", "无编号的一段文字", section="")) == "第1段"
+    assert segment_label(_chunk("doc#8", "无编号的一段文字", section="")) == "第9段"
 
 
 # ── 内化判定(前置)/ 差异说明(episode) 透传 ─────────────────────────────
@@ -214,31 +215,28 @@ def test_ground_episode_passes_through_pre_classified_internalization():
         ),
     )
     # 前置判定优先级高于 episode 输出。
-    assert r["clause_type"] == "义务性条款"
-    assert r["internalization_decision"] == "需要内化"
-    assert r["internalization_reason"] == "外规为义务性条款且涉及核心业务"
+    assert r.clause_type == "义务性条款"
+    assert r.internalization_decision == "需要内化"
+    assert r.internalization_reason == "外规为义务性条款且涉及核心业务"
     # 差异说明仍来自 episode(部分覆盖必须写差异)。
-    assert r["difference_analysis"].startswith("外规要求加密")
+    assert r.difference_analysis.startswith("外规要求加密")
     # 覆盖判定本身不受新字段影响
-    assert r["status"] == CoverageStatus.PARTIALLY_COVERED
+    assert r.status == CoverageStatus.PARTIALLY_COVERED
 
 
 def test_ground_episode_missing_new_fields_defaults_empty():
     """未做前置判定(ext 字段空)/旧答案 → 内化字段回空串,MatchResult 校验不炸。"""
     store = _mini_store()
     r = ground_episode(_mk_result("缺失", [], {}, [], analysis="缺失原因", remedy=""), store, EXT)
-    assert r["clause_type"] == ""
-    assert r["internalization_decision"] == ""
-    assert r["internalization_reason"] == ""
-    assert r["difference_analysis"] == ""
-    assert r["core_regulatory_requirements"] == ""
+    assert r.clause_type == ""
+    assert r.internalization_decision == ""
+    assert r.internalization_reason == ""
+    assert r.difference_analysis == ""
+    assert r.core_regulatory_requirements == ""
     # status=缺失 且 agent 未给整改建议 → 缺省建议新建/修订内规条款(不落空)。
     from clause_splitter.compare.ground import _NOT_COVERED_REMEDY
-    assert r["remedy_suggestion"] == _NOT_COVERED_REMEDY
-    from clause_splitter.models import MatchResult
-
-    m = MatchResult(**r)
-    assert m.clause_type == "" and m.internalization_decision == "" and m.difference_analysis == ""
+    assert r.remedy_suggestion == _NOT_COVERED_REMEDY
+    assert r.clause_type == "" and r.internalization_decision == "" and r.difference_analysis == ""
 
 
 def test_ensure_adopted_in_candidates_injects_grounded_chunks():
@@ -285,8 +283,8 @@ def test_ground_episode_passes_through_core_regulatory_requirements():
         ),
         store, EXT,
     )
-    assert r["core_regulatory_requirements"] == "1）、建立数据分类分级制度\n2）、实施数据安全管理"
-    assert r["status"] == CoverageStatus.FULLY_COVERED
+    assert r.core_regulatory_requirements == "1）、建立数据分类分级制度\n2）、实施数据安全管理"
+    assert r.status == CoverageStatus.FULLY_COVERED
 
 
 def test_ground_episode_passes_through_remedy_suggestion():
@@ -299,8 +297,8 @@ def test_ground_episode_passes_through_remedy_suggestion():
         ),
         store, EXT,
     )
-    assert r["remedy_suggestion"] == "1）、补充访问控制要求\n2）、加严数据存储标准"
-    assert r["status"] == CoverageStatus.PARTIALLY_COVERED
+    assert r.remedy_suggestion == "1）、补充访问控制要求\n2）、加严数据存储标准"
+    assert r.status == CoverageStatus.PARTIALLY_COVERED
 
 
 def test_ground_episode_normalizes_preventive_to_need():
@@ -310,8 +308,8 @@ def test_ground_episode_normalizes_preventive_to_need():
         _mk_result("缺失", [], {}, []),
         store, _ext_with_intl(internalization_decision="预防性内化"),
     )
-    assert r["internalization_decision"] == "需要内化"
-    assert r["clause_type"] == "义务性条款"  # 其余字段原样透传
+    assert r.internalization_decision == "需要内化"
+    assert r.clause_type == "义务性条款"  # 其余字段原样透传
 
 
 def test_ground_episode_tolerates_non_str_diff_analysis():
@@ -321,11 +319,11 @@ def test_ground_episode_tolerates_non_str_diff_analysis():
         _mk_result("缺失", [], {}, [], extra={"difference_analysis": 123}),
         store, EXT,
     )
-    assert r["difference_analysis"] == ""
+    assert r.difference_analysis == ""
     # 前置判定字段即使 ext 填了非 str 也宽容回空串(防脏数据)。
     r2 = ground_episode(
         _mk_result("缺失", [], {}, []),
         store, _ext_with_intl(clause_type=123, internalization_decision=None),
     )
-    assert r2["clause_type"] == ""
-    assert r2["internalization_decision"] == ""
+    assert r2.clause_type == ""
+    assert r2.internalization_decision == ""

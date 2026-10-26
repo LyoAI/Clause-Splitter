@@ -1,15 +1,9 @@
 """LLM facade + factory, configured by per-model YAML.
 
-``LLM(model_name, provider_type)`` reads ``config/llm/<model_name>.yaml`` and
-builds the provider under the ``provider_type`` key (``openai:`` / ``pingan:``).
-The agent talks only to ``LLM`` — never a provider directly — so the transport
-is swappable behind the shared ``LLMResponse`` interface. ``get_llm()`` is the
-thin factory equivalent of the constructor.
-
-Every provider call uses keyword arguments. Provider signatures legitimately
-differ — PingAn inserts ``max_context_len`` between the ABC's
-``max_completion_tokens`` and ``temperature`` — so positional binding would
-mis-route values; keywords make the facade immune to that.
+``LLM(model_name, provider_type)`` builds the provider section from
+``config/llm/<model_name>.yaml``. Callers depend only on the facade, never a
+provider directly. Provider calls use keyword arguments because signatures
+differ between providers.
 """
 
 from __future__ import annotations

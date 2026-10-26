@@ -1,4 +1,4 @@
-"""Runtime environment identifiers (from the PingAn http-server template)."""
+"""Runtime environment identifiers."""
 
 import os
 from dotenv import load_dotenv

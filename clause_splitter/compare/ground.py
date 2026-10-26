@@ -1,15 +1,9 @@
 """Grounding — turn the agent's verdict into a verifiable MatchResult.
 
-Hard-learned lesson: the "batch 0% coverage" bug — the agent claimed coverage
-but cited internal-clause IDs that never appeared in retrieval. Three lines of
-defense:
-1. The answer contract only allows chunk_ids seen in the trajectory
-   (prompts/analysis_agent.md iron rule).
-2. ``ground_episode`` hard-verifies: every claimed id must be ∈ seen set AND
-   ∈ store; unverifiable claims are dropped.
-3. A coverage verdict (full/partial) with no grounded claim degrades to
-   缺失, with the analysis wholesale replaced by the downgrade text so no
-   invented citation can leak into the gap report.
+Every claimed internal chunk id must appear in the retrieval trajectory AND
+resolve from this run's chunk cache. A coverage verdict without a groundable
+claim degrades to 缺失 with the analysis replaced, so hallucinated citations
+never reach the gap report.
 """
 
 from __future__ import annotations
@@ -18,10 +12,12 @@ import json
 import re
 from typing import Any
 
-from clause_splitter.models import CoverageStatus, normalize_internalization_decision
-from clause_splitter.rag.protocols import ChunkLookup
-from clause_splitter.utils import get_logger
-from .episode import EpisodeResult, ExternalClause
+from clause_splitter.agent import AgentResult
+from clause_splitter.models import CoverageStatus, MatchResult, normalize_internalization_decision
+from clause_splitter.rag import ChunkLookup
+from clause_splitter.utils import get_logger, norm_str, segment_label
+
+from .episode import ExternalClause
 
 logger = get_logger()
 
@@ -39,10 +35,7 @@ _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 
 
 def parse_answer_json(raw_answer: str) -> dict[str, Any] | None:
-    """Extract the JSON from the final message's ``<answer>…</answer>`` block.
-
-    Returns None on failure (caller decides how to degrade).
-    """
+    """Extract the JSON from the final message's ``<answer>…</answer>`` block."""
     m = _ANSWER_RE.search(raw_answer)
     body = m.group(1).strip() if m else raw_answer.strip()
     if not body:
@@ -55,11 +48,7 @@ def parse_answer_json(raw_answer: str) -> dict[str, Any] | None:
 
 
 def collect_seen_chunk_ids(trajectory: list) -> set[str]:
-    """Union the chunk_ids across all ``*_search`` / ``get_context`` tool results.
-
-    This is grounding's candidate universe — any chunk_id never returned by a
-    tool is treated as a hallucination.
-    """
+    """Union the chunk_ids across all ``*_search`` / ``get_context`` tool results."""
     seen: set[str] = set()
     for turn in trajectory:
         if not turn.tool_name.endswith("_search") and turn.tool_name != "get_context":
@@ -77,22 +66,12 @@ def collect_seen_chunk_ids(trajectory: list) -> set[str]:
 
 
 def ground_episode(
-    result: EpisodeResult,
+    result: AgentResult,
     lookup: ChunkLookup,
     ext: ExternalClause,
-) -> dict[str, Any]:
-    """Convert one episode into a verifiable MatchResult dict.
-
-    Args:
-        result: The finished episode.
-        lookup: Chunks retrieved in this run (single source of text).
-        ext: External clause (fills provenance + source text).
-
-    Returns:
-        MatchResult fields; coverage claims that cannot be grounded degrade
-        to 缺失.
-    """
-    parsed = parse_answer_json(result.raw_answer)
+) -> MatchResult:
+    """Convert one episode into a MatchResult, degrading ungrounded claims."""
+    parsed = parse_answer_json(result.answer)
     status = _norm_status(parsed.get("status") if parsed else None)
     claimed_ids = _norm_claimed_ids(parsed.get("matched_internal_clause_ids") if parsed else None)
     analysis = str(parsed.get("analysis") or "") if parsed else ""
@@ -108,33 +87,29 @@ def ground_episode(
         "matched_internal_clause_number": "",
         "matched_internal_source_text": "",
         "analysis": analysis,
-        # Internalization fields are produced by the pre-retrieval stage into
-        # ext — the episode no longer emits them. Missing/non-str → "".
-        "clause_type": _norm_str(ext.clause_type),
-        "internalization_decision": normalize_internalization_decision(_norm_str(ext.internalization_decision)),
-        "internalization_reason": _norm_str(ext.internalization_reason),
-        # difference_analysis / core_regulatory_requirements / remedy_suggestion
-        # still come from the episode (differences depend on the comparison;
-        # core requirements extract obligations; remedies target gaps).
-        "difference_analysis": _norm_str(parsed.get("difference_analysis") if parsed else ""),
-        "core_regulatory_requirements": _norm_str(parsed.get("core_regulatory_requirements") if parsed else ""),
-        "remedy_suggestion": _norm_str(parsed.get("remedy_suggestion") if parsed else ""),
+        "clause_type": norm_str(ext.clause_type),
+        "internalization_decision": normalize_internalization_decision(
+            norm_str(ext.internalization_decision)
+        ),
+        "internalization_reason": norm_str(ext.internalization_reason),
+        "difference_analysis": norm_str(parsed.get("difference_analysis") if parsed else ""),
+        "core_regulatory_requirements": norm_str(
+            parsed.get("core_regulatory_requirements") if parsed else ""
+        ),
+        "remedy_suggestion": norm_str(parsed.get("remedy_suggestion") if parsed else ""),
     }
 
-    # 缺失: nothing adopted — return as-is (claimed ids are never grounded).
     if status == CoverageStatus.NOT_COVERED:
         if not base["analysis"].strip():
             base["analysis"] = _NOT_COVERED_ANALYSIS
         if not base["remedy_suggestion"].strip():
             base["remedy_suggestion"] = _NOT_COVERED_REMEDY
-        return base
+        return MatchResult(**base)
 
     # A coverage verdict → grounding is mandatory.
     seen = collect_seen_chunk_ids(result.trajectory)
     grounded: list[str] = []
-    evidence: dict[str, str] = {}
     for cid in claimed_ids:
-        # Double hard check: ∈ seen set AND ∈ store; fail either → drop.
         if cid not in seen:
             logger.warning("claim %r not in retrieval trajectory, dropped", cid)
             continue
@@ -143,42 +118,26 @@ def ground_episode(
             logger.warning("claim %r not in store, dropped", cid)
             continue
         grounded.append(cid)
-        # Evidence quotes the store verbatim — never the agent's paraphrase.
-        ev = None
-        if parsed:
-            ev = parsed.get("evidence", {}).get(cid)
-        evidence[cid] = str(ev or chunk.text[:200])
 
     if not grounded:
         logger.warning(
             "ext=%s status=%s with no groundable claim, degrading to missing",
             ext.clause_id, status,
         )
-        return {
-            **base,
-            "status": CoverageStatus.NOT_COVERED,
-            "analysis": _DOWNGRADE_ANALYSIS,
-        }
+        return MatchResult(
+            **{**base, "status": CoverageStatus.NOT_COVERED, "analysis": _DOWNGRADE_ANALYSIS}
+        )
 
-    # The first adopted clause fills the internal-side fields (report display);
-    # the full list goes to matched_internal_clause_ids (review page marks all
-    # of them "✓ adopted"). Chunk layout is hierarchical: doc_id = 制度名,
-    # clause label = last section-path leaf (e.g. "第二十条"), with order
-    # fallback for untitled docs.
     head = lookup.get_chunk(grounded[0])
-    return {
+    return MatchResult(**{
         **base,
-        "status": status,
         "matched_internal_id": grounded[0],
         "matched_internal_document_name": head.doc_id if head else None,
-        "matched_internal_clause_number": _segment_label(head) if head else "",
+        "matched_internal_clause_number": segment_label(head) if head else "",
         "matched_internal_source_text": head.text if head else "",
         "matched_internal_clause_ids": grounded,
         "analysis": _merge_analysis(analysis, grounded, lookup),
-    }
-
-
-# ── normalization helpers ─────────────────────────────────────────────
+    })
 
 
 def _norm_status(value: Any) -> CoverageStatus:
@@ -204,51 +163,14 @@ def _norm_claimed_ids(value: Any) -> list[str]:
     return []
 
 
-def _norm_str(value: Any) -> str:
-    """Lenient str getter: missing / non-str → \"\" so new fields never break a run."""
-    if isinstance(value, str):
-        return value.strip()
-    return ""
-
-
-def _segment_label(chunk) -> str:
-    """The internal chunk's clause/paragraph label.
-
-    Prefers the last leaf of ``meta.section`` ("第三章 数据安全 > 第二十条" →
-    "第二十条"; Excel libraries store "第一条" directly — returned as-is).
-    Without a section, extract a leading "第X条" from the chunk text; last
-    resort is a 1-based paragraph number (``第N段``) aligned with real numbering.
-    """
-    section = str(chunk.meta.get("section", "") or "").strip() if chunk.meta else ""
-    if section:
-        leaf = section.split(" > ")[-1].strip()
-        if leaf:
-            return leaf
-    head = re.match(r"^\s*(第[一二三四五六七八九十百零\d]+条)", chunk.text or "")
-    if head:
-        return head.group(1)
-    if "#" in chunk.chunk_id:
-        order = chunk.chunk_id.rsplit("#", 1)[-1]
-        if order.isdigit():
-            return f"第{int(order) + 1}段"
-    return ""
-
-
 def _merge_analysis(analysis: str, grounded: list[str], lookup: ChunkLookup) -> str:
-    """Fall back to the adopted-clause list when the analysis is empty.
-
-    A non-empty analysis is never appended to — adoption is already shown by
-    the review page's "✓ 采用内规" and the report's 承接内规 column. The
-    fallback renders each grounded chunk_id as ``制度名 第X条`` (same
-    _segment_label numbering as the review page) so 0-based chunk ids
-    ("…#0") never leak into user-facing text.
-    """
+    """Fall back to the adopted-clause list when the analysis is empty."""
     if analysis:
         return analysis
     refs = []
     for cid in grounded:
         chunk = lookup.get_chunk(cid)
         doc = chunk.doc_id if chunk else ""
-        label = _segment_label(chunk) if chunk else ""
+        label = segment_label(chunk) if chunk else ""
         refs.append(f"{doc} {label}".strip() or cid)
     return "承接内规条款: " + ", ".join(refs)

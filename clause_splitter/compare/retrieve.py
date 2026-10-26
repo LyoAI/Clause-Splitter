@@ -15,8 +15,8 @@ import re
 from clause_splitter.config import REVIEW_TOP_K
 from clause_splitter.models import RetrievedCandidate
 from clause_splitter.rag import RagError, RagService
-from clause_splitter.utils import get_logger
-from .ground import _segment_label
+from clause_splitter.utils import get_logger, segment_label
+
 
 logger = get_logger()
 
@@ -175,7 +175,7 @@ def pre_retrieve(
             RetrievedCandidate(
                 chunk_id=h.chunk_id,
                 doc_name=doc_name,
-                clause_label=_segment_label(chunk),
+                clause_label=segment_label(chunk),
                 backend=service.name,
                 score=entry["score"],
                 query=clause_text,

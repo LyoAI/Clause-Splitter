@@ -1,9 +1,7 @@
 """Document-level profile — one LLM call for ``docAbstract`` / ``docKeyword``.
 
-The legacy backend payload carries a document abstract and keyword list. Both
-are produced here with a single document-level call (never per clause);
-``termKeyword`` stays local (jieba). Any failure degrades to deterministic
-fallbacks at payload-build time — it must never fail the chain.
+``termKeyword`` stays local. Failures degrade to deterministic fallbacks and
+never fail the chain.
 """
 
 from __future__ import annotations
@@ -17,9 +15,9 @@ from config.config_app import CONFIG_APP
 
 from clause_splitter.config import DOC_PROFILE_TIMEOUT_S
 from clause_splitter.prompts import load
-from clause_splitter.utils import get_logger
+from clause_splitter.utils import get_logger, norm_str
 from clause_splitter.utils.doc_parser import extract_text
-from ..compare.ground import _norm_str, parse_answer_json
+from ..compare.ground import parse_answer_json
 from .contexts import StageContext
 
 logger = get_logger()
@@ -42,7 +40,7 @@ def parse_profile(content: str) -> dict[str, str] | None:
     parsed = parse_answer_json(content)
     if not isinstance(parsed, dict):
         return None
-    abstract = _norm_str(parsed.get("abstract"))
+    abstract = norm_str(parsed.get("abstract"))
     if not abstract:
         return None
     raw = parsed.get("keywords")
@@ -52,18 +50,14 @@ def parse_profile(content: str) -> dict[str, str] | None:
         raw = []
     keywords: list[str] = []
     for item in raw:
-        word = _norm_str(item)
+        word = norm_str(item)
         if len(word) >= 2 and word not in keywords:
             keywords.append(word)
     return {"abstract": abstract, "keyword": ", ".join(keywords[:10])}
 
 
 async def ensure(ctx: StageContext, texts: list[str] | None = None) -> dict[str, str]:
-    """Generate and persist ``doc_abstract`` / ``doc_keyword`` once per document.
-
-    Safe to call from every chain branch: a missing LLM, empty text, timeout or
-    unparsable answer all return ``{}`` without touching the regulation.
-    """
+    """生成并持久化 ``doc_abstract`` / ``doc_keyword``;失败时返回 ``{}``。"""
     try:
         reg = await ctx.repos.regulations.get(ctx.reg_id) or ctx.regulation
         if reg.get("doc_abstract") and reg.get("doc_keyword"):
@@ -114,9 +108,7 @@ def _sample_text(texts: list[str] | None) -> str:
     return "\n".join(t for t in texts if t).strip()
 
 
-# ── local keyword / abstract fallbacks (no LLM) ────────────────────────
-
-
+# ── local fallbacks (no LLM) ───────────────────────────────────────────
 @lru_cache(maxsize=1024)
 def term_keywords(text: str, top_k: int = 5) -> str:
     """Clause keywords via jieba; empty string when nothing usable."""

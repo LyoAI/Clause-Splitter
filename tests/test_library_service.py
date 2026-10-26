@@ -46,7 +46,7 @@ async def test_upload_survives_an_unavailable_service(tmp_path, monkeypatch):
         repos, runner, service = await _init(tmp_path, monkeypatch)
         service.ingest_error = RagUnavailable("down")
         try:
-            doc, created = await library_service.upload(b"x", "制度.txt")
+            doc, created = await library_service.upload(b"x", "制度.md")
             assert created and doc["remote_state"] == "pending"
             assert doc["chunk_count"] is None
         finally:
@@ -58,8 +58,8 @@ async def test_index_build_reingests_every_row(tmp_path, monkeypatch):
     with data_dir(tmp_path):
         repos, runner, service = await _init(tmp_path, monkeypatch)
         try:
-            await library_service.upload(b"a", "甲.txt")
-            await library_service.upload(b"b", "乙.txt")
+            await library_service.upload(b"a", "甲.md")
+            await library_service.upload(b"b", "乙.md")
             service.ingests.clear()
             service.ingest_error = RagUnavailable("down")  # recovery run
             ctx = StageContext(
@@ -85,8 +85,8 @@ async def test_delete_removes_remote_and_local(tmp_path, monkeypatch):
     with data_dir(tmp_path):
         repos, runner, service = await _init(tmp_path, monkeypatch)
         try:
-            doc, _ = await library_service.upload(b"x", "制度.txt")
-            path = tmp_path / "internal" / "docs" / "制度.txt"
+            doc, _ = await library_service.upload(b"x", "制度.md")
+            path = tmp_path / "internal" / "docs" / "制度.md"
             service.chunks.append(type(service.chunks[0])("x#0", doc["_id"], 0, "x"))
             await library_service.delete_doc(doc["_id"])
             assert service.deletes == [doc["_id"]]
@@ -104,7 +104,7 @@ async def test_index_status_merges_remote_stats(tmp_path, monkeypatch):
     with data_dir(tmp_path):
         repos, runner, service = await _init(tmp_path, monkeypatch)
         try:
-            await library_service.upload(b"x", "制度.txt")
+            await library_service.upload(b"x", "制度.md")
             status = await library_service.index_status()
             assert status["doc_count"] == 1
             assert status["rag"]["available"] is True

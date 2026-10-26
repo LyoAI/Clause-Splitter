@@ -1,9 +1,6 @@
 """ESG open-platform gateway client — token flow + fixed retries.
 
-Parity with the previous-version service (esg_callback.py): client_credentials
-token, ``ret=13012`` → refresh token and retry once, ``ret=13016`` → sleep and
-retry up to ``max_retries``. Sync ``requests`` on purpose; callers wrap in
-``asyncio.to_thread``.
+Sync ``requests`` on purpose; callers wrap calls in ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
@@ -18,7 +15,6 @@ from clause_splitter.utils import get_logger
 
 logger = get_logger()
 
-#: Gateway return codes (previous-version contract).
 RETRY_TOKEN_EXPIRED = "13012"  # refresh token, retry once
 RETRY_TIMEOUT = "13016"  # sleep and retry
 

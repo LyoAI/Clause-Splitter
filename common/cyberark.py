@@ -1,4 +1,4 @@
-"""CyberArk credential vault client (from the PingAn http-server template).
+"""CyberArk credential vault client.
 
 Fetches an encrypted password from the platform and decrypts it (AES-CBC).
 Connection details are overridable via CYBERARK_* environment variables.

@@ -1,15 +1,11 @@
-"""Clause episode — one external clause = one agent episode.
-
-The question carries: 制度名 / section / clause number / clause text plus the
-obligation elements split from the clause (subject / action_verb /
-action_target / obligation_rule / trigger_condition), so the agent can judge
-whether each obligation is adopted by an internal clause.
-"""
+"""One external clause = one agent episode."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+
+from clause_splitter.agent import AgentResult
 
 
 @dataclass
@@ -17,9 +13,8 @@ class ExternalClause:
     """One external clause — the input unit of one comparison.
 
     ``clause_type`` / ``internalization_decision`` / ``internalization_reason``
-    are filled by the pre-internalization stage (before retrieval); empty
-    means not yet judged (conservatively treated as needing internalization
-    and counted in coverage).
+    are filled before retrieval; empty means not yet judged (conservatively
+    treated as needing internalization and counted in coverage).
     """
 
     document_name: str = ""
@@ -36,25 +31,6 @@ class ExternalClause:
         """Global clause id, e.g. '网络数据安全风险评估办法#第一条'."""
         doc = self.document_name or "未命名外规"
         return f"{doc}#{self.clause_number or '全文'}"
-
-
-@dataclass
-class EpisodeResult:
-    """Compare-domain view of an episode — an adapter over ``AgentResult``.
-
-    The agent's ``answer`` is the verbatim final assistant message; the compare
-    side calls it ``raw_answer`` and the ``<answer>`` JSON is parsed by
-    ``ground.parse_answer_json`` (the loop carries no answer parser — the
-    answer contract is business logic and stays clause-side).
-    """
-
-    question: str
-    raw_answer: str
-    trajectory: list  # list[clause_splitter.agent.AgentTurn]
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    num_tool_calls: int = 0
-    total_tokens: int = 0
-    terminated: str = "answer"  # "answer" | "max_tool_calls" | "error"
 
 
 def _obligation_summary(obligations: list[dict[str, Any]], max_items: int = 12) -> str:
@@ -90,15 +66,6 @@ def build_compare_episode_prompt(clause: ExternalClause) -> str:
     )
 
 
-async def run_clause_episode(agent, clause: ExternalClause) -> EpisodeResult:
-    """Run one clause episode and map the result to the compare-domain type."""
-    r = await agent.arun(build_compare_episode_prompt(clause))
-    return EpisodeResult(
-        question=r.question,
-        raw_answer=r.answer,
-        trajectory=r.trajectory,
-        messages=r.messages,
-        num_tool_calls=r.num_tool_calls,
-        total_tokens=r.total_tokens,
-        terminated=r.terminated,
-    )
+async def run_clause_episode(agent, clause: ExternalClause) -> AgentResult:
+    """Run one clause episode (the answer contract is parsed in ``ground``)."""
+    return await agent.arun(build_compare_episode_prompt(clause))

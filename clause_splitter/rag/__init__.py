@@ -1,21 +1,23 @@
-"""External RAG service — the only retrieval dependency of this service.
+"""RAG access: a provider-agnostic interface plus its configured implementation.
 
-There is no local engine and no fake backend in production: parsing, chunking,
-indexing and retrieval all run inside the remote service. The process-wide
-client is created lazily from ``RAG_API_BASE``; tests inject their own
-implementation through :func:`set_rag_service`.
+Business code imports :class:`RagService`; which provider runs is chosen by
+``RAG_PROVIDER``.
 """
 
 from __future__ import annotations
 
 from clause_splitter.config import (
     RAG_API_BASE,
-    RAG_API_KEY,
+    RAG_API_PASSWORD,
+    RAG_API_USER,
+    RAG_CORPUS,
+    RAG_PARSE_CORPUS,
     RAG_PARSE_TIMEOUT_S,
+    RAG_PROVIDER,
     RAG_TIMEOUT_S,
 )
 
-from .client import HttpRagClient
+from .base import ChunkLookup, RagService
 from .errors import (
     RagAuthError,
     RagError,
@@ -24,60 +26,56 @@ from .errors import (
     RagResponseError,
     RagUnavailable,
 )
-from .protocols import RagService
-from .types import (
-    Chunk,
-    CorpusStats,
-    DocInfo,
-    Hit,
-    ParsedDoc,
-    RagCapabilities,
-    Section,
-)
+from .providers.chillrag import ChillRagProvider
+from .types import Chunk, CorpusStats, DocInfo, Hit, ParsedDoc
+
+_PROVIDERS = {
+    "chillrag": lambda: ChillRagProvider(
+        RAG_API_BASE,
+        RAG_API_USER,
+        RAG_API_PASSWORD,
+        timeout_s=RAG_TIMEOUT_S,
+        ingest_timeout_s=RAG_PARSE_TIMEOUT_S,
+        corpus=RAG_CORPUS,
+        parse_corpus=RAG_PARSE_CORPUS,
+    ),
+}
 
 _service: RagService | None = None
 
 
-def build_rag_client() -> RagService:
-    """Build the configured client (empty base URL → a not-configured client)."""
-    return HttpRagClient(
-        RAG_API_BASE,
-        api_key=RAG_API_KEY,
-        timeout_s=RAG_TIMEOUT_S,
-        parse_timeout_s=RAG_PARSE_TIMEOUT_S,
-    )
+def build_rag_service() -> RagService:
+    """Instantiate the provider selected by ``RAG_PROVIDER``."""
+    try:
+        factory = _PROVIDERS[RAG_PROVIDER]
+    except KeyError:
+        raise ValueError(
+            f"未知的 RAG_PROVIDER={RAG_PROVIDER!r}(可选: {', '.join(_PROVIDERS)})"
+        ) from None
+    return factory()
 
 
 def get_rag_service() -> RagService:
     global _service
     if _service is None:
-        _service = build_rag_client()
+        _service = build_rag_service()
     return _service
-
-
-def set_rag_service(service: RagService | None) -> None:
-    """Replace the process-wide service (tests / integration wiring)."""
-    global _service
-    _service = service
 
 
 __all__ = [
     "Chunk",
+    "ChunkLookup",
     "CorpusStats",
     "DocInfo",
     "Hit",
-    "HttpRagClient",
     "ParsedDoc",
     "RagAuthError",
-    "RagCapabilities",
     "RagError",
     "RagNotConfigured",
     "RagNotFound",
     "RagResponseError",
     "RagService",
     "RagUnavailable",
-    "Section",
-    "build_rag_client",
+    "build_rag_service",
     "get_rag_service",
-    "set_rag_service",
 ]

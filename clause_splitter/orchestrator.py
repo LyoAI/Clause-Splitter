@@ -1,9 +1,9 @@
 """Core orchestrator — the single meeting point of engine wiring and pipeline.
 
 1. **Engine wiring (seam)**: the tool registry and ReAct agent are assembled
-   here over the external RAG service. Business code depends only on these
-   products; swapping to the internal team's service only changes
-   ``clause_splitter/rag/client.py``.
+   here over the external RAG service. Business code depends only on
+   ``RagService``; swapping providers only changes
+   ``clause_splitter/rag/providers/`` and ``RAG_PROVIDER``.
 2. **Chain orchestration**: applicability → split → internalization → analysis
    in one job, with the manual-push skip for stage 1 and per-stage progress
    weighting.
@@ -30,13 +30,8 @@ from clause_splitter.utils import get_logger
 logger = get_logger()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Engine wiring
-# ═══════════════════════════════════════════════════════════════════════
-
-
 def build_registry(service: RagService | None = None) -> ToolRegistry:
-    """RAG service → tool registry (search + optional context/materials tools)."""
+    """RAG service → tool registry (search / context / materials)."""
     registry = ToolRegistry(
         service or get_rag_service(),
         top_k=SEARCH_TOP_K,
@@ -58,10 +53,6 @@ def build_agent(llm: Any, registry: ToolRegistry) -> ReActAgent:
         force_answer_msg=load("force_answer"),
     )
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# Chain orchestration (all four stages in one job)
-# ═══════════════════════════════════════════════════════════════════════
 
 #: Chain progress weights per stage (sum = 1.0).
 WEIGHTS = {"applicability": 0.10, "split": 0.15, "internalization": 0.25, "analysis": 0.50}

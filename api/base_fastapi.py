@@ -1,9 +1,8 @@
-"""FastAPI application base: request tracing, unified response envelope, health check.
+"""FastAPI application base: request tracing, unified envelope, health check.
 
-Ported from the PingAn http-server template. Successful responses are wrapped as
-{code, status, data, msg}; errors carry a machine-readable error_code in data.
-Exception: ``GET /regulations/{docId}/result`` returns the flat backend result
-payload directly (identical to the ESG callback body).
+Successful responses are wrapped as {code, status, data, msg}; errors carry a
+machine-readable error_code. ``GET /regulations/{docId}/result`` is the one
+exception — it returns the flat callback payload directly.
 """
 
 from __future__ import annotations

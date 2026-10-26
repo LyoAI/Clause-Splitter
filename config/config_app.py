@@ -36,8 +36,7 @@ CONFIG_APP = ConfigApp(
     data_dir=Path(os.environ.get("DATA_DIR", str(REPO_ROOT / "data"))),
     api_key=os.environ.get("API_KEY", ""),
     cors_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()],
-    # 1 keeps chains serial so total LLM fan-out = COMPARE_CONCURRENCY
-    # (the intranet qwen3.8-27b only has 2 concurrent slots).
+    # 1 keeps chains serial, so LLM fan-out stays at COMPARE_CONCURRENCY.
     job_workers=int(os.environ.get("JOB_WORKERS", "1")),
     max_upload_mb=int(os.environ.get("MAX_UPLOAD_MB", "200")),
     applicability_max_chars=int(os.environ.get("APPLICABILITY_MAX_CHARS", "30000")),

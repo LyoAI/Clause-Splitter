@@ -1,9 +1,6 @@
 """Global configuration — service and business knobs.
 
-Retrieval itself lives in the external RAG service (``clause_splitter/rag``);
-this module holds the client address, timeouts, and the chunking / agent
-contracts that stay in this repository. ``load_dotenv`` runs at import time so
-every module sees the same environment.
+``load_dotenv`` runs at import time so every module sees the same environment.
 """
 
 from __future__ import annotations
@@ -22,13 +19,11 @@ load_dotenv(REPO_ROOT / ".env")
 
 
 # ── LLM ───────────────────────────────────────────────────────────────
-# Per-model LLM configs: ``config/llm/<model_name>.yaml`` with one section per
-# provider type (``openai:`` / ``pingan:``); ``LLM(model_name, provider_type)``
-# reads the section matching ``provider_type``.
+# Per-model LLM configs: ``config/llm/<model_name>.yaml``, one section per provider.
 LLM_CONFIG_DIR = REPO_ROOT / "config" / "llm"
 # Per-call LLM request timeout (s) and per-episode wall-clock deadline.
 LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
-# Document summary / keyword call — shorter so a slow profile can't stall the chain.
+# Document profile call — shorter, so it cannot stall the chain.
 DOC_PROFILE_TIMEOUT_S = float(os.getenv("DOC_PROFILE_TIMEOUT_S", "90"))
 EPISODE_TIMEOUT_S = float(os.getenv("EPISODE_TIMEOUT_S", "600"))
 # Agent prompt language: "zh" | "en".
@@ -39,37 +34,36 @@ PROMPT_LANG = os.getenv("PROMPT_LANG", "zh")
 MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "15"))
 # Max span (inclusive offsets) of a get_context window.
 CONTEXT_SCOPE_MAX = int(os.getenv("CONTEXT_SCOPE_MAX", "8"))
-# Top-k internal clauses surfaced on the HTML review page for each external
-# clause (deterministic batch pre-retrieval, display-only).
+# Top-k internal clauses shown on the review page (display-only pre-retrieval).
 REVIEW_TOP_K = int(os.getenv("REVIEW_TOP_K", "10"))
-# LLM relevance filter on the review page: judge whether each top-k candidate has
-# any relation to the external clause and drop the unrelated ones (display-only;
-# compare_result.json keeps the raw candidates). 1 = on, 0 = off.
+# LLM relevance filter for review-page candidates (display-only; the stored
+# result keeps all candidates). 1 = on, 0 = off.
 REVIEW_FILTER_RELEVANCE = int(os.getenv("REVIEW_FILTER_RELEVANCE", "1"))
-# Truncation (chars) for the external clause / per candidate when judging relevance.
+# Truncation (chars) for the clause / candidate when judging relevance.
 REVIEW_FILTER_EXTERNAL_MAX_CHARS = int(os.getenv("REVIEW_FILTER_EXTERNAL_MAX_CHARS", "500"))
 REVIEW_FILTER_CANDIDATE_MAX_CHARS = int(os.getenv("REVIEW_FILTER_CANDIDATE_MAX_CHARS", "300"))
-# Minimum candidates kept on the review page after the relevance filter: top-up by
-# score regardless of relevance, so a clause never shows an empty recall list merely
-# because the strict filter dropped everything.
+# After filtering, keep at least this many candidates by score so a clause never
+# shows an empty recall list.
 REVIEW_MIN_CANDIDATES = int(os.getenv("REVIEW_MIN_CANDIDATES", "3"))
-# Parallel clause episodes during a comparison run. Default 2 = the intranet
-# qwen3.8-27b serves exactly 2 concurrent slots — raise only if ops does.
+# Parallel clause episodes; keep aligned with the model's concurrency limit.
 COMPARE_CONCURRENCY = int(os.getenv("COMPARE_CONCURRENCY", "2"))
 # Gap-analysis report: external clauses per batch-summary sub-agent call.
 REPORT_BATCH_SIZE = int(os.getenv("REPORT_BATCH_SIZE", "20"))
 
 # ── External RAG service ───────────────────────────────────────────────
-# Base URL of the RAG HTTP service. Empty = retrieval unavailable; analysis
-# fails with a readable "未配置" message and external parsing falls back to
-# local text extraction.
+# Which provider implementation to use (see clause_splitter/rag/providers).
+RAG_PROVIDER = os.getenv("RAG_PROVIDER", "chillrag")
+# Base URL. Empty = retrieval unavailable (analysis fails; parsing falls back local).
 RAG_API_BASE = os.getenv("RAG_API_BASE", "")
-# Sent as ``Authorization: Bearer <key>`` when non-empty.
-RAG_API_KEY = os.getenv("RAG_API_KEY", "")
-# Per-call timeout for search / inspect endpoints (seconds).
+# Login credentials for providers that issue a session cookie.
+RAG_API_USER = os.getenv("RAG_API_USER", "")
+RAG_API_PASSWORD = os.getenv("RAG_API_PASSWORD", "")
+# Corpus (folder) names: internal regulations and the parse scratch space.
+RAG_CORPUS = os.getenv("RAG_CORPUS", "clause_splitter_internal")
+RAG_PARSE_CORPUS = os.getenv("RAG_PARSE_CORPUS", "clause_splitter_parse")
+# Per-call HTTP timeout, and the upload + ingest polling deadline (seconds).
 RAG_TIMEOUT_S = float(os.getenv("RAG_TIMEOUT_S", "30"))
-# Parse / ingest uploads may run OCR server-side — allow a long deadline.
-RAG_PARSE_TIMEOUT_S = float(os.getenv("RAG_PARSE_TIMEOUT_S", "300"))
+RAG_PARSE_TIMEOUT_S = float(os.getenv("RAG_PARSE_TIMEOUT_S", "1800"))
 # External parsing when the remote fails: "local" = extract plain text here,
 # "none" = fail the stage.
 PARSE_FALLBACK = os.getenv("PARSE_FALLBACK", "local")
@@ -81,15 +75,12 @@ SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "10"))
 SNIPPET_MAX_TOKENS = int(os.getenv("SNIPPET_MAX_TOKENS", "512"))
 
 # ── Per-article chunking contract ──────────────────────────────────────
-# Structure chunking: a ``title`` block with level <= CHUNK_LEVEL opens a new
-# chunk; deeper sub-headings stay inside the current chunk. Default 4 = the
-# deepest regulation marker level (编=1 章=2 节=3 条=4, as leveled by
-# compare.headings) — every 第X条 becomes its own retrieval unit.
+# A title block at or above this depth opens a new chunk; deeper headings stay
+# inside it. 4 = 编/章/节/条, so every article becomes its own retrieval unit.
 CHUNK_LEVEL = int(os.getenv("CHUNK_LEVEL", "4"))
 # Soft token budget per chunk (oversized sections are split, tables kept whole).
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
-# Adjacent chunks smaller than this many tokens merge into the previous one
-# when the section path matches. 0 = strict section boundaries, no merging.
+# Smaller adjacent chunks merge when they share a section path; 0 = never merge.
 CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", "50"))
 
 # ── Backend integration (push → dispatch → ESG callback) ────────────────
@@ -98,8 +89,7 @@ CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", "50"))
 CHAIN_DISPATCH = os.getenv("CHAIN_DISPATCH", "auto")
 # 5-field crontab admitting scheduled chain jobs (see services.dispatcher).
 CHAIN_CRON = os.getenv("CHAIN_CRON", "0 20 * * mon-sat")
-# ESG open-platform gateway for the result callback. Empty ESG_OPEN_END_POINT
-# disables the gateway; BACKEND_CALLBACK_URL then acts as a plain dev fallback.
+# ESG gateway for the result callback; when unset, BACKEND_CALLBACK_URL is used.
 ESG_AUTH_END_POINT = os.getenv("ESG_AUTH_END_POINT", "")
 ESG_OPEN_END_POINT = os.getenv("ESG_OPEN_END_POINT", "")
 ESG_CLIENT_ID = os.getenv("ESG_CLIENT_ID", "")
@@ -107,9 +97,7 @@ ESG_CLIENT_SECRET = os.getenv("ESG_CLIENT_SECRET", "")
 ESG_CALLBACK_PATH = os.getenv("ESG_CALLBACK_PATH", "/paerm/paermModelReturn")
 
 
-# ── Split-pipeline thresholds (legacy Settings) ────────────────────────
-# All magic numbers / regexes for the clause-decomposition pipeline live here
-# so they can be tuned without touching pipeline code.
+# ── Split-pipeline thresholds ──────────────────────────────────────────
 
 
 @dataclass
@@ -150,7 +138,7 @@ class Settings:
     max_react_iterations: int = 5
 
     # LLM
-    default_model: str = "qwen3.8-27b"  # intranet model; needs config/llm/qwen3.8-27b.yaml
+    default_model: str = "qwen3.8-27b"  # needs a matching config/llm/<name>.yaml
     llm_max_input_chars: int = 12000  # max chars sent to LLM in structure analysis
 
     # Obligation rule keyword mapping

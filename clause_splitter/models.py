@@ -1,9 +1,6 @@
-"""Pydantic data models — split-side obligations + compare-side matching.
+"""Pydantic models — split-side obligations and compare-side matching.
 
-Split side: atomic obligation records (``ClauseObligation`` et al); Chinese
-Excel headers are serialization aliases, so serialize with ``by_alias=True``.
-Compare side: internal-vs-external regulation matching (``MatchResult`` /
-``CompareResult``), many-to-many with document provenance.
+Chinese Excel headers are serialization aliases: serialize with ``by_alias=True``.
 """
 
 from __future__ import annotations
@@ -12,11 +9,6 @@ from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Split side — obligation extraction
-# ═══════════════════════════════════════════════════════════════════════
 
 
 class ObligationRule(str, Enum):
@@ -44,12 +36,7 @@ class ComplexityLabel(str, Enum):
 
 
 class ClauseObligation(BaseModel):
-    """Single atomic obligation — one verb = one record, no merging.
-
-    Field names are in English. Chinese Excel headers are mapped via
-    serialization_alias for export. Use `by_alias=True` when serializing
-    to match the Excel template column names.
-    """
+    """Single atomic obligation — one verb = one record."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -191,11 +178,6 @@ class DocumentStructure(BaseModel):
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Compare side — internal-vs-external matching
-# ═══════════════════════════════════════════════════════════════════════
-
-
 class CoverageStatus(str, Enum):
     """Coverage status for a single external obligation match."""
 
@@ -210,13 +192,7 @@ NO_INTERNALIZATION = "无需内化"
 
 
 def normalize_internalization_decision(decision: str) -> str:
-    """内化判定两值化:「预防性内化」并入「需要内化」。
-
-    历史上内化判定有三值(需要内化/预防性内化/无需内化);为简化页面与报告,
-    收敛为二值。指导性/金融科技特殊条款的「预防性内化」按保守口径归入
-    「需要内化」——仍在复核/整改范围内,缘由保留在 internalization_reason。
-    空值/未知值原样返回(渲染层回「待判定」)。
-    """
+    """两值化:「预防性内化」保守归入「需要内化」;空值/未知值原样返回。"""
     d = (decision or "").strip()
     if d == "预防性内化":
         return NEEDS_INTERNALIZATION
@@ -224,12 +200,7 @@ def normalize_internalization_decision(decision: str) -> str:
 
 
 class RetrievedCandidate(BaseModel):
-    """One top-k internal clause retrieved for an external clause.
-
-    Display-only evidence for the 作业人员 review page: the deterministic batch
-    pre-retrieval that produced it never changes the episode semantics — it just
-    shows what was recalled so the operator can judge relevance / trust.
-    """
+    """One pre-retrieved internal clause — review-page evidence only."""
 
     chunk_id: str = Field(..., description="Internal chunk id (doc_id#order)")
     doc_name: str = Field(default="", description="Internal regulation name (doc_id)")
@@ -251,12 +222,7 @@ class RetrievedCandidate(BaseModel):
 
 
 class MatchResult(BaseModel):
-    """One external obligation matched against internal obligations.
-
-    Document provenance fields (external_document_name, external_article_id,
-    matched_internal_document_name) make each match traceable back to its
-    source document — essential for many-to-many comparisons.
-    """
+    """One external clause matched against internal clauses, with provenance."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -347,13 +313,7 @@ class MatchResult(BaseModel):
 
 
 class CompareResult(BaseModel):
-    """Full comparison result for one or more document pairs.
-
-    Supports many-to-many: external_documents and internal_documents are
-    lists of document names. Backward-compat computed properties
-    external_document_name / internal_document_name return the first
-    element (or empty string).
-    """
+    """Full comparison result — many-to-many, keyed by document name lists."""
 
     model_config = ConfigDict(extra="ignore")  # ignore old single-name fields
 
@@ -390,7 +350,6 @@ class CompareResult(BaseModel):
         return data
 
     # ── Backward-compat computed properties ───────────────────────────────
-
     @property
     def external_document_name(self) -> str:
         """Backward compat: first external document name."""
@@ -417,11 +376,7 @@ class CompareResult(BaseModel):
 
     @property
     def internalizable_count(self) -> int:
-        """覆盖率分母:需要内化处理的条款数(需要内化 + 待判定)。
-
-        "无需内化"的条款不进入覆盖比对,不计入分母;前置判定失败(字段为空)
-        按需内化处理保守计入,避免漏掉覆盖统计。
-        """
+        """覆盖率分母:需要内化 + 待判定(空值保守计入)。"""
         return sum(1 for m in self.matches if (m.internalization_decision or "").strip() != "无需内化")
 
     @property
@@ -440,11 +395,7 @@ class CompareResult(BaseModel):
 
     @property
     def coverage_rate(self) -> float:
-        """覆盖率 = (完全覆盖 + 部分覆盖) / 需内化处理条款数。
-
-        只统计需要内化的外规条款;"无需内化"的条款排除在外。
-        无需要内化的条款时视为无缺口(1.0)。
-        """
+        """(完全覆盖 + 部分覆盖) / 需内化条款数;分母为 0 时视为 1.0。"""
         total = self.internalizable_count
         if total == 0:
             return 1.0

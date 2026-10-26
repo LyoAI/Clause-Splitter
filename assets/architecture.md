@@ -29,7 +29,7 @@ JobRunner(clause_splitter/jobs.py, workers=1)
 - **对外只有两个接口**(backend 面):`POST /regulations/push` 收数、`GET /regulations/{docId}/result` 拉结果;结果主动推送走 ESG 固定 callback。`/regulations/*` 其余路由、`/library`、`/jobs` 都是内部运维接口。
 - 法规 = 拆分前的文档(后端 docId 对应),条款 = 拆分后的 第X条/Article 级单元。
 - 单服务部署:算法与编排同进程,uvicorn 单 worker;重启恢复会把孤儿 queued/running 任务标 failed,scheduled 任务存活等下次 cron。
-- 外部依赖只有一个 **RAG 服务**(`RAG_API_BASE`):负责外规解析、内规入库/分块/索引、检索;契约见 [rag-service-contract.md](rag-service-contract.md)。未配置时:`/healthz` 正常、拆条走本地文本抽取、分析类任务以可读错误失败。
+- 外部依赖只有一个 **RAG 服务**:负责外规解析、内规入库/分块/索引、检索。业务代码只依赖 `RagService` 抽象(`clause_splitter/rag/base.py`),具体实现由 `RAG_PROVIDER` 选择(当前 `chillrag`,地址 `RAG_API_BASE`);契约见 [rag-service-contract.md](rag-service-contract.md)。未配置时:`/healthz` 正常、拆条走本地文本抽取、分析类任务以可读错误失败。
 
 ## 2. LLM 双通道与并发预算
 
@@ -44,7 +44,7 @@ JobRunner(clause_splitter/jobs.py, workers=1)
 
 ```
 取 blocks:parsing.router.parse_document
-           POST /parse 远端解析(text / markdown / blocks)优先
+           provider.parse 远端解析(纯文本)优先
            失败/未配置 → 本地纯文本抽取(pdfplumber/docx/openpyxl/md/txt,无 OCR)
            → blocks(markdown 的 # 映射标题层级;纯文本按行)
 ① LLM 方案推断(1 次结构化调用,prompt split_scheme.md)
@@ -90,7 +90,7 @@ clause_splitter/
   config.py              业务配置(并发/chunk 契约/ESG/调度,env 可覆盖)
   jobs.py                异步 JobRunner(队列+worker+完成钩子)
   orchestrator.py        agent/registry 装配点 + chain 编排
-  rag/                   外部 RAG 客户端(types/protocols/client)—— 唯一检索依赖
+  rag/                   RAG 抽象层(base.py 抽象类 + providers/ 具体服务)—— 唯一检索依赖
   parsing/               外规 → blocks(远端优先,本地抽取兜底)
   agent/                 ReAct agent + ToolRegistry + calculator
   pipeline/              四阶段 stage + contexts + doc_profile(文档摘要/关键词)
@@ -113,7 +113,9 @@ config/llm/*.yaml        模型配置(不入库)
 | `CHAIN_DISPATCH` / `CHAIN_CRON` | auto / `0 20 * * mon-sat` | 调度模式 / cron 表达式 |
 | `CHUNK_LEVEL/SIZE/MIN_TOKENS` | 4 / 1500 / 50 | 按条分块契约(内外规共用) |
 | `DOC_PROFILE_TIMEOUT_S` | 90 | 文档摘要/关键词单次 LLM 调用超时(失败走本地兜底) |
-| `RAG_API_BASE` / `RAG_API_KEY` | 空 | 外部 RAG 服务地址与 Bearer 鉴权;为空 = 未配置 |
-| `RAG_TIMEOUT_S` / `RAG_PARSE_TIMEOUT_S` | 30 / 300 | 普通调用 / 上传解析入库超时(秒) |
+| `RAG_PROVIDER` / `RAG_API_BASE` | chillrag / 空 | provider 选型 / 服务地址;地址为空 = 未配置 |
+| `RAG_API_USER` / `RAG_API_PASSWORD` | 空 | provider 登录凭据(不需要登录的 provider 忽略) |
+| `RAG_CORPUS` / `RAG_PARSE_CORPUS` | clause_splitter_internal / clause_splitter_parse | 内规语料 / 外规解析临时语料 |
+| `RAG_TIMEOUT_S` / `RAG_PARSE_TIMEOUT_S` | 30 / 1800 | 单次 HTTP / 上传解析入库轮询总时限(秒) |
 | `PARSE_FALLBACK` | local | 远端解析失败时走本地纯文本抽取;`none` = 直接失败 |
 | `ESG_*` | 空 | 网关四件套 + 回调路径;留空走 BACKEND_CALLBACK_URL 开发兜底 |

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any
 
 from clause_splitter.rag import Chunk, Hit, RagError, RagService
 from clause_splitter.utils import get_logger
@@ -69,14 +69,11 @@ class ToolRegistry:
         top_k: int = 10,
         snippet_max_tokens: int = 512,
         context_scope_max: int = 8,
-        truncate: Callable[[str, int], str] = truncate_snippet,
     ) -> None:
         self.service = service
         self.top_k = top_k
         self.snippet_max_tokens = snippet_max_tokens
         self.context_scope_max = context_scope_max
-        self.truncate = truncate
-        self.capabilities = service.capabilities()
         # Full chunks returned during this run (search + get_context) — the
         # grounding authority. Shared by episodes; chunks are immutable.
         self._chunks: dict[str, Chunk] = {}
@@ -85,13 +82,7 @@ class ToolRegistry:
     # ── tool surface ────────────────────────────────────────────────────
 
     def tool_names(self) -> list[str]:
-        names = [SEARCH_TOOL]
-        if self.capabilities.chunks:
-            names.append("get_context")
-        if self.capabilities.documents:
-            names.append("get_materials")
-        names.append("calculate")
-        return names
+        return [SEARCH_TOOL, "get_context", "get_materials", "calculate"]
 
     def tool_hints(self, lang: str = "zh") -> str:
         return build_tool_hints(self.tool_names(), lang)
@@ -109,40 +100,38 @@ class ToolRegistry:
                 "parameters": self._SEARCH_SCHEMA,
             },
         }]
-        if self.capabilities.chunks:
-            defs.append({
-                "type": "function",
-                "function": {
-                    "name": "get_context",
-                    "description": (
-                        "Return the full text of a chunk window around chunk_id, in "
-                        "reading order. scope is an inclusive offset range "
-                        "[start, end] relative to the chunk, e.g. [-1, 1]."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "chunk_id": {"type": "string"},
-                            "scope": {
-                                "type": "array",
-                                "items": {"type": "integer"},
-                                "minItems": 2,
-                                "maxItems": 2,
-                            },
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "get_context",
+                "description": (
+                    "Return the full text of a chunk window around chunk_id, in "
+                    "reading order. scope is an inclusive offset range "
+                    "[start, end] relative to the chunk, e.g. [-1, 1]."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "chunk_id": {"type": "string"},
+                        "scope": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "minItems": 2,
+                            "maxItems": 2,
                         },
-                        "required": ["chunk_id", "scope"],
                     },
+                    "required": ["chunk_id", "scope"],
                 },
-            })
-        if self.capabilities.documents:
-            defs.append({
-                "type": "function",
-                "function": {
-                    "name": "get_materials",
-                    "description": "List the internal documents available in the corpus.",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            })
+            },
+        })
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "get_materials",
+                "description": "List the internal documents available in the corpus.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        })
         defs.append({
             "type": "function",
             "function": {
@@ -209,7 +198,7 @@ class ToolRegistry:
                 [{
                     "score": None if h.score is None else round(h.score, 6),
                     "chunk_id": h.chunk_id,
-                    "snippet": self.truncate(h.text, self.snippet_max_tokens),
+                    "snippet": truncate_snippet(h.text, self.snippet_max_tokens),
                     "meta": h.to_chunk().with_doc(),
                 } for h in hits],
                 ensure_ascii=False,

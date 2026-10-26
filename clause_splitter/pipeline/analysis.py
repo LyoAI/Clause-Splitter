@@ -57,7 +57,7 @@ async def _decompose_obligations(
         for rec in records:
             grouped.setdefault(str(rec.get("clause_number") or ""), []).append(rec)
         done += 1
-        progress(done / max(len(batches), 1), f"义务拆分 {done}/{len(batches)} 批")
+        progress(0.2 * done / max(len(batches), 1), f"义务拆分 {done}/{len(batches)} 批")
 
     await asyncio.gather(*(run_batch(b) for b in batches))
     return grouped
@@ -124,16 +124,12 @@ async def run(ctx: StageContext) -> dict[str, Any]:
     ]
 
     # 2) episodes — one per clause; 无需内化 rows skip inside run_compare (20–90%).
-    total = max(len(target), 1)
-
-    def hook(clauses_done: int, _total: int) -> None:
-        ctx.progress(0.2 + 0.7 * clauses_done / total, f"条款比对 {clauses_done}/{total}")
+    def hook(clauses_done: int, total: int) -> None:
+        ctx.progress(0.2 + 0.7 * clauses_done / max(total, 1), f"条款比对 {clauses_done}/{total}")
 
     result: CompareResult = await run_compare(
         clauses, service, ctx.llm,
         persist_dir=str(ctx.reg_dir / "episodes"),
-        model=ctx.model,
-        provider=ctx.provider,
         progress_hook=hook,
     )
 

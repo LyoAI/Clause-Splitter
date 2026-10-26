@@ -1,9 +1,4 @@
-"""Data types exchanged with the external RAG service.
-
-These types are the only vocabulary the rest of the service uses for retrieval.
-When the internal team's contract differs, map it in ``client.py`` and, if
-needed, add optional fields here — business code keeps working unchanged.
-"""
+"""Types exchanged with a RAG provider."""
 
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ from typing import Any
 
 @dataclass
 class Chunk:
-    """One immutable retrieval unit returned by the RAG service."""
+    """One immutable retrieval unit."""
 
     chunk_id: str
     doc_id: str
@@ -24,16 +19,6 @@ class Chunk:
     def with_doc(self) -> dict[str, Any]:
         """Provenance dict including the document name (tool output shape)."""
         return {**self.meta, "doc": self.doc_id}
-
-
-@dataclass
-class Section:
-    """One heading of a document's table of contents."""
-
-    section_id: str
-    title: str
-    level: int = 1
-    page: int | None = None
 
 
 @dataclass
@@ -68,16 +53,10 @@ class Hit:
 
 @dataclass
 class ParsedDoc:
-    """Parsed external document as returned by the RAG service.
-
-    Either ``text`` or ``markdown`` must be non-empty. ``markdown`` is preferred
-    when present because its heading markers improve split accuracy.
-    """
+    """Parsed document as returned by a provider."""
 
     doc_id: str
     text: str = ""
-    markdown: str = ""
-    blocks: list[dict[str, Any]] | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -98,13 +77,3 @@ class CorpusStats:
     doc_count: int = 0
     chunk_count: int = 0
     version: str = ""
-
-
-@dataclass(frozen=True)
-class RagCapabilities:
-    """Optional endpoints supported by a service implementation."""
-
-    parse: bool = True
-    search: bool = True
-    chunks: bool = True
-    documents: bool = True

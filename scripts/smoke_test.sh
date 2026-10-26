@@ -72,7 +72,7 @@ cmd_library() {
         return 0
     fi
 
-    body="$(api POST /library/index '{"rebuild": false}')"
+    body="$(api POST /library/index)"
     envelope_ok "$body" "library index trigger"
     job_id="$(printf '%s' "$body" | json_opt data.job_id)"
     [ -n "$job_id" ] || die "library index trigger returned no job_id"

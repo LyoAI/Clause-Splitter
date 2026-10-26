@@ -1,13 +1,6 @@
-"""差距分析报告生成 —— 子 agent 分 batch 总结 + prompts/gap_report.md + LLM。
+"""差距分析报告生成 —— 分批总结 + 汇总撰写,LLM 失败时回退模板。
 
-报告是比对的最后产物。``generate_gap_report`` 先让多个「子 agent」(每次
-``llm.invoke``,无工具)分 batch 总结比对结果 —— 每次调用只吃该批条款,单次
-输入远小于上下文窗口;再由最终模型按 ``prompts/gap_report.md`` 拿全部批次
-总结 + 确定性统计撰写正式报告(语气专业、证据引用承接内规原文)。LLM 失败或
-未注入时,回退到确定性的 ``_template_report`` —— 纯模板拼装,统计表 + 全部
-MatchResult 逐行呈现,证据原文直接引用,绝不空谈。
-
-两种路径都产出完整 Markdown,写入 ``{output_dir}/内外规合规差距分析报告.md``。
+两种路径都产出 Markdown,写入 ``{output_dir}/内外规合规差距分析报告.md``。
 """
 
 from __future__ import annotations
@@ -38,11 +31,6 @@ _STATUS_LABEL = {
     CoverageStatus.NOT_COVERED: "缺失",
 }
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# LLM 报告 —— 子 agent 分 batch 总结,最终模型汇总
-# ═══════════════════════════════════════════════════════════════════════
-
 #: 批总结子 agent 的 system prompt:只产出该批条款的紧凑素材,不写整篇报告框架。
 _BATCH_SUMMARY_SYSTEM = load("report_batch")
 
@@ -56,7 +44,6 @@ def _build_external_clause_md(matches: list[MatchResult]) -> str:
         lines.append(f"原文:\n\n{m.external_source_text}")
         lines.append("")
     return "\n".join(lines)
-
 
 def _build_matched_internal_md(matches: list[MatchResult]) -> str:
     """只列该批 grounding 实际承接的内规条款(按 id 去重),不喂整个内规库。"""
@@ -76,7 +63,6 @@ def _build_matched_internal_md(matches: list[MatchResult]) -> str:
         return "(本批无被承接的内规条款)"
     return "\n".join(lines)
 
-
 def _batch_summary_dict(result: CompareResult, batch: list[MatchResult]) -> dict:
     """单批摘要输入:与 to_summary_dict 同字段,但只含该批条款,且不带复核页候选全文。"""
     return {
@@ -87,11 +73,9 @@ def _batch_summary_dict(result: CompareResult, batch: list[MatchResult]) -> dict
         "details": [m.model_dump(exclude={"retrieved_candidates"}) for m in batch],
     }
 
-
 def _batches(rows: list, size: int) -> list[list]:
     """把 matches 按 size 分块。"""
     return [rows[i:i + size] for i in range(0, len(rows), size)]
-
 
 def _build_batch_prompt(result: CompareResult, batch: list[MatchResult]) -> str:
     """单个批总结子 agent 的 user prompt:只装该批条款。"""
@@ -108,7 +92,6 @@ def _build_batch_prompt(result: CompareResult, batch: list[MatchResult]) -> str:
         external_clause_md=_build_external_clause_md(batch),
         internal_clause_md=_build_matched_internal_md(batch),
     )
-
 
 def _build_final_prompt(result: CompareResult, summaries: list[str]) -> str:
     """最终模型 user prompt:确定性统计 + 各批总结(不含原始 matches / 候选 / 整库)。"""
@@ -131,11 +114,6 @@ def _build_final_prompt(result: CompareResult, summaries: list[str]) -> str:
         "### 各批次总结\n\n"
         f"{sections}\n"
     )
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# 模板回退报告(确定性)
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def _internal_ref(m) -> str:
@@ -164,7 +142,6 @@ def _stats_table(result: CompareResult) -> str:
         )
     return "\n".join(lines)
 
-
 def _internalization_overview(result: CompareResult) -> str:
     """内化判定概览:需要内化 / 无需内化 / 待判定 各几条(二值,预防性并入需要内化)。"""
     if not result.matches:
@@ -186,11 +163,9 @@ def _internalization_overview(result: CompareResult) -> str:
             lines.append(f"| {decision} | {n} | {n / total:.1%} | {notes[decision]} |")
     return "\n".join(lines)
 
-
 def _intl(m) -> str:
     """单条款的内化判定列值(空 → 待判定)。"""
     return (m.internalization_decision or "待判定").strip()
-
 
 def _covered_section(result: CompareResult) -> str:
     rows = [m for m in result.matches if m.status == CoverageStatus.FULLY_COVERED]
@@ -211,7 +186,6 @@ def _covered_section(result: CompareResult) -> str:
             lines.append(f"> 承接原文：{source}")
     return "\n".join(lines)
 
-
 def _partial_section(result: CompareResult) -> str:
     rows = [m for m in result.matches if m.status == CoverageStatus.PARTIALLY_COVERED]
     if not rows:
@@ -229,7 +203,6 @@ def _partial_section(result: CompareResult) -> str:
         if m.matched_internal_source_text:
             lines.append(f"> 承接原文：{m.matched_internal_source_text}")
     return "\n".join(lines)
-
 
 def _missing_section(result: CompareResult) -> str:
     """缺失的需内化条款(真实制度缺口);"无需内化"单列说明,不当作缺口。"""
@@ -257,7 +230,6 @@ def _missing_section(result: CompareResult) -> str:
         lines.append("以下条款判定**无需内化**(宣示性/程序性等),不构成制度缺口:")
         lines.append("、".join(m.external_clause_id for m in skipped))
     return "\n".join(lines)
-
 
 def _template_report(result: CompareResult) -> str:
     """确定性回退报告:统计表 + 三节明细,证据原文直接引用。"""
@@ -310,11 +282,7 @@ def _template_report(result: CompareResult) -> str:
 *本报告由模板自动生成(LLM 报告不可用时的确定性回退)。证据原文直接引用自比对结果。*
 """
 
-
-# ═══════════════════════════════════════════════════════════════════════
 # 对外入口
-# ═══════════════════════════════════════════════════════════════════════
-
 
 def write_report(report: str, output_dir: str | Path) -> Path:
     """把报告写入 ``{output_dir}/内外规合规差距分析报告.md``。"""

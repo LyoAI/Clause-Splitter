@@ -1,11 +1,6 @@
-"""文档结构分析 —— LLM 优先 + 正则回退.
+"""文档结构分析 —— LLM 优先、正则回退、flat 兜底.
 
-策略(按优先级):
-1. LLM 分段 —— 兼容任意文档格式(第X条 / Article X / 编号 / 纯段落)。
-2. 正则快速路径 —— 仅在 LLM 不可用 且 正则覆盖 > 80% 时使用。
-3. 兜底 —— 整个文档当作单条 flat 条款。
-
-同时承载拆分侧共用的确定性辅助:正则分段 / 章节识别 / 复杂度估计。
+同时提供拆分侧共用的确定性辅助:正则分段 / 章节识别 / 复杂度估计。
 """
 
 from __future__ import annotations
@@ -22,27 +17,14 @@ from clause_splitter.utils import get_logger
 logger = get_logger()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# 主入口:analyze_structure
-# ═══════════════════════════════════════════════════════════════════════
-
-
 def analyze_structure(raw_text: str, llm: Any = None) -> DocumentStructure:
-    """分析文档结构 —— LLM 优先, 正则回退, flat 兜底.
-
-    Args:
-        raw_text: 文档纯文本。
-        llm: 可选 LLM 实例(有 ``invoke`` 即可)。
-
-    Returns:
-        DocumentStructure。
-    """
+    """分析文档结构 —— LLM 优先, 正则回退, flat 兜底。"""
     if not raw_text or not raw_text.strip():
         raise ValueError("raw_text 为空，无法分析文档结构")
 
     logger.info("Analyzing document structure (%d chars)...", len(raw_text))
 
-    # ── Strategy 1: LLM 分段 ───────────────────────────────────────────
+    # 1) LLM segmentation
     if llm is not None:
         articles = _llm_segment(raw_text, llm)
         if articles:
@@ -50,7 +32,7 @@ def analyze_structure(raw_text: str, llm: Any = None) -> DocumentStructure:
             logger.info("LLM segmentation: %d articles found", len(articles))
             return doc_structure
 
-    # ── Strategy 2: 正则快速路径 ───────────────────────────────────────
+    # 2) regex fast path
     chapters = identify_chapters(raw_text)
     articles = _regex_segment(raw_text)
     if articles:
@@ -68,7 +50,7 @@ def analyze_structure(raw_text: str, llm: Any = None) -> DocumentStructure:
         logger.info("Regex segmentation: %d articles", len(articles))
         return doc_structure
 
-    # ── Strategy 3: flat 兜底 ──────────────────────────────────────────
+    # 3) flat fallback
     logger.warning("No article boundaries found — treating as single flat article")
     article = ArticleInfo(
         article_id="全文",
@@ -84,11 +66,6 @@ def analyze_structure(raw_text: str, llm: Any = None) -> DocumentStructure:
         structure_type="flat",
     )
     return doc_structure
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# LLM 分段
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def _llm_segment(raw_text: str, llm: Any) -> list[ArticleInfo] | None:
@@ -153,11 +130,6 @@ def _llm_segment(raw_text: str, llm: Any) -> list[ArticleInfo] | None:
     return articles or None
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# 正则分段
-# ═══════════════════════════════════════════════════════════════════════
-
-
 def _regex_segment(raw_text: str) -> list[ArticleInfo]:
     """按优先级尝试各正则;返回覆盖率最高且 >= 阈值的结果。"""
     settings = get_settings()
@@ -185,7 +157,6 @@ def _segments_to_articles(segments: list[dict[str, Any]]) -> list[ArticleInfo]:
     settings = get_settings()
     articles: list[ArticleInfo] = []
     for seg in segments:
-        # 分段时已算出完整原文,优先用完整文本(不再依赖 150 字预览 + 边界重抽)
         full_text = seg.get("text") or seg.get("text_preview", "")
         complexity = estimate_complexity(full_text)
         articles.append(ArticleInfo(
@@ -200,11 +171,6 @@ def _segments_to_articles(segments: list[dict[str, Any]]) -> list[ArticleInfo]:
             estimated_obligation_count=max(1, complexity["metrics"]["sentence_count"]),
         ))
     return articles
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# 组装 / 标题提取 / JSON 解析
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def _build_structure(raw_text: str, articles: list[ArticleInfo]) -> DocumentStructure:
@@ -262,11 +228,6 @@ def _extract_json(content: str) -> dict | None:
         except json.JSONDecodeError:
             pass
     return None
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# 确定性辅助(正则分段 / 章节识别 / 条款文本抽取)
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def segment_by_regex(text: str, pattern: str) -> dict[str, Any]:
@@ -350,8 +311,8 @@ def extract_article_text(text: str, article_id: str, next_pattern: str | None = 
     if next_pattern is not None:
         patterns = [next_pattern]
     else:
-        # 确定 article_id 属于哪个边界模式,用同一模式找下一条边界
-        # (避免 "第二条" 正文里的 "（一）" 子项被误判为下一条边界)
+        # Match the same boundary pattern the id came from, so sub-items inside
+        # the article body are not mistaken for the next article.
         patterns = [p for p in settings.article_patterns if re.compile(p).search(article_id)]
         if not patterns:
             patterns = settings.article_patterns[:1] or [r"第[一-鿿\d]+条"]
@@ -366,17 +327,8 @@ def extract_article_text(text: str, article_id: str, next_pattern: str | None = 
     return {"found": True, "article_id": article_id, "full_text": full_text, "char_count": len(full_text)}
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# 复杂度估计 / token 估算
-# ═══════════════════════════════════════════════════════════════════════
-
-
 def estimate_complexity(article_text: str) -> dict[str, Any]:
-    """用结构启发式估计条款复杂度(0-10)。
-
-    只用语言无关的结构指标,无硬编码动词表。LLM 是主要判定者,
-    此函数是 LLM 不可用时的轻量回退。
-    """
+    """结构启发式复杂度(0-10);LLM 不可用时的轻量回退。"""
     settings = get_settings()
     char_count = len(article_text)
 
@@ -432,7 +384,7 @@ def estimate_complexity(article_text: str) -> dict[str, Any]:
 
 
 def count_tokens(text: str, model: str = "default") -> dict[str, Any]:
-    """启发式 token 估算:中文 ~1.5 字/token,英文 ~4 字/token。"""
+    """启发式 token 估算(中文约 1.5 字/token,英文约 4 字/token)。"""
     char_count = len(text)
     chinese_chars = len(re.findall(r"[一-鿿]", text))
     non_chinese = char_count - chinese_chars

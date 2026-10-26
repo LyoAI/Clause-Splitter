@@ -1,7 +1,6 @@
-"""Excel 条款解析 —— 确定性工具(预览 / 抽取 / 表头归一 / 条款号推断).
+"""Excel 条款解析 —— 预览 / 抽取 / 表头归一 / 条款号推断.
 
-供内规库 Excel 容器(``tools/parser/containers.py``)与外规装载共用;
-列结构识别走关键词启发式 + 内容兜底,零 LLM。
+列结构识别走关键词启发式 + 内容兜底,不调用 LLM。
 """
 
 from __future__ import annotations
@@ -17,9 +16,8 @@ logger = get_logger()
 
 # ── 启发式列检测 ───────────────────────────────────────────────────────
 
-# 表头关键词族(模块级,供启发式列映射与表头行定位共用)。
-# 公司内网模板的表头五花八门(「内部制度名称」「制度条款内容」「条文」…),
-# 关键词用"包含"匹配,归一化去掉括号注释/空白后再比。
+# Header keyword families: matched by substring after normalizing away
+# parentheticals and whitespace.
 _ARTICLE_TEXT_KEYWORDS = [
     "条款内容", "法规条款", "制度条款", "条文内容", "具体条款", "条款正文",
     "clause", "article_text", "content",
@@ -33,14 +31,13 @@ _DOC_NAME_KEYWORDS = [
     "document_name", "regulation_name",
 ]
 _SECTION_KEYWORDS = ["章节", "所属章节", "章", "节", "section", "chapter"]
-# 整篇制度全文列:内网模板常见的「制度内容」列,每行重复同一篇制度的完整内容。
-# 这种列不能进 chunk —— 否则每个检索单元都≈整篇制度,检索失去区分度;也不能当
-# additional_context(会被拼到每一行条款前面)。检测到即整列跳过。
+# Full-document columns repeat the whole regulation on every row — skip them
+# entirely (as content or as context), or retrieval loses all granularity.
 _FULL_TEXT_KEYWORDS = [
     "制度内容", "制度全文", "全文内容", "完整内容", "整篇内容",
     "full_document",
 ]
-# 真正"每行一条的补充上下文"列(适用条件 / 备注 等),会拼在条款内容之前。
+# Per-row context columns, prepended to the clause text.
 _CONTEXT_KEYWORDS = [
     "适用条件", "适用范围", "适用对象", "备注",
     "document_context", "context",
@@ -73,13 +70,7 @@ def _header_row_hits(cells: list[Any]) -> tuple[int, int]:
 
 
 def _find_header_row(ws, max_scan: int = 5) -> int:
-    """返回真实表头行(1-based)。
-
-    公司内网模板常在第 1 行前有若干合并标题/格式行(旧 split 模板
-    ``header_rows=4 / data_start_row=5``)。逐行扫描前 ``max_scan`` 行,
-    取"表头关键词命中数最多、非空去重单元格最多"的行作为表头;完全找不到
-    关键词(裸表)时回退到行 1。
-    """
+    """真实表头行(1-based);找不到表头样行时回退到第 1 行。"""
     best_row = 1
     best_score = (-1, -1)
     for idx in range(1, max_scan + 1):
@@ -91,7 +82,6 @@ def _find_header_row(ws, max_scan: int = 5) -> int:
         if score > best_score:
             best_score = score
             best_row = idx
-    # 整个扫描区间都没有"表头样"的行(单个合并标题也算不上表头)→ 回退行 1。
     if best_score == (0, 1) or best_score == (0, 0):
         return 1
     return best_row
@@ -114,7 +104,6 @@ def _heuristic_column_detection(preview: dict) -> dict[str, str] | None:
         if not col_name:
             continue
         if _match(col_name, _FULL_TEXT_KEYWORDS):
-            # 整篇制度全文列(每行同一篇完整内容)→ 整列跳过,不进 chunk。
             continue
         if not mapping.get("article_text") and _match(col_name, _ARTICLE_TEXT_KEYWORDS):
             mapping["article_text"] = col_name
@@ -128,8 +117,7 @@ def _heuristic_column_detection(preview: dict) -> dict[str, str] | None:
             mapping["additional_context"] = col_name
 
     if mapping.get("article_text"):
-        # 有内容列但没匹配到制度名列 → 用"重复短值"从内容推断(常见:表头叫
-        # 「归属制度」「所在制度」等关键词没覆盖到的名字)。
+        # No document-name column matched → infer it from repeated short values.
         if not mapping.get("document_name"):
             doc_col = _find_document_column_by_content(
                 preview, exclude={_col_name_to_letter(headers, mapping["article_text"])}
@@ -170,7 +158,6 @@ def _find_text_column_by_content(preview: dict) -> dict[str, str] | None:
     best_avg = 0
     for col_letter, lengths in col_lengths.items():
         if _match(headers.get(col_letter, ""), _FULL_TEXT_KEYWORDS):
-            # 整篇制度全文列(每行同一篇完整内容)→ 兜底也不选它当条款内容。
             continue
         avg = sum(lengths) / len(lengths) if lengths else 0
         if avg > best_avg and avg > 20:
@@ -194,12 +181,7 @@ def _find_text_column_by_content(preview: dict) -> dict[str, str] | None:
 def _find_document_column_by_content(
     preview: dict, exclude: set[str] | None = None,
 ) -> str | None:
-    """兜底 2:从内容推断"制度名"列 —— 短值、且在多行重复出现的列。
-
-    关键词匹配不到(表头叫「归属制度」「所在制度」等)时,制度名列的特征是:
-    值都很短(制度名 <40 字)、同一个制度名对应多行条款(重复率高),而条款内容
-    列基本不重复。取 (重复率 × 短值权重) 最高的未用列。
-    """
+    """兜底:按"短值 + 高重复率"推断制度名列。"""
     samples = preview.get("samples", [])
     headers = preview.get("column_headers", {})
     if not samples or not headers:
@@ -229,11 +211,6 @@ def _find_document_column_by_content(
     if best_letter and best_letter in headers:
         return headers[best_letter]
     return None
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Excel 确定性工具(预览 / 抽取 / 表头归一 / 条款号推断)
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def _normalize_column_header(name: str | None) -> str:
@@ -273,12 +250,9 @@ def _infer_article_id_from_text(text: str) -> str:
 
 
 def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, Any]:
-    """读 Excel 表头 + 样本行,供 LLM / 启发式分析列结构。
+    """读表头 + 样本行,供列结构分析。
 
-    自动处理两类内网模板的常见错位:
-    - 表头不在第 1 行(前面有合并标题/格式行)→ ``_find_header_row`` 定位真实表头行;
-    - 数据不在第一个 sheet(首 sheet 是封面/说明)→ 逐 sheet 比较表头关键词命中数,
-      选最像数据表的 sheet,记入 ``active_sheet`` 供抽取阶段复用。
+    自动定位真实表头行,并在多个 sheet 中选最像数据表的一个(写入 ``active_sheet``)。
     """
     import openpyxl
 
@@ -293,8 +267,7 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
         return result
 
     try:
-        # 系统导出的 xlsx 常带不完整的 <dimension> 元数据,read_only=True 流式只吐
-        # A1 一格(真实表头/数据全读不到);普通模式物化全部行才可靠。
+        # read_only mode misreads files with incomplete dimension metadata.
         wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
     except Exception as e:
         result["error"] = f"无法打开 Excel 文件: {e}"
@@ -306,7 +279,7 @@ def read_excel_preview(file_path: str | Path, max_rows: int = 30) -> dict[str, A
         wb.close()
         return result
 
-    # ── 选数据 sheet:表头关键词命中最多者;全都不像则取第一个 sheet ──
+    # Pick the sheet with the most header-like row; fall back to the first.
     best_sheet = wb.sheetnames[0]
     best_score = (-1, -1)
     for sheet in wb.sheetnames:
@@ -384,8 +357,7 @@ def extract_excel_articles(
     norm_mapping = _normalize_mapping(column_mapping)
 
     try:
-        # 系统导出的 xlsx 常带不完整的 <dimension> 元数据,read_only=True 流式只吐
-        # A1 一格(真实表头/数据全读不到);普通模式物化全部行才可靠。
+        # read_only mode misreads files with incomplete dimension metadata.
         wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
     except Exception as e:
         result["error"] = f"无法打开 Excel 文件: {e}"
@@ -398,7 +370,6 @@ def extract_excel_articles(
         return result
     ws = wb[target_sheet]
 
-    # 与 preview 同一套表头行定位:前面可能有合并标题/格式行。
     header_row_idx = _find_header_row(ws)
     header_row = next(
         ws.iter_rows(min_row=header_row_idx, max_row=header_row_idx, values_only=True), None

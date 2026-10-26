@@ -1,7 +1,4 @@
-"""从文档抽取纯文本(PDF / DOCX / DOC / XLSX / TXT).
-
-解析结果按内容哈希缓存到 .cache/docs/ —— 相同文件重复上传直接读缓存。
-"""
+"""本地纯文本抽取(PDF / DOCX / DOC / XLSX / TXT),按内容哈希缓存。"""
 
 from __future__ import annotations
 
@@ -10,9 +7,8 @@ import time
 from pathlib import Path
 
 
-# 缓存目录:项目根 .cache/docs/
 _CACHE_DIR = Path(__file__).resolve().parent.parent.parent / ".cache" / "docs"
-_MAX_CACHE_ENTRIES = 100  # 超出后自动清理最旧条目
+_MAX_CACHE_ENTRIES = 100
 
 
 def extract_text(
@@ -20,28 +16,17 @@ def extract_text(
     max_chars: int = 20000,
     use_cache: bool = True,
 ) -> str:
-    """按文件类型自动抽取纯文本,可选缓存。
-
-    Args:
-        file_path: 文档路径。
-        max_chars: 最大抽取字符数。
-        use_cache: 命中缓存时跳过解析。
-
-    Returns:
-        抽取的纯文本,或错误占位字符串。
-    """
+    """按后缀抽取纯文本;失败时返回占位字符串。"""
     path = Path(file_path)
     if not path.exists():
         return ""
 
-    # ── 缓存查找(按内容哈希) ──────────────────────────────────────
     if use_cache:
         file_hash = _hash_file(path)
         cached = _read_cache(file_hash)
         if cached is not None:
             return cached[:max_chars]
 
-    # ── 解析 ─────────────────────────────────────────────────────
     suffix = path.suffix.lower()
 
     try:
@@ -60,7 +45,6 @@ def extract_text(
     except Exception as e:
         text = f"[Parse error: {e}]"
 
-    # ── 写缓存 ───────────────────────────────────────────────────
     if use_cache and text and not text.startswith("[Parse error") and not text.startswith("[Image]"):
         _write_cache(file_hash, text, path.name)
 
@@ -68,14 +52,7 @@ def extract_text(
 
 
 def clear_cache(older_than_days: float = 0) -> int:
-    """清理文档解析缓存。
-
-    Args:
-        older_than_days: > 0 时只清理超过该天数的条目;0 清空全部。
-
-    Returns:
-        移除的条目数。
-    """
+    """清理解析缓存;返回移除条目数(0 天 = 全部)。"""
     if not _CACHE_DIR.exists():
         return 0
 
@@ -93,10 +70,8 @@ def clear_cache(older_than_days: float = 0) -> int:
     return removed
 
 
-# ── 缓存内部 ─────────────────────────────────────────────────────────
-
 def _hash_file(path: Path) -> str:
-    """计算文件 SHA256(流式,内存安全)。"""
+    """流式计算文件 SHA256。"""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(8192):
@@ -124,7 +99,6 @@ def _write_cache(file_hash: str, text: str, original_name: str) -> None:
     cache_path = _CACHE_DIR / f"{file_hash}.txt"
     cache_path.write_text(header + text, encoding="utf-8")
 
-    # 条目过多时清理最旧的
     entries = sorted(_CACHE_DIR.glob("*.txt"), key=lambda p: p.stat().st_mtime)
     if len(entries) > _MAX_CACHE_ENTRIES:
         for old in entries[:len(entries) - _MAX_CACHE_ENTRIES]:
@@ -133,8 +107,6 @@ def _write_cache(file_hash: str, text: str, original_name: str) -> None:
             except OSError:
                 pass
 
-
-# ── 各格式解析器 ─────────────────────────────────────────────────────
 
 def _parse_pdf(path: Path, max_chars: int) -> str:
     """pdfplumber 抽取 PDF 文本。"""
@@ -159,14 +131,9 @@ def _parse_docx(path: Path, max_chars: int) -> str:
 
 
 def _parse_doc(path: Path, max_chars: int) -> str:
-    """抽取旧版 .doc(二进制)。旧格式 python-docx 不支持。
-
-    依次尝试:antiword(系统命令) → python-docx(误命名的 .docx)。
-    (已移除 textract 分支——该依赖已从 requirements 删除。)
-    """
+    """旧版 .doc:先试 antiword,再按 .docx 解析(处理误命名文件)。"""
     import subprocess
 
-    # Strategy 1: antiword(常见于 Linux/macOS)
     try:
         result = subprocess.run(
             ["antiword", str(path)],
@@ -177,7 +144,6 @@ def _parse_doc(path: Path, max_chars: int) -> str:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    # Strategy 2: python-docx —— 对误命名的 .docx 文件有效
     try:
         from docx import Document
         doc = Document(path)
@@ -196,7 +162,6 @@ def _parse_doc(path: Path, max_chars: int) -> str:
 def _parse_xlsx(path: Path, max_chars: int) -> str:
     """openpyxl 抽取 Excel 文本(所有 sheet,tab 分隔)。"""
     import openpyxl
-    # 与 parse.py 同理:系统导出文件 dimension 不完整,read_only 流式会漏行。
     wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
     lines: list[str] = []
     for sheet in wb.sheetnames:

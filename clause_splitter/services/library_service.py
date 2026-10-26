@@ -16,29 +16,19 @@ from typing import Any
 
 from api.base_fastapi import ApiError
 
+from clause_splitter.db import now
 from clause_splitter.rag import RagError, get_rag_service
+from clause_splitter.services.context import get_repos, get_runner
 from clause_splitter.storage import internal_docs_dir, safe_filename
 from clause_splitter.utils import get_logger
 
 logger = get_logger()
 
-LIBRARY_SUFFIXES = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".txt", ".md"}
+LIBRARY_SUFFIXES = {".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".md", ".markdown"}
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def _repos():
-    from clause_splitter.services.context import get_repos
-
-    return get_repos()
-
-
-def _runner():
-    from clause_splitter.services.context import get_runner
-
-    return get_runner()
 
 
 async def _sync_row(repos, service, row: dict) -> dict:
@@ -56,7 +46,7 @@ async def _sync_row(repos, service, row: dict) -> dict:
         "remote_doc_id": info.doc_id or row.get("remote_doc_id") or row["_id"],
         "chunk_count": info.chunk_count,
         "remote_state": info.state,
-        "indexed_at": _now(),
+        "indexed_at": now(),
     }
     await repos.internal_docs.update(row["_id"], fields)
     return {**row, **fields}
@@ -64,7 +54,7 @@ async def _sync_row(repos, service, row: dict) -> dict:
 
 async def upload(data: bytes, filename: str) -> tuple[dict, bool]:
     """Store one internal document; sha256 dedupe returns the existing row."""
-    repos = _repos()
+    repos = get_repos()
     suffix = Path(filename).suffix.lower()
     if suffix not in LIBRARY_SUFFIXES:
         raise ApiError(415, f"unsupported file type: {suffix or '(none)'}; allowed: {sorted(LIBRARY_SUFFIXES)}")
@@ -100,7 +90,7 @@ async def upload(data: bytes, filename: str) -> tuple[dict, bool]:
 
 
 async def delete_doc(doc_id: str) -> None:
-    runner = _runner()
+    runner = get_runner()
     repos = runner.repos
     async with runner.lock_for("__library__"):
         doc = await repos.internal_docs.get(doc_id)
@@ -111,10 +101,10 @@ async def delete_doc(doc_id: str) -> None:
 
         remote_id = doc.get("remote_doc_id") or doc_id
         try:
-            await asyncio.to_thread(get_rag_service().delete, remote_id)
+            removed = await asyncio.to_thread(get_rag_service().delete, remote_id)
+            if not removed:
+                logger.info("remote delete unsupported; remove %s from the RAG corpus separately", remote_id)
         except RagError as exc:
-            # Local cleanup proceeds; a stale remote copy is harmless and will
-            # be overwritten by the next ingest under the same doc id.
             logger.warning("remote delete failed for %s: %s", remote_id, exc)
 
         await repos.internal_docs.delete(doc_id)
@@ -125,8 +115,7 @@ async def delete_doc(doc_id: str) -> None:
 
 
 async def _index_building(repos) -> bool:
-    jobs, _ = await repos.jobs.list(job_type="index_build", state="running", limit=1)
-    return bool(jobs) or bool(await repos.jobs.has_active_for_regulation("__library__"))
+    return bool(await repos.jobs.has_active_for_regulation("__library__"))
 
 
 def register_index_job(runner) -> None:
@@ -169,18 +158,18 @@ def register_index_job(runner) -> None:
     runner.register("index_build", index_build)
 
 
-async def enqueue_index_build(rebuild: bool = False) -> dict:
+async def enqueue_index_build() -> dict:
     """POST /library/index — one build at a time."""
-    runner = _runner()
+    runner = get_runner()
     repos = runner.repos
     async with runner.lock_for("__library__"):
         if await _index_building(repos):
             raise ApiError(409, "an index build is already queued/running")
-        return await runner.enqueue("index_build", regulation_id="__library__", payload={"rebuild": rebuild})
+        return await runner.enqueue("index_build", regulation_id="__library__")
 
 
 async def index_status() -> dict[str, Any]:
-    repos = _repos()
+    repos = get_repos()
     mirror = await repos.internal_docs.stats()
     rows, _ = await repos.internal_docs.list(limit=1)
     built_at = rows[0].get("indexed_at") if rows else None
@@ -202,8 +191,3 @@ async def index_status() -> dict[str, Any]:
         "rag": remote,
     }
 
-
-def _now():
-    from clause_splitter.db import now
-
-    return now()

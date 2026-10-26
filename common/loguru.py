@@ -1,4 +1,4 @@
-"""Loguru logging with per-request trace ids (from the PingAn http-server template)."""
+"""Loguru logging with per-request trace ids."""
 
 import sys
 from contextvars import ContextVar

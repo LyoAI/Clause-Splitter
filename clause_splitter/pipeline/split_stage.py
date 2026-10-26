@@ -1,11 +1,7 @@
 """Stage 2 — split the regulation into articles (拆条).
 
-Four-layer ladder, most flexible first:
-① LLM infers the document's numbering scheme (one structured call);
-② code validates the scheme and applies it (generalized headings pass);
-③ builtin 编章节条/顿号 scheme (``compare.headings``, deterministic);
-④ ``analyze_structure`` text segmentation (LLM/regex) for marker-less docs.
-Each layer's output must pass ``scheme.scheme_output_sane`` before it wins.
+Ladder: LLM-inferred scheme → builtin 编章节条 pass → text segmentation.
+Every layer must pass ``scheme.scheme_output_sane`` before it wins.
 """
 
 from __future__ import annotations

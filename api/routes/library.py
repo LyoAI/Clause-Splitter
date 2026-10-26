@@ -38,8 +38,8 @@ async def delete_document(doc_id: str):
 
 
 @router.post("/index")
-async def build_index(body: dict | None = None):
-    job = await library_service.enqueue_index_build(bool((body or {}).get("rebuild")))
+async def build_index():
+    job = await library_service.enqueue_index_build()
     return JSONResponse(status_code=202, content=ok({"job_id": job["_id"]}, msg="index build queued"))
 
 

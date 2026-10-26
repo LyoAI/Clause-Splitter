@@ -140,7 +140,7 @@ GET /regulations/{id}/clauses/{clause_id}
 | clause_number / section / clause_text | 条款号(第一条…)/所属章节/原文 |
 | term_keyword | 条款关键词(本地 jieba 提取,拆条时写入) |
 | clause_type / internalization_decision / internalization_reason | 义务性/指导性/宣示性条款;需要内化/无需内化 |
-| status | 完全覆盖 / 部分覆盖 / 缺失 / (无需内化时为空) |
+| status | 完全覆盖 / 部分覆盖 / 缺失;判定“无需内化”的条款也记为“缺失”,analysis 注明不纳入覆盖比对,统计时排除 |
 | analysis / difference_analysis / core_regulatory_requirements / remedy_suggestion | 判定分析 / 差异说明 / 核心监管要求 / 整改建议 |
 | matched_internal_id / _document_name / _clause_number / _source_text | 采用的内规条款(内容快照,不受索引重建影响) |
 | matched_internal_clause_ids | 证据条款 id 列表 |
@@ -193,14 +193,14 @@ GET /regulations/{id}/artifacts/{name}         → 文件流
 POST   /library/documents        multipart 上传(pdf/docx/pptx/图片/多制度 Excel)→ 201/200(重复)
 GET    /library/documents        → {items, total}
 DELETE /library/documents/{id}   → 204(入库任务运行期间 409)
-POST   /library/index            body: {"rebuild": false} → 202 {job_id}
+POST   /library/index            → 202 {job_id}
 GET    /library/index            → {doc_count, chunk_count, built_at, building, rag:{available, doc_count, chunk_count, version}}
 ```
 
-- 上传落本地 `DATA_DIR/internal/docs/` 并立即转发外部 RAG 服务 `POST /documents`;Mongo 只保留镜像行(`remote_doc_id` / `chunk_count` / `remote_state` / `indexed_at`)。
+- 上传落本地 `DATA_DIR/internal/docs/` 并立即通过 RAG provider 的 `ingest` 入库;Mongo 只保留镜像行(`remote_doc_id` / `chunk_count` / `remote_state` / `indexed_at`)。
 - RAG 服务不可用时上传仍成功(`remote_state=pending`);`POST /library/index` 重新入库全部文档,既是补录也是恢复手段。
-- 索引构建与分析**不再加进程内读写锁**:语料一致性由 RAG 服务负责,`analysis_index_signature` 取 `GET /stats` 的 `version`。
-- 删除文档时先删远端再删本地;远端失败只记日志,不阻塞本地清理。
+- 索引构建与分析**不再加进程内读写锁**:语料一致性由 RAG 服务负责,`analysis_index_signature` 取 provider `stats().version`。
+- 删除文档时调用 provider `delete`(不支持删除的 provider 返回 `False`);无论远端结果如何都清理本地记录与文件,远端残留由 RAG 侧管理。
 
 ---
 

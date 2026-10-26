@@ -2,7 +2,7 @@
 
 The service-level tests run the real pipeline (episodes / grounding / reports /
 stages / runner) against a fake LLM and an in-memory ``RagService``. Production
-code has no fake backend; only tests inject one via ``set_rag_service``.
+code has no fake backend; only tests inject one through ``rag._service``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from clause_splitter.rag import (
     DocInfo,
     Hit,
     ParsedDoc,
-    RagCapabilities,
     RagNotFound,
     RagUnavailable,
 )
@@ -197,7 +196,7 @@ class FakeRagService:
 
     Search scores chunks by query bigram hits — deterministic and engine-free.
     ``parse`` raises by default so split exercises the local fallback; set
-    ``parse_text``/``parse_markdown`` to simulate a successful remote parse.
+    ``parse_text`` to simulate a successful remote parse.
     """
 
     name = "fake"
@@ -205,7 +204,6 @@ class FakeRagService:
 
     def __init__(self) -> None:
         self.parse_text = ""
-        self.parse_markdown = ""
         self.parse_error: Exception | None = RagUnavailable("fake remote parse disabled")
         self.ingest_error: Exception | None = None
         self.ingests: list[tuple[str, str, str]] = []
@@ -222,13 +220,10 @@ class FakeRagService:
 
     # ── parsing ───────────────────────────────────────────────────────
 
-    def capabilities(self) -> RagCapabilities:
-        return RagCapabilities()
-
     def parse(self, path: Path, doc_id: str) -> ParsedDoc:
-        if self.parse_error is not None and not (self.parse_text or self.parse_markdown):
+        if self.parse_error is not None and not self.parse_text:
             raise self.parse_error
-        return ParsedDoc(doc_id=doc_id, text=self.parse_text, markdown=self.parse_markdown)
+        return ParsedDoc(doc_id=doc_id, text=self.parse_text)
 
     # ── corpus ────────────────────────────────────────────────────────
 
@@ -240,11 +235,12 @@ class FakeRagService:
         doc_id = doc_id or path.stem
         return DocInfo(doc_id=doc_id, name=name, chunk_count=1, state="indexed")
 
-    def delete(self, doc_id: str) -> None:
+    def delete(self, doc_id: str) -> bool:
         if not any(c.doc_id == doc_id for c in self.chunks):
             raise RagNotFound(f"unknown document: {doc_id}")
         self.deletes.append(doc_id)
         self.chunks = [c for c in self.chunks if c.doc_id != doc_id]
+        return True
 
     def fetch_chunks(self, doc_id: str) -> list[Chunk]:
         return [c for c in self.chunks if c.doc_id == doc_id]

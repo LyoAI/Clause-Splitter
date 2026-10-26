@@ -33,9 +33,3 @@ def extract_local_text(path: str | Path) -> str:
         if text.lstrip().startswith(prefix):
             raise ValueError(f"本地无法解析 {path.name}: {text.strip()[:120]}")
     return text
-
-
-def supports_suffix(suffix: str) -> bool:
-    return suffix.lower() in {
-        ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".txt", ".md", ".markdown",
-    }

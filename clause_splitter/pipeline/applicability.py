@@ -1,10 +1,7 @@
-"""Stage 1 — document-level applicability judgment (是否适用于平安科技).
+"""Stage 1 — document-level applicability judgment.
 
-Light text extraction (no remote parse — irrelevant regulations never pay that
-cost),
-one LLM call against ``prompts/applicability.md``. Fail-open: any error ⇒
-``applicable=None`` (需人工复核), never silently false — a wrong "no" would
-drop the whole regulation from the pipeline.
+Cheap local extraction plus one LLM call. Fail-open: errors give
+``applicable=None`` (需人工复核), never a silent false.
 """
 
 from __future__ import annotations
@@ -16,9 +13,9 @@ from typing import Any
 from config.config_app import CONFIG_APP
 from clause_splitter.config import LLM_TIMEOUT_S
 from clause_splitter.prompts import render
-from clause_splitter.utils import get_logger
+from clause_splitter.utils import get_logger, norm_str
 from clause_splitter.utils.doc_parser import extract_text
-from ..compare.ground import _norm_str, parse_answer_json
+from ..compare.ground import parse_answer_json
 from .contexts import StageContext
 
 logger = get_logger()
@@ -41,7 +38,7 @@ def parse_verdict(content: str) -> dict[str, Any] | None:
     return {
         "applicable": applicable,
         "confidence": round(confidence, 2),
-        "reason": _norm_str(parsed.get("reason")),
+        "reason": norm_str(parsed.get("reason")),
     }
 
 
