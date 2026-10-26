@@ -12,7 +12,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from chillrag.agent import AgentTurn
+from clause_splitter.agent import AgentTurn
 
 from .episode import EpisodeResult
 

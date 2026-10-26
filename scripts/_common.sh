@@ -121,20 +121,27 @@ wait_job() {
     done
 }
 
-# Poll /regulations/{docId}/result; inner code 1 = done, 0 = failed.
+# Poll /regulations/{docId}/result; the body is the flat backend payload
+# (top-level code: 1 = done, 0 = failed, 2 = processing).
 wait_result() {
     local doc_id="$1" started=$SECONDS last=""
     while :; do
-        local body code msg stages
+        local body code msg count
         body="$(api GET "/regulations/${doc_id}/result")"
-        envelope_ok "$body" "result pull for ${doc_id}"
-        code="$(printf '%s' "$body" | json_opt data.code)"
-        msg="$(printf '%s' "$body" | json_opt data.msg)"
-        stages="$(printf '%s' "$body" | json_opt data.stages)"
-        if [ "${code}:${stages}" != "$last" ]; then
-            printf '  docId=%s  code=%s  msg=%s\n  stages=%s\n' \
-                "$doc_id" "${code:-?}" "${msg:-}" "${stages:-}"
-            last="${code}:${stages}"
+        code="$(printf '%s' "$body" | json_opt code)"
+        msg="$(printf '%s' "$body" | json_opt msg)"
+        count="$(printf '%s' "$body" | py -c '
+import json, sys
+try:
+    data = json.load(sys.stdin).get("data")
+    print(len(data) if isinstance(data, list) else 0)
+except Exception:
+    print(0)
+' 2>/dev/null || true)"
+        if [ "${code}:${count}" != "$last" ]; then
+            printf '  docId=%s  code=%s  msg=%s  clauses=%s\n' \
+                "$doc_id" "${code:-?}" "${msg:-}" "${count:-0}"
+            last="${code}:${count}"
         fi
         case "$code" in
             1)

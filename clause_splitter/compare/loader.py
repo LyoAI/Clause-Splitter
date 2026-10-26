@@ -71,7 +71,7 @@ def external_clauses_from_file(path: Path) -> list[ExternalClause]:
 def _external_clause_from_chunk(doc_id: str, chunk) -> ExternalClause:
     """内规同款按条分块 → 外规条款:每条 chunk = 一条 ExternalClause。
 
-    chunk 来自 ``chunk_doc``(MinerU + 层级标题检测,确定性,零 LLM 解构)。
+    chunk 来自 ``chunk_doc``(远端解析 + 层级标题检测,确定性,零 LLM 解构)。
     条款号取 section 路径末级标题(如 "第一章 总则 > 第一条" → "第一条")。
     """
     section = str(chunk.meta.get("section", "") or "").strip()
@@ -88,7 +88,7 @@ def _external_clause_from_chunk(doc_id: str, chunk) -> ExternalClause:
 def _write_external_structure(out_dir: Path, doc_id: str, clauses: list[ExternalClause]) -> Path:
     """把按条分块结果落盘为 ``{stem}_structure.json``(与拆分产物同格式,可回看/复用)。
 
-    之后把 ``--external`` 指向这个文件时,会走 JSON 直读分支,不再重新 MinerU。
+    之后把 ``--external`` 指向这个文件时,会走 JSON 直读分支,不再重新解析。
     """
     articles = [
         {
@@ -112,13 +112,13 @@ async def load_external_clauses(external: str, output_dir: str, llm) -> list[Ext
 
     Args:
         external: 目录(扫描全部条款来源) / ``*_structure.json`` /
-            拆分结果 JSON / docx/pdf/txt(自动 MinerU 解析 + 按条分块)。
+            拆分结果 JSON / docx/pdf/txt(自动解析 + 按条分块)。
         output_dir: 自动解析时的产物目录(写 ``{stem}_structure.json``)。
         llm: 保留参数(JSON/目录/分块路径均不调用 LLM,仅保持签名兼容)。
 
     注意:async 函数。调用方必须在 async 上下文里 ``await``。
-    docx/pdf/txt 走与内规库同一套解析链(MinerU → 标题检测 → 按条 chunk,
-    确定性,零 LLM 解构);MinerU 原始产物落 ``.cache/external/md/``。
+    docx/pdf/txt 走 ``parsing.router``(远端解析优先,本地抽取兜底)→
+    标题检测 → 按条 chunk,确定性,零 LLM 解构。
     """
     path = Path(external)
     if path.is_dir():
@@ -139,9 +139,8 @@ async def load_external_clauses(external: str, output_dir: str, llm) -> list[Ext
 def clauses_from_blocks(doc_id: str, blocks: list) -> list[ExternalClause]:
     """Heading-classified blocks → per-article clauses (same CHUNK contract
     as the internal library: level/size/min_tokens from config)."""
-    from chillrag.tools.parser import chunk_doc
-
     from clause_splitter.config import CHUNK_LEVEL, CHUNK_MIN_TOKENS, CHUNK_SIZE
+    from clause_splitter.split.chunker import chunk_doc
 
     chunks = chunk_doc(
         doc_id, blocks, level=CHUNK_LEVEL, chunk_size=CHUNK_SIZE, min_tokens=CHUNK_MIN_TOKENS
@@ -156,21 +155,22 @@ def clauses_from_document(path: Path, out_dir: Path | str = "") -> list[External
     """Any supported source file → blocks → builtin 编章节条 headings →
     per-article clauses; writes ``{stem}_structure.json`` for reuse.
 
-    Deterministic path (zero LLM): MinerU / markdown / text per suffix.
-    MinerU artifacts land in ``.cache/external/md/<stem>/``.
+    Deterministic path (zero LLM): remote parse (local text fallback) →
+    builtin headings → per-article chunks.
 
     Raises:
         ValueError: no clause chunks after parsing.
     """
-    from clause_splitter.split.scheme import get_blocks
+    from clause_splitter.parsing.router import parse_document
 
     from .headings import infer_regulation_headings
 
     out_dir = Path(out_dir) if out_dir else path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    blocks = infer_regulation_headings(get_blocks(path))
     doc_id = _clean_doc_name(path.name)
+    parsed = parse_document(path, doc_id)
+    blocks = infer_regulation_headings(parsed.blocks)
     clauses = clauses_from_blocks(doc_id, blocks)
     if not clauses:
         raise ValueError(f"外规 {path.name} 解析后未产生任何条款分块,无法比对。")

@@ -10,8 +10,7 @@ single-stage jobs. Startup recovery marks orphaned queued/running jobs failed.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from clause_splitter.utils import get_logger
 from clause_splitter.orchestrator import run_chain
@@ -19,57 +18,6 @@ from clause_splitter.pipeline import applicability, analysis, internalize, split
 from clause_splitter.pipeline.contexts import Repos, StageContext, StageError
 
 logger = get_logger()
-
-
-class AsyncRWLock:
-    """Multiple concurrent readers OR one writer (asyncio.Condition based).
-
-    Internal-library index builds take the writer; analysis jobs hold the
-    reader for their whole duration, so a rebuild waits for in-flight analyses
-    without blocking other analyses.
-    """
-
-    def __init__(self) -> None:
-        self._cond = asyncio.Condition()
-        self._readers = 0
-        self._writer = False
-
-    async def _acquire_read(self) -> None:
-        async with self._cond:
-            await self._cond.wait_for(lambda: not self._writer)
-            self._readers += 1
-
-    async def _release_read(self) -> None:
-        async with self._cond:
-            self._readers -= 1
-            if self._readers == 0:
-                self._cond.notify_all()
-
-    async def _acquire_write(self) -> None:
-        async with self._cond:
-            await self._cond.wait_for(lambda: not self._writer and self._readers == 0)
-            self._writer = True
-
-    async def _release_write(self) -> None:
-        async with self._cond:
-            self._writer = False
-            self._cond.notify_all()
-
-    @asynccontextmanager
-    async def read(self) -> AsyncIterator[None]:
-        await self._acquire_read()
-        try:
-            yield
-        finally:
-            await self._release_read()
-
-    @asynccontextmanager
-    async def write(self) -> AsyncIterator[None]:
-        await self._acquire_write()
-        try:
-            yield
-        finally:
-            await self._release_write()
 
 
 #: Built-in regulation-stage handlers (job_type → async fn(ctx) -> dict).
@@ -90,12 +38,10 @@ class JobRunner:
         repos: Repos,
         *,
         workers: int = 2,
-        index_lock: AsyncRWLock | None = None,
         llm_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.repos = repos
         self.workers = max(1, workers)
-        self.index_lock = index_lock or AsyncRWLock()
         self.llm_factory = llm_factory or self._default_llm
         self._handlers: dict[str, Callable[[StageContext], Awaitable[dict[str, Any]]]] = {}
         self._handlers.update(STAGE_JOBS)  # type: ignore[arg-type]
@@ -220,24 +166,24 @@ class JobRunner:
                 return
             regulation = doc
 
+        from clause_splitter.rag import get_rag_service
+
         ctx = StageContext(
             regulation=regulation,
             llm=self.llm,
             repos=self.repos,
             payload=job.get("payload") or {},
+            rag=get_rag_service(),
         )
 
         try:
-            if job_type in ("analysis", "chain"):
-                # Hold a reader lock for the whole run: an index rebuild waits,
-                # the store is pinned for the episode batch (chain includes the
-                # analysis stage inline, so it pins too).
-                async with self.index_lock.read():
-                    store = await self._pinned_store(ctx)
-                    ctx.store_loader = lambda: store
-                    await self._execute(job, handler, ctx, single_stage=False)
-            else:
-                await self._execute(job, handler, ctx, single_stage=True)
+            # An analysis-only job has nothing to do without retrieval; chains
+            # check after stage 1 (a not-applicable regulation still completes).
+            if job_type == "analysis" and not ctx.rag.available:
+                raise StageError("RAG 服务未配置 —— 请设置 RAG_API_BASE 后重启服务")
+            await self._execute(
+                job, handler, ctx, single_stage=job_type not in ("analysis", "chain")
+            )
         except Exception as e:  # noqa: BLE001 — job-level failure
             logger.error("job %s (%s) failed: %s", job["_id"], job_type, e)
             await self.repos.jobs.update(
@@ -245,15 +191,6 @@ class JobRunner:
             )
         finally:
             await self._notify_done(job)
-
-    async def _pinned_store(self, ctx: StageContext) -> Any:
-        from clause_splitter.compare.index import load_store
-        from clause_splitter.storage import internal_index_root
-
-        store = await asyncio.to_thread(load_store, "internal", internal_index_root())
-        if store is None:
-            raise StageError("内规索引不可用 —— 请先构建内规库索引。")
-        return store
 
     async def _execute(
         self,

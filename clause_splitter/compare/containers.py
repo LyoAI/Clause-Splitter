@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from chillrag.tools.parser import Block
+from clause_splitter.parsing.blocks import Block
 
 from clause_splitter.split.parse import (
     _heuristic_column_detection,

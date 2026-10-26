@@ -16,19 +16,10 @@ dependencies = [
     "APScheduler>=3.11,<4",
     # PingAn intranet gateway signing (only needed on the intranet path)
     "pycryptodome==3.23.0",
-    # RAG engine (vendored chillrag/) — engine deps installed alongside
-    "pyserini>=0.44.0",              # BM25 (Lucene) — requires JDK 21 (JAVA_HOME in .env)
-    "pyjnius>=1.7.0",
-    "faiss-cpu>=1.8.0",
-    "jieba==0.42.1",                 # zh/en tokenizer for BM25 pretokenized mode
-    "sentence-transformers>=5.7.0",
-    "transformers>=4.44.0",
-    "numpy==2.4.6",
-    "rich==15.0.0",
-    "mineru[pipeline]>=3.4.4,<4",    # local document parser (PDF / docx / pptx / images)
-    "torchvision>=0.28.0",
-    "lxml==6.1.1",
-    # Business document handling
+    # Retrieval is an external HTTP service (see assets/rag-service-contract.md);
+    # the only local RAG-side dependency is the clause keyword tokenizer.
+    "jieba==0.42.1",                 # zh/en tokenizer for term keywords
+    # Business document handling (local plain-text parse fallback)
     "pdfplumber==0.11.9",
     "python-docx>=1.1.2",
     "openpyxl==3.1.5",

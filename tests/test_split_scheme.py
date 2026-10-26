@@ -9,12 +9,8 @@ from clause_splitter.compare.loader import clauses_from_blocks
 from clause_splitter.llm.provider.base import LLMResponse
 from clause_splitter.pipeline.split_stage import clauses_from_file
 from clause_splitter.split import scheme
-from clause_splitter.split.scheme import (
-    apply_scheme,
-    blocks_from_text,
-    infer_scheme_llm,
-    sanitize_scheme,
-)
+from clause_splitter.parsing.blocks import blocks_from_text
+from clause_splitter.split.scheme import apply_scheme, infer_scheme_llm, sanitize_scheme
 
 ENGLISH_DOC = """DATA GOVERNANCE ACT
 
@@ -136,7 +132,7 @@ async def test_ladder_llm_scheme_layer(tmp_path):
     src.write_text(ENGLISH_DOC, encoding="utf-8")
     ladder = await clauses_from_file(src, SchemeLLM(ENGLISH_SCHEME))
     assert ladder is not None
-    clauses, layer, scheme_json = ladder
+    clauses, layer, scheme_json, source = ladder
     assert layer == "llm_scheme"
     assert {"Article 1", "Article 4"} <= {c.clause_number for c in clauses}
     assert scheme_json[0]["pattern"] == "Part [IVX]+"
@@ -148,7 +144,7 @@ async def test_ladder_falls_to_builtin_for_chinese(tmp_path):
     # LLM refuses to propose anything → builtin 编章节条 scheme must win.
     ladder = await clauses_from_file(src, SchemeLLM('{"patterns": []}'))
     assert ladder is not None
-    clauses, layer, _scheme = ladder
+    clauses, layer, _scheme, source = ladder
     assert layer == "builtin"
     assert {"第一条", "第二条", "第三条"} <= {c.clause_number for c in clauses}
 

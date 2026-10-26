@@ -7,8 +7,7 @@ data/regulations/{id}/
     compare_result.json         raw comparison result (pre relevance filter)
     内外规合规差距分析报告.md     gap-analysis report (engine filename)
     内规检索复核.html            self-contained review page (engine filename)
-data/internal/docs/{file}       internal library uploads
-data/internal/index/<name>/     derived search indexes (store/chunks/bm25/faiss/md)
+data/internal/docs/{file}       internal library uploads (mirrored into the RAG service)
 """
 
 from __future__ import annotations
@@ -52,10 +51,6 @@ def episodes_dir(reg_id: str) -> Path:
 
 def internal_docs_dir() -> Path:
     return CONFIG_APP.data_dir / "internal" / "docs"
-
-
-def internal_index_root() -> Path:
-    return CONFIG_APP.data_dir / "internal" / "index"
 
 
 def artifact_path(reg_id: str, name: str) -> Path | None:

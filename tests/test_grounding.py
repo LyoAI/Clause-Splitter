@@ -2,21 +2,20 @@
 
 历史 bug:"批量 0% 覆盖" —— agent 声称已覆盖,但引用的内规条款 ID 不在
 检索轨迹里。这三道防线的核心是 ``ground_episode``:每个 claimed id 必须
-∈ seen 集 且 ∈ store,任一不落地即丢弃;全部不落地 → 降级 缺失。
+∈ seen 集 且能在本轮检索缓存里解析,任一不落地即丢弃;全部不落地 → 降级 缺失。
 
-测试自包含:用内存 DocumentStore 造内规库,不依赖磁盘真实数据。
+测试自包含:用一个内存 ChunkLookup 模拟本轮检索结果,不依赖磁盘真实数据。
 """
 
 from __future__ import annotations
 
 import json
 
-from chillrag.agent import AgentTurn
-
+from clause_splitter.agent import AgentTurn
 from clause_splitter.compare.episode import EpisodeResult, ExternalClause
 from clause_splitter.compare.ground import _segment_label, ground_episode
 from clause_splitter.models import CoverageStatus
-from chillrag.tools.searcher.store import Chunk, DocumentStore
+from clause_splitter.rag import Chunk
 
 EXT = ExternalClause(document_name="外规", clause_number="第一条", full_text="测试条款")
 
@@ -24,20 +23,33 @@ REAL_ID = "网络数据安全管理条例#第一条"
 FAKE_ID = "网络数据安全管理条例#不存在条款"
 
 
-def _mini_store() -> DocumentStore:
-    """内存小内规库,供 grounding 校验 claim 是否 ∈ store。"""
-    store = DocumentStore(name="internal")
-    store.add_chunk(Chunk(
+class _Lookup:
+    """Minimal ``ChunkLookup`` — what the registry cached during one run."""
+
+    def __init__(self, chunks: list[Chunk] | None = None) -> None:
+        self._chunks = {c.chunk_id: c for c in chunks or []}
+
+    def add(self, chunk: Chunk) -> None:
+        self._chunks[chunk.chunk_id] = chunk
+
+    def get_chunk(self, chunk_id: str) -> Chunk | None:
+        return self._chunks.get(chunk_id)
+
+
+def _mini_store() -> _Lookup:
+    """内存小内规库,供 grounding 校验 claim 能否解析。"""
+    lookup = _Lookup()
+    lookup.add(Chunk(
         chunk_id=REAL_ID, doc_id="网络数据安全管理条例", order=0,
         text="数据处理者应当建立数据安全管理制度。",
         meta={"doc": "网络数据安全管理条例", "clause_number": "第一条", "section": "第一章 总则"},
     ))
-    store.add_chunk(Chunk(
+    lookup.add(Chunk(
         chunk_id="网络数据安全管理条例#第二条", doc_id="网络数据安全管理条例", order=1,
         text="禁止未经授权的数据访问和数据泄露。",
         meta={"doc": "网络数据安全管理条例", "clause_number": "第二条", "section": "第一章 总则"},
     ))
-    return store
+    return lookup
 
 
 def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试", remedy="测试",
@@ -49,7 +61,7 @@ def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试",
     trajectory = [
         AgentTurn(
             step=i,
-            tool_name="bm25_search",
+            tool_name="knowledge_search",
             tool_args={"query": "x"},
             tool_result=json.dumps([{"chunk_id": cid, "score": 1.0}], ensure_ascii=False),
             tool_time_s=0.1,
@@ -234,8 +246,8 @@ def test_ensure_adopted_in_candidates_injects_grounded_chunks():
     from clause_splitter.compare.aggregate import _ensure_adopted_in_candidates
     from clause_splitter.models import RetrievedCandidate
 
-    store = DocumentStore(name="inject-test")
-    store.add_chunk(Chunk(
+    store = _Lookup()
+    store.add(Chunk(
         chunk_id="办法#0", doc_id="数据安全管理办法", order=0,
         text="第一条　本制度适用于数据分类分级。",
         meta={"section": "第一章 总则 > 第一条"},
@@ -244,7 +256,7 @@ def test_ensure_adopted_in_candidates_injects_grounded_chunks():
     candidates = [
         RetrievedCandidate(
             chunk_id="办法#1", doc_name="数据安全管理办法", clause_label="第二条",
-            backend="bm25", score=5.0, query="q",
+            backend="remote", score=5.0, query="q",
             snippet="第二条　重要数据加密。", full_text="第二条　重要数据加密。",
         ),
     ]

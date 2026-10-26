@@ -11,7 +11,7 @@ Covers:
 - Chunking: one chunk per 条, ``meta.section`` = 条号.
 - Blank 制度名称 rows → the ``_未命名文档_`` fallback doc.
 - Unrecognizable workbook (no content column) → clear ``ValueError``.
-- End-to-end via ``ingest``: the store is keyed by 制度名.
+- End-to-end: each 制度 chunks independently, keyed by 制度名.
 """
 
 from __future__ import annotations
@@ -23,11 +23,9 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from chillrag.tools.parser import chunk_doc
-
 from clause_splitter.compare.containers import split_workbook
 from clause_splitter.compare.headings import infer_regulation_headings
-from clause_splitter.compare.ingest import ingest
+from clause_splitter.split.chunker import chunk_doc
 
 
 def _break_dimension_ref(path: Path) -> None:
@@ -259,7 +257,7 @@ def test_blank_article_id_inferred_from_text(tmp_path: Path) -> None:
 
 # ------------------------------------------------------------- end-to-end ----
 
-def test_ingest_routes_workbook_to_per_doc_store(tmp_path: Path) -> None:
+def test_workbook_chunks_per_regulation_document(tmp_path: Path) -> None:
     wb_path = tmp_path / "内规库.xlsx"
     _write_workbook(
         wb_path,
@@ -268,13 +266,12 @@ def test_ingest_routes_workbook_to_per_doc_store(tmp_path: Path) -> None:
             {"doc": "制度乙", "id": "第一条", "text": "乙第一条内容。"},
         ],
     )
-    store = ingest([wb_path], name="tmp", persist=False)
-    assert set(store.docs) == {"制度甲", "制度乙"}
-    chunks = store.all_chunks()
-    assert [c.meta["section"] for c in chunks] == ["第一条", "第一条"]
-    # Provenance: per-doc source entry, kind=excel_regulation, sha256 of the workbook.
-    assert set(store.sources) == {"制度甲", "制度乙"}
-    for entry in store.sources.values():
-        assert entry["kind"] == "excel_regulation"
-        assert entry["source_file"] == str(wb_path)
-        assert len(entry["sha256"]) == 64
+    per_doc = {
+        reg.doc_id: chunk_doc(
+            reg.doc_id, infer_regulation_headings(reg.blocks), level=4, min_tokens=0
+        )
+        for reg in split_workbook(wb_path)
+    }
+    assert set(per_doc) == {"制度甲", "制度乙"}
+    assert [c.meta["section"] for c in per_doc["制度甲"]] == ["第一条"]
+    assert [c.meta["section"] for c in per_doc["制度乙"]] == ["第一条"]

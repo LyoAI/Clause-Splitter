@@ -8,19 +8,20 @@ stages in the product flow):
 
 1. **Applicability** (document-level) — does this regulation apply to
    平安科技? Fail-open: any LLM/parse error ⇒ "需人工复核", never a silent "no".
-2. **Split (拆条)** — deterministic MinerU → heading → per-article chunking,
-   with an LLM segmentation fallback.
+2. **Split (拆条)** — remote parse (full text / markdown, with a local
+   plain-text fallback) → heading detection → per-article chunking, with an LLM
+   segmentation fallback.
 3. **Internalization judgment** — per article: 需要内化 / 无需内化 with reason.
-4. **Analysis** — per internalizable article: a **ReAct LLM agent over hybrid
-   retrieval** (ripgrep / BM25 / faiss) produces obligation decomposition,
+4. **Analysis** — per internalizable article: a **ReAct LLM agent over the
+   external RAG service** produces obligation decomposition,
    coverage status (完全覆盖 / 部分覆盖 / 缺失), difference analysis, core
    regulatory requirements, remediation suggestions, evidence-grounded
    internal-clause matches and top-k retrieval candidates; then a gap-analysis
    report (Markdown) and a self-contained HTML review page are rendered.
 
 Answer grounding is strict: a claimed internal chunk id must appear in the
-episode's retrieval trace *and* exist in the store, otherwise the claim is
-dropped and the clause downgraded to 缺失.
+episode's retrieval trace *and* be resolvable from that run's retrieval cache,
+otherwise the claim is dropped and the clause downgraded to 缺失.
 
 ## Layout
 
@@ -29,13 +30,17 @@ api/                    FastAPI app (PingAn http-server-template style)
   base_fastapi.py       app, {code,status,data,msg} envelope, request_id, loguru
   deps.py               auth + serializers        routes/{regulations,library,jobs}.py
 clause_splitter/
-  pipeline/             the 4 stages + chain orchestration (thin over engines)
-  jobs/runner.py        in-process asyncio job runner (queue, workers, recovery)
-  services/             regulation / library use-cases between routes and repos
-  db/repo.py            MongoDB (motor) repositories, one class per collection
+  rag/                  external RAG client — types / protocols / HTTP impl (the only retrieval dep)
+  parsing/              source document → blocks (remote parse first, local text fallback)
+  agent/                in-repo ReAct agent + tool registry over the RAG service
+  split/                split ladder (LLM scheme → headings → chunker) + per-article chunker
+  compare/              episodes, grounding, aggregation, review page, gap report
+  pipeline/             the 4 stages + chain orchestration
+  services/             regulation / library / integration use-cases
+  jobs.py               in-process asyncio job runner (queue, workers, recovery)
+  db.py                 MongoDB (motor) repositories, one class per collection
   storage.py            DATA_DIR layout helpers + artifact allowlist
   prompts/              ALL LLM prompts as editable .md files ({{slot}} render)
-  agent/ split/ compare/ tools/   engines — ReAct agent, split, compare, retrieval
 common/                 loguru / mongo_async / cyberark (template shared code)
 config/                 config_app (service knobs) · config_env · config_mongo
 tests/                  pytest suite — repo / stages / runner / full-chain e2e (offline)
@@ -48,12 +53,14 @@ Storage layout under `DATA_DIR` (default `data/`):
 data/
 ├── regulations/{id}/ source/ · split/structure.json · episodes/*.json
 │                      compare_result.json · 内外规合规差距分析报告.md · 内规检索复核.html
-└── internal/  docs/  ·  index/internal/{store, chunks, bm25, faiss, md}
+└── internal/docs/     uploaded internal documents (mirrored into the RAG service)
 ```
 
 ## API (mounted under `/api/v1/clause_splitter`)
 
-All responses use the `{code, status, data, msg}` envelope; set `API_KEY` to
+All responses use the `{code, status, data, msg}` envelope, except
+`GET /regulations/{docId}/result`, which returns the flat backend result
+payload directly (identical to the ESG callback body). Set `API_KEY` to
 require `X-API-Key` on every route.
 
 ```
@@ -74,8 +81,9 @@ GET    /healthz
 ```
 
 Full request/response reference: `assets/API.md`. When `BACKEND_CALLBACK_URL`
-is set, chain jobs started by a push POST a result payload back to the backend
-(draft contract, awaiting alignment).
+is set, chain jobs started by a push POST a result payload back to the backend;
+the payload is aligned with the legacy flat structure (document fields at the
+top level, clauses in `data[]`) — see `assets/callback-contract.md`.
 
 Stage preconditions are enforced with 409: split needs applicability done
 (`{"force": true}` overrides a "not applicable" verdict), internalization needs
@@ -85,14 +93,28 @@ stages inline with progress weights 0.10 / 0.15 / 0.25 / 0.50 and skips
 downstream stages when the regulation is judged not applicable (or needs human
 review).
 
-## Retrieval
+## Retrieval (external RAG service)
 
-The agent picks tools per turn from a pluggable registry:
-`grep` (ripgrep) / `bm25` (PySerini + jieba) / `faiss` (qwen3-embedding dense) /
-`hybrid`. The internal library accepts raw docs (pdf / docx / pptx / images) and
-multi-regulation Excel workbooks (「制度名称」 column); indexing is incremental
-by sha256. Analysis jobs pin a store snapshot under a read lock while an index
-rebuild takes the writer lock.
+Parsing, chunking, indexing and search all run in an **external HTTP service**.
+This repo ships only the client (`clause_splitter/rag/`) and the wire contract
+it targets (`assets/rag-service-contract.md`). Point `RAG_API_BASE` at the
+service (local dev: your own chillrag HTTP service, e.g. `http://127.0.0.1:8000`);
+`RAG_API_KEY` is sent as a Bearer token.
+
+- Split sends the document to `POST /parse`; when the service is unavailable or
+  returns nothing usable, `PARSE_FALLBACK=local` extracts plain text locally
+  (pdfplumber / python-docx / openpyxl / md / txt). `structure.json` records the
+  chosen path as `parse_source`.
+- Internal-library uploads forward to `POST /documents`; Mongo keeps a mirror
+  row (remote doc id, chunk count, state). `POST /library/index` re-ingests every
+  stored file — also the recovery path after a service outage.
+- The agent picks per turn from `knowledge_search`, optional `get_context` /
+  `get_materials` (bound only when the service advertises them) and `calculate`.
+  Grounding resolves claimed chunk ids from the run's retrieval cache.
+
+When the internal team's API differs, adapt request/response mapping in
+`clause_splitter/rag/client.py` only — business code, split and output shape
+stay unchanged.
 
 ## Run
 
@@ -108,7 +130,8 @@ docker build -t clause-splitter . && bash docker_cmd.sh
 Copy `.env.example` → `.env` for LLM keys and service knobs. Key settings
 (env-overridable): `DATA_DIR`, `MONGO_*`, `API_KEY`, `JOB_WORKERS`,
 `COMPARE_CONCURRENCY`, `SEARCH_TOP_K`, `REVIEW_FILTER_RELEVANCE`,
-`COMPANY_PROFILE`, `MINERU_BACKEND`, `EMBED_MODEL`.
+`DOC_PROFILE_TIMEOUT_S`, `COMPANY_PROFILE`, `RAG_API_BASE`, `RAG_API_KEY`,
+`RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `PARSE_FALLBACK`.
 
 ## Smoke test
 
@@ -127,13 +150,13 @@ See `scripts/README.md` for environment overrides and supported file types.
 ## Development
 
 ```bash
-uv run --extra dev python -m pytest tests/ -q    # 127 tests, fully offline (fake LLM + in-memory Mongo)
+uv run --extra dev python -m pytest tests/ -q    # 137 tests, fully offline
 ```
 
 The e2e test drives the real chain (upload → applicability → split → judge →
-episodes → report → review HTML) against a scripted LLM and a deterministic
-substring searcher — no network, no MinerU, no MongoDB.
+episodes → report → review HTML) against a scripted LLM and an in-memory fake
+RAG service — no network, no MongoDB.
 
-Notes: run uvicorn with 1 worker (in-process queue + local index); MinerU is a
-heavy subprocess used by the deterministic split path; the Docker base image
-must be Python ≥ 3.12 (`requires-python`).
+Notes: run uvicorn with 1 worker (in-process queue); scanning PDFs have no local
+OCR — rely on the remote parse or mark the clause for manual review; the Docker
+base image must be Python ≥ 3.12 (`requires-python`).

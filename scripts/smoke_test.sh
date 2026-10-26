@@ -44,6 +44,9 @@ cmd_library() {
 
     body="$(api GET /library/index)"
     envelope_ok "$body" "library index status"
+    if [ "$(printf '%s' "$body" | json_opt data.rag.available)" = "False" ]; then
+        warn "RAG_API_BASE is not configured; uploads stay pending and the index build will fail"
+    fi
     ok "before: doc_count=$(printf '%s' "$body" | json_opt data.doc_count) chunk_count=$(printf '%s' "$body" | json_opt data.chunk_count)"
 
     for f in "$MATERIALS_DIR"/internal/*; do
@@ -86,6 +89,9 @@ cmd_regulation() {
     local file="${1:-}" body resp reg_id job_id title duplicate
     local lib
     lib="$(api GET /library/index)"
+    if [ "$(printf '%s' "$lib" | json_opt data.rag.available)" = "False" ]; then
+        warn "RAG_API_BASE is not configured; an applicable regulation will fail at analysis"
+    fi
     if [ "$(printf '%s' "$lib" | json_opt data.doc_count)" = "0" ] || \
        [ -z "$(printf '%s' "$lib" | json_opt data.doc_count)" ]; then
         warn "internal library is empty; the analysis stage will not find internal clauses"
@@ -124,7 +130,7 @@ cmd_push() {
         *) die "OptType must be 0 (manual) or 1 (auto), got: ${opt_type}" ;;
     esac
     say "4. backend push -> docId result (OptType=${opt_type})"
-    local stamp doc_id payload resp dispatch job_id body echoed
+    local stamp doc_id payload resp dispatch job_id body code clauses
     stamp="$(date +%Y%m%d%H%M%S)"
     doc_id="smoke-push-${stamp}"
 
@@ -159,12 +165,21 @@ JSON
     wait_result "$doc_id"
 
     body="$(api GET "/regulations/${doc_id}/result")"
-    envelope_ok "$body" "docId result"
-    echoed="$(printf '%s' "$body" | json_opt data.extraParams)"
-    case "$echoed" in
-        *smoke-test*) ok "extraParams echoed at top level: ${echoed}" ;;
-        *) warn "extraParams echo not found (got: ${echoed:-empty})" ;;
-    esac
+    # Flat backend payload: no envelope, no extraParams echo.
+    code="$(printf '%s' "$body" | json_opt code)"
+    if [ "$code" != "1" ]; then
+        print_json "$body"
+        die "docId result not successful (code=${code:-none})"
+    fi
+    if printf '%s' "$body" | grep -q '"extraParams"'; then
+        die "result payload must not echo extraParams"
+    fi
+    clauses="$(printf '%s' "$body" | py -c '
+import json, sys
+data = json.load(sys.stdin).get("data")
+print(len(data) if isinstance(data, list) else "not-a-list")
+' 2>/dev/null || true)"
+    ok "flat result: docId=${doc_id} clauses=${clauses:-?}"
     printf '\n  result payload:\n'
     print_json "$body" | sed 's/^/    /'
 }

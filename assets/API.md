@@ -1,6 +1,6 @@
 # 外规内化服务 · 接口文档
 
-版本 0.4.0 · 基础路径 `http://<host>:18998/api/v1/clause_splitter` · 更新日期 2026-10-25
+版本 0.5.0 · 基础路径 `http://<host>:18998/api/v1/clause_splitter` · 更新日期 2026-10-26
 
 ---
 
@@ -20,6 +20,8 @@
 ```
 
 错误响应的 `data` 中带机器可读 `error_code`(如 `HTTP_409`)。
+
+**例外**:`GET /regulations/{docId}/result` 成功时直接返回后端结果报文(与 ESG 回调 body 完全一致,见 `assets/callback-contract.md`),不再套上述信封;其 404/500 等错误仍使用统一错误信封。
 
 ### 1.2 鉴权
 
@@ -93,7 +95,8 @@ GET /regulations/{id}
 | article_count | 拆条后的条款数(未拆条为 null) |
 | applicability | `{applicable: true\|false\|null(需人工复核), confidence, reason, truncated}` |
 | stages | 四阶段状态,如 `{"applicability":"done","split":"running",...}` |
-| split_mode | 拆条模式: mineru(确定性)/ llm(回退) |
+| split_mode | 拆条层级: llm_scheme / builtin / llm_segment(见 `structure.json` 的 `split_layer`,同目录另有 `parse_source`) |
+| doc_abstract / doc_keyword | 文档级摘要与关键词(拆条阶段生成,一次文档级 LLM 调用) |
 | analysis_summary | 见 2.9 |
 | error / created_at / updated_at | 其他 |
 
@@ -135,6 +138,7 @@ GET /regulations/{id}/clauses/{clause_id}
 | 字段 | 说明 |
 |---|---|
 | clause_number / section / clause_text | 条款号(第一条…)/所属章节/原文 |
+| term_keyword | 条款关键词(本地 jieba 提取,拆条时写入) |
 | clause_type / internalization_decision / internalization_reason | 义务性/指导性/宣示性条款;需要内化/无需内化 |
 | status | 完全覆盖 / 部分覆盖 / 缺失 / (无需内化时为空) |
 | analysis / difference_analysis / core_regulatory_requirements / remedy_suggestion | 判定分析 / 差异说明 / 核心监管要求 / 整改建议 |
@@ -188,13 +192,15 @@ GET /regulations/{id}/artifacts/{name}         → 文件流
 ```
 POST   /library/documents        multipart 上传(pdf/docx/pptx/图片/多制度 Excel)→ 201/200(重复)
 GET    /library/documents        → {items, total}
-DELETE /library/documents/{id}   → 204(构建索引期间 409)
+DELETE /library/documents/{id}   → 204(入库任务运行期间 409)
 POST   /library/index            body: {"rebuild": false} → 202 {job_id}
-GET    /library/index            → {doc_count, chunk_count, ...}
+GET    /library/index            → {doc_count, chunk_count, built_at, building, rag:{available, doc_count, chunk_count, version}}
 ```
 
-- 上传只落盘不建索引;`POST /library/index` 触发增量构建(按 sha256 差异,增/改文档重嵌入,未变复用缓存)。
-- 索引构建与分析任务互斥(读写锁):构建时分析等待,分析进行时构建等待,不会读到半新半旧的索引。
+- 上传落本地 `DATA_DIR/internal/docs/` 并立即转发外部 RAG 服务 `POST /documents`;Mongo 只保留镜像行(`remote_doc_id` / `chunk_count` / `remote_state` / `indexed_at`)。
+- RAG 服务不可用时上传仍成功(`remote_state=pending`);`POST /library/index` 重新入库全部文档,既是补录也是恢复手段。
+- 索引构建与分析**不再加进程内读写锁**:语料一致性由 RAG 服务负责,`analysis_index_signature` 取 `GET /stats` 的 `version`。
+- 删除文档时先删远端再删本地;远端失败只记日志,不阻塞本地清理。
 
 ---
 
@@ -208,7 +214,7 @@ GET    /library/index            → {doc_count, chunk_count, ...}
 | 结果查询 | GET | `/regulations/{docId}/result` |
 | 结果回调 | POST | `{ESG_OPEN_END_POINT}/paerm/paermModelReturn` |
 
-推送入参新增可选字段 `extraParams`(JSON 对象):服务原样保存,并在回调/查询报文的**顶层** `extraParams` 字段回显;未传时为 `{}`,不参与任何流程判定。完整入参表见 `assets/外规内化服务接口文档.docx` 3.3 节。
+推送入参新增可选字段 `extraParams`(JSON 对象):服务原样保存以兼容旧调用,但**不再出现在回调/查询报文中**,也不参与任何流程判定。完整入参表见 `assets/外规内化服务接口文档.docx` 3.3 节,结果报文见 `assets/callback-contract.md`。
 
 `/regulations/*` 其余路由、`/library`、`/jobs` 为内部运维接口。
 

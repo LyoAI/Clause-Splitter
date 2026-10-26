@@ -3,7 +3,7 @@
 Stages (each ``async def run(ctx) -> dict`` returning regulation field updates):
 
 1. ``applicability`` — document-level, does the regulation apply to us
-2. ``split_stage``   — split into articles (MinerU first, LLM fallback)
+2. ``split_stage``   — split into articles (parse → headings → LLM fallback)
 3. ``internalize``   — per-article internalization judgment
 4. ``analysis``      — obligation decomposition + ReAct compare + report
 

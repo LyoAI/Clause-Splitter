@@ -38,6 +38,8 @@ def reg_out(doc: dict[str, Any]) -> dict[str, Any]:
         },
         "stages": {s: doc.get(f"{s}_state") or "not_run" for s in STAGES},
         "split_mode": doc.get("split_mode") or "",
+        "doc_abstract": doc.get("doc_abstract") or "",
+        "doc_keyword": doc.get("doc_keyword") or "",
         "analysis_summary": doc.get("analysis_summary"),
         "error": doc.get("error") or "",
         "created_at": _iso(doc.get("created_at")),
@@ -46,7 +48,7 @@ def reg_out(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 _CLAUSE_BASE_FIELDS = (
-    "clause_number", "section", "clause_text", "clause_type",
+    "clause_number", "section", "clause_text", "clause_type", "term_keyword",
     "internalization_decision", "internalization_reason",
     "status", "analysis", "difference_analysis",
     "core_regulatory_requirements", "remedy_suggestion",
@@ -90,6 +92,8 @@ def internal_doc_out(doc: dict[str, Any]) -> dict[str, Any]:
         "filename": doc.get("filename"),
         "size_bytes": doc.get("size_bytes") or 0,
         "chunk_count": doc.get("chunk_count"),
+        "remote_doc_id": doc.get("remote_doc_id") or "",
+        "remote_state": doc.get("remote_state") or "",
         "indexed_at": _iso(doc.get("indexed_at")),
         "created_at": _iso(doc.get("created_at")),
     }

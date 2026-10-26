@@ -19,10 +19,10 @@ from clause_splitter.jobs import JobRunner
 from tests.fakes import (
     CLAUSE_SPECS,
     PipelineFakeLLM,
-    build_store,
+    build_rag_service,
     data_dir,
     fake_repos,
-    patch_registry,
+    patch_rag,
 )
 
 SOURCE_TEXT = "\n".join(
@@ -45,21 +45,16 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
         llm = PipelineFakeLLM(applicable=True)
         runner = JobRunner(repos, workers=1, llm_factory=lambda: llm)
         services.init(repos, runner)
-        store = build_store()
-        patch_registry(monkeypatch, store)
+        patch_rag(monkeypatch, build_rag_service())
         await runner.start()
 
-        async def pinned_store(ctx):
-            return store
-
-        monkeypatch.setattr(runner, "_pinned_store", pinned_store)
-        # Keep the split stage on the deterministic LLM-fallback path (no MinerU).
+        # Keep the split stage on the deterministic text-fallback path.
         import clause_splitter.pipeline.split_stage as split_stage_mod
 
-        async def _no_mineru(src, llm):
-            raise RuntimeError("MinerU disabled in tests")
+        async def _no_remote_parse(src, llm, service=None):
+            raise RuntimeError("block parsing disabled in tests")
 
-        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
 
         try:
             reg, created = await regulation_service.upload(
@@ -127,6 +122,7 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
 
             # ── stage calls observed on the fake LLM ──────────────────
             assert "applicability" in llm.calls
+            assert "doc_profile" in llm.calls
             assert "internalization" in llm.calls
             assert "relevance" in llm.calls
         finally:

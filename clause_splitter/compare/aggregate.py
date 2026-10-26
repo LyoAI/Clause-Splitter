@@ -3,7 +3,7 @@
 ``run_compare()`` is the core comparison flow:
 
 1. Engine assembly goes through ``orchestrator.build_registry`` /
-   ``build_agent`` (chillrag backends + a ReAct agent with the
+   ``build_agent`` (RAG tool registry + a ReAct agent with the
    analysis_agent.md prompt injected), built once and shared across episodes
    (``agent.arun`` rebuilds messages each round — no shared mutable state).
 2. ``Semaphore(concurrency)`` + ``asyncio.wait_for(episode_timeout)`` run all
@@ -19,8 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable
 
-from chillrag.tools.searcher.store import DocumentStore
-
+from clause_splitter.rag import RagError, RagService
 from clause_splitter.config import (
     COMPARE_CONCURRENCY,
     EPISODE_TIMEOUT_S,
@@ -103,7 +102,7 @@ async def _pre_internalize(
 def _ensure_adopted_in_candidates(
     candidates: list[RetrievedCandidate],
     adopted_ids: set[str],
-    store: DocumentStore,
+    lookup: Any,
     query: str,
 ) -> None:
     """Force grounding-adopted clauses into the candidate list.
@@ -118,7 +117,7 @@ def _ensure_adopted_in_candidates(
     for cid in adopted_ids:
         if cid in present:
             continue
-        chunk = store.get_chunk(cid)
+        chunk = lookup.get_chunk(cid)
         if chunk is None:
             continue
         candidates.append(RetrievedCandidate(
@@ -134,12 +133,26 @@ def _ensure_adopted_in_candidates(
         ))
 
 
+def _corpus_view(service: RagService) -> tuple[list[str], int]:
+    """Document names + chunk count for report headers; failures degrade to empty."""
+    docs: list[str] = []
+    chunks = 0
+    try:
+        docs = sorted({d.name or d.doc_id for d in service.documents()})
+    except RagError as e:  # noqa: BLE001 — display metadata must not fail the batch
+        logger.warning("RAG documents() failed: %s", e)
+    try:
+        chunks = service.stats().chunk_count
+    except RagError as e:  # noqa: BLE001
+        logger.warning("RAG stats() failed: %s", e)
+    return docs, chunks
+
+
 async def run_compare(
     external_clauses: list[ExternalClause],
-    store: DocumentStore,
+    service: RagService,
     llm: Any,
     *,
-    searcher: str = "hybrid",
     concurrency: int = COMPARE_CONCURRENCY,
     episode_timeout: float = EPISODE_TIMEOUT_S,
     persist_dir: str | None = None,
@@ -163,9 +176,8 @@ async def run_compare(
 
     Args:
         external_clauses: External clauses (one episode each).
-        store: Internal clause library with indexes built.
+        service: External RAG service (internal corpus).
         llm: ``LLM`` facade.
-        searcher: grep / bm25 / faiss / hybrid (default hybrid).
         persist_dir: When set, persist each episode trajectory there.
         model/provider/company: Persistence metadata.
         review_top_k: Deterministic batch pre-recall candidates attached per
@@ -178,11 +190,13 @@ async def run_compare(
     Returns:
         CompareResult; matches line up with external_clauses (same order).
     """
+    # Display metadata is one HTTP round trip; keep it off the event loop.
+    internal_documents, internal_chunks = await asyncio.to_thread(_corpus_view, service)
     if not external_clauses:
         return CompareResult(
-            external_documents=[], internal_documents=sorted(store.docs),
+            external_documents=[], internal_documents=internal_documents,
             total_external_obligations=0,
-            total_internal_obligations=len(store.all_chunks()),
+            total_internal_obligations=internal_chunks,
         )
 
     # Pre-internalization judgment before retrieval. Clauses already judged
@@ -200,17 +214,16 @@ async def run_compare(
     # cycle; resolving at call time also keeps this monkeypatch-friendly.
     from clause_splitter.orchestrator import build_agent, build_registry
 
-    registry = build_registry(store, searcher)
+    registry = build_registry(service)
     agent = build_agent(llm, registry)
     sem = asyncio.Semaphore(concurrency)
 
-    def _attach_candidates(match: MatchResult, ext: ExternalClause) -> None:
+    async def _attach_candidates(match: MatchResult, ext: ExternalClause) -> None:
         """Attach batch pre-recall candidates (review page) + force-adopted ones."""
         candidates: list[RetrievedCandidate] = []
         try:
-            candidates = pre_retrieve(
-                store, list(registry.searchers.values()),
-                ext.full_text, top_k=review_top_k,
+            candidates = await asyncio.to_thread(
+                pre_retrieve, service, ext.full_text, top_k=review_top_k
             )
         except Exception as e:  # noqa: BLE001 — display data must not fail the batch
             logger.warning("pre_retrieve failed (%s); no candidates for this clause: %s",
@@ -220,7 +233,7 @@ async def run_compare(
             adopted_ids = {match.matched_internal_id}
         for cand in candidates:
             cand.adopted = cand.chunk_id in adopted_ids
-        _ensure_adopted_in_candidates(candidates, adopted_ids, store, ext.full_text)
+        _ensure_adopted_in_candidates(candidates, adopted_ids, registry, ext.full_text)
         match.retrieved_candidates = candidates
 
     async def _run_one(ext: ExternalClause) -> MatchResult:
@@ -235,22 +248,22 @@ async def run_compare(
             except asyncio.TimeoutError:
                 logger.warning("episode timeout (%.0fs): %s", episode_timeout, ext.clause_id)
                 match = _timeout_match(ext, episode_timeout)
-                _attach_candidates(match, ext)
+                await _attach_candidates(match, ext)
                 return match
             except Exception as e:  # noqa: BLE001 — one failure must not fail the batch
                 logger.error("episode failed %s: %s", ext.clause_id, e)
                 match = _timeout_match(ext, episode_timeout)
-                _attach_candidates(match, ext)
+                await _attach_candidates(match, ext)
                 return match
 
             if persist_dir:
                 persist_result(
                     result, persist_dir,
                     model=model, provider=provider, company=company,
-                    searcher=searcher, query_id=ext.clause_id,
+                    searcher=service.name, query_id=ext.clause_id,
                 )
             try:
-                match = MatchResult(**ground_episode(result, store, ext))
+                match = MatchResult(**ground_episode(result, registry, ext))
             except Exception as e:  # noqa: BLE001 — grounding failure degrades to missing
                 logger.error("grounding failed %s: %s", ext.clause_id, e)
                 match = MatchResult(
@@ -264,7 +277,7 @@ async def run_compare(
                     internalization_decision=ext.internalization_decision,
                     internalization_reason=ext.internalization_reason,
                 )
-            _attach_candidates(match, ext)
+            await _attach_candidates(match, ext)
             return match
 
     done = 0
@@ -285,8 +298,8 @@ async def run_compare(
 
     return CompareResult(
         external_documents=sorted({c.document_name for c in external_clauses}),
-        internal_documents=sorted(store.docs),
+        internal_documents=internal_documents,
         total_external_obligations=len(external_clauses),
-        total_internal_obligations=len(store.all_chunks()),
+        total_internal_obligations=internal_chunks,
         matches=[m for m in matches if m is not None],
     )

@@ -1,8 +1,7 @@
 """Pytest configuration — load .env before any test imports.
 
-PySerini (imported by tools.search) needs JAVA_HOME + OPENAI_API_KEY
-set in os.environ at import time. This conftest ensures .env is loaded
-before any test module triggers the PySerini import chain.
+Settings (LLM endpoints, RAG service URL) are read from the environment at
+import time, so .env must be loaded before any test module imports them.
 """
 
 from pathlib import Path

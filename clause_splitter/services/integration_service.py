@@ -2,9 +2,10 @@
 
 The system backend pushes regulation documents here (``POST /regulations/push``)
 and receives the final result through the ESG callback (or pulls
-``GET /regulations/{docId}/result``). Push / callback field semantics are still
-being aligned with the backend team, so every assumption lives in this module —
-adjusting them must not touch the pipeline.
+``GET /regulations/{docId}/result``). Both transports carry the same flat
+legacy-compatible payload: document fields at the top level, clause fields in
+``data[]``. Every shape assumption lives in this module — adjusting them must
+not touch the pipeline.
 """
 
 from __future__ import annotations
@@ -107,9 +108,8 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
     if not args.get("docId"):
         raise ApiError(400, "push args.docId is required")
 
-    # Backend-owned extensibility slot: stored verbatim and echoed at the top
-    # level of the result payload. It never influences the pipeline, so no
-    # schema is imposed beyond "object".
+    # Backend-owned extensibility slot: stored verbatim for compatibility. It
+    # never influences the pipeline and is not echoed in the result payload.
     extra_params = args.get("extraParams")
     if extra_params is None:
         extra_params = {}
@@ -147,12 +147,12 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
 
 # ── result payload (shared by ESG callback and the docId pull) ──────────
 #
-# Contract lives in docs/callback-contract.md. Shape:
-#   {code, msg, metadata, stages, data{applicability,split,internalization,analysis}}
-# Every stage is ``done|failed|pending``; a stage with no results has its
-# data field set to null (never an empty object).
+# Contract lives in assets/callback-contract.md. Flat legacy-compatible shape,
+# in this exact key order:
+#   {code, msg, docId, docKeyword, docType, docAbstract, taskId, applicable,
+#    applicableReason, data[]}
+# ``data`` is always a list (empty when there are no clauses).
 
-STAGES = ("applicability", "split", "internalization", "analysis")
 #: Job states still in flight — payload reports code "2" (处理中).
 _PENDING_JOB_STATES = ("queued", "running", "scheduled")
 
@@ -165,36 +165,7 @@ async def build_result(doc_id: str) -> dict[str, Any]:
     jobs, _total = await get_repos().jobs.list(
         regulation_id=reg["_id"], job_type="chain", limit=1,
     )
-    return await _build_callback(reg, jobs[0] if jobs else None)
-
-
-def _metadata(reg: dict[str, Any]) -> dict[str, Any]:
-    """Push identifiers echoed back verbatim — the backend's only locators."""
-    return {
-        "docId": reg.get("push_doc_id", ""),
-        "taskId": reg.get("push_task_id", ""),
-        "uid": reg.get("push_uid", ""),
-        "docType": reg.get("push_doc_type", ""),
-        "optType": reg.get("push_opt_type"),
-    }
-
-
-def _stage_status(reg: dict[str, Any], job: dict[str, Any] | None, name: str) -> str:
-    """done / failed / pending.
-
-    ``done`` = settled: the stage ran, or an upstream branch decided it never
-    will (orchestrator stamps ``skipped``; a terminal job leaves it blank).
-    ``pending`` = still to come (queued / running / interrupted-and-resumable).
-    """
-    state = reg.get(f"{name}_state") or ""
-    if state == "failed":
-        return "failed"
-    if state in ("done", "skipped"):
-        return "done"
-    job_state = (job or {}).get("state", "")
-    if job_state in _PENDING_JOB_STATES or not job_state:
-        return "pending"
-    return "done"
+    return await _build_payload(reg, jobs[0] if jobs else None)
 
 
 def _code(job: dict[str, Any] | None) -> str:
@@ -230,7 +201,7 @@ def _chapter(row: dict[str, Any]) -> str:
     return " > ".join(parts)
 
 
-def _relation_clauses(row: dict[str, Any]) -> list[dict[str, str]]:
+def _relation_terms(row: dict[str, Any]) -> list[dict[str, str]]:
     """Internal clauses the episode adopted as coverage (mirrors review.py)."""
     out: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -260,123 +231,79 @@ def _relation_clauses(row: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
-def _analysis_counts(reg: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, int]:
-    """Stored summary when present, else derived from the clause rows."""
-    summary = reg.get("analysis_summary") or {}
-    if summary:
-        return {
-            "fullyCoveredCount": int(summary.get("fully_covered_count", 0)),
-            "partiallyCoveredCount": int(summary.get("partially_covered_count", 0)),
-            "missingCount": int(summary.get("missing_count", 0)),
-            "internalizableCount": int(summary.get("internalizable_count", 0)),
-            "noInternalizationCount": int(summary.get("no_internalization_count", 0)),
-        }
-    internalizable = [r for r in rows if (r.get("internalization_decision") or "") != "无需内化"]
-    statuses = [r.get("status") for r in rows]
+def _clause_item(row: dict[str, Any], doc_id: str) -> dict[str, Any]:
+    """One ``data[]`` element — legacy clause fields plus the new analysis ones."""
+    from clause_splitter.pipeline.doc_profile import term_keywords
+
+    order = str(int(row.get("seq", 0)))
+    content = row.get("clause_text") or ""
     return {
-        "fullyCoveredCount": statuses.count("完全覆盖"),
-        "partiallyCoveredCount": statuses.count("部分覆盖"),
-        "missingCount": sum(
-            1 for r in internalizable if r.get("status") == "缺失"
-        ),
-        "internalizableCount": len(internalizable),
-        "noInternalizationCount": sum(
-            1 for r in rows if r.get("internalization_decision") == "无需内化"
-        ),
+        "chapter": _chapter(row),
+        "orderNum": order,
+        "relationTerms": _relation_terms(row),
+        "termContent": content,
+        "termId": f"{doc_id}-{order}",
+        "termKeyword": row.get("term_keyword") or term_keywords(content),
+        "termName": (row.get("clause_number") or "").strip(),
+        "internalize": row.get("internalization_decision") or "",
+        "internalizeReason": row.get("internalization_reason") or "",
+        "coverageStatus": row.get("status") or "",
+        "analysis": row.get("analysis") or "",
+        "differenceAnalysis": row.get("difference_analysis") or "",
+        "coreRequirements": row.get("core_regulatory_requirements") or "",
+        "remedySuggestion": row.get("remedy_suggestion") or "",
     }
 
 
-def _result_data(
-    reg: dict[str, Any], rows: list[dict[str, Any]], doc_id: str,
-) -> dict[str, Any]:
-    """Per-stage results; ``None`` when a stage produced nothing."""
-    applicable = reg.get("applicability_applicable")
-    applicability = None
-    if applicable is not None or reg.get("applicability_reason"):
-        applicability = {
-            "applicable": applicable,
-            "reason": reg.get("applicability_reason") or "",
-        }
+async def _profile_fields(
+    reg: dict[str, Any], rows: list[dict[str, Any]], code: str,
+) -> tuple[str, str]:
+    """Stored profile, else a deterministic fallback (settled runs only).
 
-    split = None
-    if rows:
-        clauses = []
-        for row in rows:
-            order = int(row.get("seq", 0)) + 1
-            name = (row.get("clause_number") or "").strip()
-            clauses.append({
-                "clauseId": f"{doc_id}_{order}",
-                "orderNum": order,
-                "chapter": _chapter(row),
-                "clauseName": name,
-                "clauseContent": row.get("clause_text") or "",
-            })
-        split = {"clauseCount": len(clauses), "clauses": clauses}
+    While the job is still processing (``code == "2"``) no text extraction is
+    attempted — polling must stay cheap; the split stage fills these in anyway.
+    """
+    abstract = str(reg.get("doc_abstract") or "")
+    keyword = str(reg.get("doc_keyword") or "")
+    if code == "2" or (abstract and keyword):
+        return abstract, keyword
 
-    internalization = None
-    judged = [
-        r for r in rows
-        if r.get("clause_type") or r.get("internalization_decision")
-    ]
-    if judged:
-        internalization = {"clauses": [
-            {
-                "clauseId": f"{doc_id}_{int(r.get('seq', 0)) + 1}",
-                "clauseType": r.get("clause_type") or "",
-                "internalize": r.get("internalization_decision") or "",
-                "internalizeReason": r.get("internalization_reason") or "",
-            }
-            for r in judged
-        ]}
+    from clause_splitter.pipeline import doc_profile
+    from clause_splitter.utils.doc_parser import extract_text
+    from config.config_app import CONFIG_APP
 
-    analysis = None
-    analyzed = [r for r in rows if r.get("status")]
-    if analyzed or reg.get("analysis_summary"):
-        counts = _analysis_counts(reg, rows)
-        covered = counts["fullyCoveredCount"] + counts["partiallyCoveredCount"]
-        analysis = {
-            # covered / internalizable — same fraction the review page shows.
-            "coverageRate": f"{covered}/{counts['internalizableCount']}",
-            **counts,
-            "clauses": [
-                {
-                    "clauseId": f"{doc_id}_{int(r.get('seq', 0)) + 1}",
-                    "coverageStatus": r.get("status") or "",
-                    "analysis": r.get("analysis") or "",
-                    "differenceAnalysis": r.get("difference_analysis") or "",
-                    "coreRequirements": r.get("core_regulatory_requirements") or "",
-                    "remedySuggestion": r.get("remedy_suggestion") or "",
-                    "relationClauses": _relation_clauses(r),
-                }
-                for r in analyzed
-            ],
-        }
-
-    data = {
-        "applicability": applicability,
-        "split": split,
-        "internalization": internalization,
-        "analysis": analysis,
-    }
-    return data if any(v is not None for v in data.values()) else None
+    sample = "\n".join((r.get("clause_text") or "") for r in rows[:2]).strip()
+    if not sample and reg.get("source_path"):
+        sample = await asyncio.to_thread(
+            extract_text, Path(reg["source_path"]), max_chars=CONFIG_APP.applicability_max_chars,
+        )
+    sample = sample or ""
+    return (
+        abstract or doc_profile.fallback_abstract(sample),
+        keyword or doc_profile.doc_keywords(sample),
+    )
 
 
-async def _build_callback(
+async def _build_payload(
     reg: dict[str, Any], job: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Callback / pull body — see assets/callback-contract.md."""
     rows, _total = await get_repos().clauses.list_for_regulation(reg["_id"])
     rows.sort(key=lambda r: r.get("seq", 0))
-    metadata = _metadata(reg)
-    doc_id = metadata["docId"] or reg["_id"]
+    doc_id = reg.get("push_doc_id") or reg["_id"]
     code = _code(job)
+    abstract, keyword = await _profile_fields(reg, rows, code)
     return {
         "code": code,
         "msg": _message(code, reg, job),
-        "extraParams": reg.get("push_extra_params") or {},
-        "metadata": metadata,
-        "stages": {name: _stage_status(reg, job, name) for name in STAGES},
-        "data": _result_data(reg, rows, doc_id),
+        "docId": doc_id,
+        "docKeyword": keyword,
+        "docType": reg.get("push_doc_type") or "",
+        "docAbstract": abstract,
+        "taskId": reg.get("push_task_id") or "",
+        "applicable": reg.get("applicability_applicable"),
+        "applicableReason": reg.get("applicability_reason") or "",
+        "data": [_clause_item(row, doc_id) for row in rows],
     }
 
 
@@ -385,7 +312,7 @@ def _post_callback(url: str, payload: dict[str, Any]) -> None:
     resp.raise_for_status()
     logger.info(
         "backend callback delivered (task %s, http %s)",
-        payload.get("metadata", {}).get("taskId"), resp.status_code,
+        payload.get("taskId"), resp.status_code,
     )
 
 
@@ -409,7 +336,7 @@ async def _on_job_done(job: dict[str, Any]) -> None:
     reg = await repos.regulations.get(job["regulation_id"])
     if reg is None or not reg.get("push_task_id"):
         return
-    payload = await _build_callback(reg, fresh or job)
+    payload = await _build_payload(reg, fresh or job)
     try:
         await asyncio.to_thread(_deliver_callback, payload)
     except Exception as exc:  # noqa: BLE001 — callback is best-effort
@@ -425,7 +352,7 @@ def _deliver_callback(payload: dict[str, Any]) -> None:
         result = client.post_callback(payload)
         logger.info(
             "esg callback delivered (task %s, ret %s)",
-            payload.get("metadata", {}).get("taskId"), result.get("ret"),
+            payload.get("taskId"), result.get("ret"),
         )
         return
     _post_callback(CONFIG_APP.backend_callback_url, payload)

@@ -2,7 +2,7 @@
 
 Legal documents express their hierarchy with markers that are *not* Word
 heading styles: 第一章 / 第一节 / 第一条, hand-bolded or plain, all in the
-``Normal`` paragraph style. MinerU therefore emits them as plain ``paragraph``
+``Normal`` paragraph style. Parsers therefore emit them as plain ``paragraph``
 blocks and cannot recover the structure by itself. ``infer_regulation_headings``
 is an additive pre-pass that restores it:
 
@@ -14,7 +14,7 @@ is an additive pre-pass that restores it:
   external regulation is compared clause-by-clause, so the internal library is
   indexed clause-by-clause too, with the chapter path preserved in
   ``meta.section`` (e.g. "第一章　总则 > 第一条").
-- A document that already has real MinerU headings is *augmented*, not
+- A document that already has real ``title`` blocks is *augmented*, not
   skipped: marker ``title`` blocks are re-leveled and marker paragraphs are
   still split into heading + body, so a docx whose 章 use heading styles but
   whose 条 are plain paragraphs still indexes per-条.
@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 
-from chillrag.tools.parser import Block
+from clause_splitter.parsing.blocks import Block
 
 # Opening regulation marker, e.g. ``第一章`` / ``第一节`` / ``第一条`` / ``第一编``.
 # ``\s*`` around the numeral tolerates sloppy hand-typing ("第 一 条"); ``\d``
@@ -76,7 +76,7 @@ def infer_regulation_headings(blocks: list[Block]) -> list[Block]:
 
     Returns ``blocks`` unchanged for non-regulation documents. For
     regulation-shaped documents, marker paragraphs are split into a ``title``
-    block (computed level) plus its body; marker ``title`` blocks (MinerU real
+    block (computed level) plus its body; marker ``title`` blocks (parser real
     headings) are re-leveled to the same scale so section paths agree. A 条
     always opens its own chunk; 编 / 章 / 节 provide the section-path context.
     """
@@ -118,7 +118,7 @@ def infer_regulation_headings(blocks: list[Block]) -> list[Block]:
                 order += 1
         else:
             # 编 / 章 / 节: the whole line is the heading (第一章　总则). Same for
-            # MinerU title blocks as for marker paragraphs.
+            # parser title blocks as for marker paragraphs.
             title = text.strip("* ").strip()
             out.append(Block(b.block_id, "title", title, b.page, order, level))
             order += 1

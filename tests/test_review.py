@@ -3,7 +3,7 @@
 The review page is the most important increment for 作业人员: every external
 clause shows the deterministic top-k internal clauses that were recalled, so
 the operator can judge relevance / trust against the episode's own result.
-These tests pin (1) the cross-backend merge in ``pre_retrieve`` and (2) that
+These tests pin (1) the ranking / dedupe in ``pre_retrieve`` and (2) that
 ``render_review_html`` produces a self-contained page carrying candidates,
 keyword highlights, and the 「✓ 采用」 adopted marker.
 """
@@ -22,63 +22,48 @@ from clause_splitter.models import (
     MatchResult,
     RetrievedCandidate,
 )
-from chillrag.tools.searcher.base import BaseSearcher, Hit
-from chillrag.tools.searcher.store import Chunk, DocumentStore
+from clause_splitter.rag import Hit, RagUnavailable
 
 
-class FakeSearcher(BaseSearcher):
-    """Deterministic searcher: returns the hits it was constructed with."""
+class FakeService:
+    """Deterministic RAG service: returns the hits it was constructed with."""
 
     name = "fake"
 
-    def __init__(self, name: str, hits: list[Hit]) -> None:
-        self.name = name
-        self._hits = hits
+    def __init__(self, hits: list[Hit], error: Exception | None = None) -> None:
+        self.hits = hits
+        self.error = error
 
     def search(self, query: str, k: int) -> list[Hit]:
-        return self._hits[:k]
+        if self.error is not None:
+            raise self.error
+        return self.hits[:k]
 
 
-def _store() -> DocumentStore:
-    store = DocumentStore(name="review-test")
-    store.add_chunk(Chunk(
-        chunk_id="数据安全办法#0", doc_id="数据安全办法", order=0,
-        text="第一条　本制度适用于数据分类分级与数据安全风险评估。",
-        meta={"section": "第一章　总则 > 第一条"},
-    ))
-    store.add_chunk(Chunk(
-        chunk_id="数据安全办法#1", doc_id="数据安全办法", order=1,
-        text="第二条　重要数据应当加密存储,并实施访问控制。",
-        meta={"section": "第一章　总则 > 第二条"},
-    ))
-    return store
-
-
-def test_pre_retrieve_merges_backends_by_chunk_id() -> None:
-    store = _store()
-    searchers = [
-        FakeSearcher("grep", [
-            Hit(score=5.0, chunk_id="数据安全办法#1", text="第二条　重要数据应当加密存储。", meta={}),
-            Hit(score=3.0, chunk_id="数据安全办法#0", text="第一条　本制度适用于数据分类分级。", meta={}),
-        ]),
-        FakeSearcher("bm25", [
-            Hit(score=4.0, chunk_id="数据安全办法#1", text="第二条　重要数据应当加密存储。", meta={}),
-        ]),
-    ]
-    cands = pre_retrieve(store, searchers, "数据应当加密存储", top_k=5)
+def test_pre_retrieve_ranks_hits_and_dedupes() -> None:
+    service = FakeService([
+        Hit(score=5.0, chunk_id="数据安全办法#1", text="第二条　重要数据应当加密存储。",
+            doc_id="数据安全办法", section="第一章　总则 > 第二条"),
+        Hit(score=3.0, chunk_id="数据安全办法#0", text="第一条　本制度适用于数据分类分级。",
+            doc_id="数据安全办法", section="第一章　总则 > 第一条"),
+        # Same chunk returned twice: the best score wins, order is by score.
+        Hit(score=4.0, chunk_id="数据安全办法#1", text="第二条　重要数据应当加密存储。",
+            doc_id="数据安全办法", section="第一章　总则 > 第二条"),
+    ])
+    cands = pre_retrieve(service, "数据应当加密存储", top_k=5)
     assert [c.chunk_id for c in cands] == ["数据安全办法#1", "数据安全办法#0"]
     top = cands[0]
-    # best score wins across backends; backends joined deterministically
     assert top.score == 5.0
-    assert top.backend == "grep,bm25"
-    # provenance resolved from the store (single source of truth)
+    assert top.backend == "fake"
     assert top.doc_name == "数据安全办法"
     assert top.clause_label == "第二条"
     assert "加密存储" in top.full_text
 
 
-def test_pre_retrieve_empty_without_searchers() -> None:
-    assert pre_retrieve(_store(), [], "任意条款") == []
+def test_pre_retrieve_degrades_on_search_failure() -> None:
+    service = FakeService([], error=RagUnavailable("down"))
+    assert pre_retrieve(service, "任意条款") == []
+    assert pre_retrieve(FakeService([]), "") == []
 
 
 def test_highlight_escapes_and_merges_spans() -> None:
@@ -121,7 +106,7 @@ def test_render_review_html_self_contained(tmp_path: Path) -> None:
                 chunk_id="数据安全办法#1",
                 doc_name="数据安全办法",
                 clause_label="第二条",
-                backend="bm25",
+                backend="remote",
                 score=4.0,
                 query="外规要求重要数据，应当加密存储。",
                 snippet="第二条　重要数据应当加密存储,并实施访问控制。",
@@ -197,7 +182,7 @@ def test_render_review_html_self_contained(tmp_path: Path) -> None:
 
 def _cand(chunk_id: str, doc: str, label: str, text: str, *, adopted: bool = False, score: float = 1.0) -> RetrievedCandidate:
     return RetrievedCandidate(
-        chunk_id=chunk_id, doc_name=doc, clause_label=label, backend="bm25",
+        chunk_id=chunk_id, doc_name=doc, clause_label=label, backend="remote",
         score=score, query="外规要求数据加密", snippet=text, full_text=text, adopted=adopted,
     )
 
@@ -274,7 +259,7 @@ def test_review_candidate_shows_snippet_only(tmp_path):
         _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
         RetrievedCandidate(
             chunk_id="数据安全办法#1b", doc_name="数据安全办法", clause_label="第二条",
-            backend="bm25", score=1.0, query="外规要求数据加密",
+            backend="remote", score=1.0, query="外规要求数据加密",
             snippet="第二条　重要数据应当加密存储。", full_text=long_text,
         ),
     ])
@@ -328,7 +313,7 @@ def test_review_embeds_export_data(tmp_path):
     assert "建议在数据安全办法中补充访问控制条款。" in row["remedy"]  # 整改建议
     assert "【数据安全办法 第二条】" in row["adopted"]       # 采用内规 + snippet
     assert "✓ 数据安全办法 第二条" in row["recall"]          # 采用候选 ✓ 前缀、优先
-    assert "（bm25 1.0000）" in row["recall"]                # 页面去掉的后端列,导出仍保留
+    assert "（remote 1.0000）" in row["recall"]                # 页面去掉的后端列,导出仍保留
     assert "第一条　本制度适用于数据分类分级。" in row["recall"]  # 未采用候选全文
     assert "外规要求加密存储并实施访问控制" in row["diff"]    # 差异说明(部分覆盖)
 

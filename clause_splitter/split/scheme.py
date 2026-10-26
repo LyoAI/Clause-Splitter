@@ -11,13 +11,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from chillrag.tools.parser import Block
-from chillrag.tools.parser.mineru_parse import SUPPORTED_SUFFIXES
-
-from clause_splitter.config import CHUNK_LEVEL, MINERU_MD_DIRNAME, doc_cache_dir
+from clause_splitter.config import CHUNK_LEVEL
+from clause_splitter.parsing.blocks import Block
 from clause_splitter.prompts import render
 from clause_splitter.utils import get_logger
 from clause_splitter.utils.json_utils import parse_json_from_text
@@ -43,43 +40,6 @@ class SchemeRule:
 
     def to_json(self) -> dict:
         return {"pattern": self.pattern.pattern, "level": self.level, "kind": self.kind}
-
-
-# ── block acquisition (suffix dispatch) ────────────────────────────────
-
-
-def get_blocks(path: Path) -> list[Block]:
-    """Blocks for any supported source: MinerU formats / markdown / plain text.
-
-    Heavy (MinerU subprocess); async callers wrap in ``asyncio.to_thread``.
-    """
-    suffix = path.suffix.lower()
-    if suffix in SUPPORTED_SUFFIXES:
-        from chillrag.tools.parser import parse_docs
-
-        print(f"═══ 外规 MinerU 解析: {path.name} ═══")
-        md_dir = doc_cache_dir("external") / MINERU_MD_DIRNAME
-        return parse_docs([path], out_dir=md_dir)[path.name]
-    if suffix in (".md", ".markdown"):
-        from chillrag.tools.parser.parse_markdown import parse_markdown_file
-
-        return parse_markdown_file(path)
-    if suffix in (".txt", ".doc"):
-        from clause_splitter.utils.doc_parser import extract_text
-
-        return blocks_from_text(extract_text(path))
-    raise ValueError(f"unsupported source suffix: {suffix or '(none)'}")
-
-
-def blocks_from_text(text: str) -> list[Block]:
-    """Synthesize one paragraph block per non-empty line (old-version parity:
-    their splitter also worked line-by-line). Heading passes match per line;
-    body lines under one heading stay in the same chunk."""
-    return [
-        Block(f"t{i}", "paragraph", line, 1, i)
-        for i, line in enumerate(l.strip() for l in text.splitlines())
-        if line
-    ]
 
 
 # ── layer ①: LLM scheme inference ──────────────────────────────────────

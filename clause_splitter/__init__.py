@@ -3,12 +3,13 @@
 Layering (one-directional):
 
     config.py / models.py / utils  ->  llm  ->  pipeline (4 business stages)
-                                                compare (ingest / episode / grounding / report)
-    jobs -> orchestrator (engine seam + chain) -> the above
+                                                compare (episode / grounding / report)
+    jobs -> orchestrator (chain) -> the above
     services / api (FastAPI thin shell) sit on top.
 
-The RAG engine is the vendored ``chillrag`` package (general-purpose, no
-domain assumptions): at runtime only ``orchestrator`` and the compare.ingest /
-compare.index preparation modules import it — retrieval policy and prompts
-are passed in as injected arguments (engine seam).
+Parsing and retrieval are external. ``parsing`` turns a source document into
+blocks (remote parse first, local text-extraction fallback); ``rag`` is the
+HTTP client for the corpus service (parse / ingest / search). The ReAct agent
+(``agent``) and the per-article chunker (``split/chunker.py``) are algorithm
+pieces kept in-repo, not retrieval implementations.
 """

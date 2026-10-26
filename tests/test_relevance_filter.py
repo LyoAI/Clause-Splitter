@@ -27,7 +27,7 @@ def _cand(i: int, *, adopted: bool = False, doc: str = "内部制度") -> Retrie
         chunk_id=f"内规#第{i}条",
         doc_name=doc,
         clause_label=f"第{i}条",
-        backend="bm25",
+        backend="remote",
         score=1.0,
         query="外规",
         snippet=f"候选片段 {i}",

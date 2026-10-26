@@ -1,7 +1,9 @@
 """FastAPI application base: request tracing, unified response envelope, health check.
 
-Ported from the PingAn http-server template. All successful responses are wrapped
-as {code, status, data, msg}; errors carry a machine-readable error_code in data.
+Ported from the PingAn http-server template. Successful responses are wrapped as
+{code, status, data, msg}; errors carry a machine-readable error_code in data.
+Exception: ``GET /regulations/{docId}/result`` returns the flat backend result
+payload directly (identical to the ESG callback body).
 """
 
 from __future__ import annotations
@@ -77,7 +79,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Regulation Internalization Service",
     description="External-regulation applicability, clause splitting, internalization judgment and gap analysis against the internal rule library.",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 

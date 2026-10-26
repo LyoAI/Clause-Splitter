@@ -16,7 +16,6 @@ class ConfigApp:
     job_workers: int
     max_upload_mb: int
     applicability_max_chars: int
-    searcher: str
     log_level: str
     company_profile: str
     backend_callback_url: str
@@ -42,7 +41,6 @@ CONFIG_APP = ConfigApp(
     job_workers=int(os.environ.get("JOB_WORKERS", "1")),
     max_upload_mb=int(os.environ.get("MAX_UPLOAD_MB", "200")),
     applicability_max_chars=int(os.environ.get("APPLICABILITY_MAX_CHARS", "30000")),
-    searcher=os.environ.get("SEARCHER", "hybrid"),
     log_level=os.environ.get("LOG_LEVEL", "INFO"),
     company_profile=os.environ.get("COMPANY_PROFILE", DEFAULT_COMPANY_PROFILE),
     backend_callback_url=os.environ.get("BACKEND_CALLBACK_URL", ""),

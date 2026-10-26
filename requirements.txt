@@ -10,23 +10,12 @@ APScheduler>=3.11,<4
 # PingAn intranet gateway signing (only needed on the intranet path)
 pycryptodome==3.23.0
 
-# ── RAG engine (vendored chillrag/) ─────────────────────────────────────────
-# The `chillrag/` package ships inside this repo; its runtime deps live here.
-pyserini>=0.44.0               # BM25 (Lucene) — requires JDK 21 (JAVA_HOME in .env)
-pyjnius>=1.7.0                 # pyserini's JVM bridge
-faiss-cpu>=1.8.0               # dense (FAISS) index
-jieba==0.42.1                  # zh/en tokenizer for BM25 pretokenized mode
-sentence-transformers>=5.7.0   # qwen3-embedding-0.6b / bge-m3 dense embeddings
-transformers>=4.44.0           # chillrag chunker token counter
-numpy==2.4.6
-rich==15.0.0
-# Local document parser (PDF / docx / pptx / images); `pipeline` extra = offline
-# backend. `<4`: 4.x is a different program (hosted tiers, no -o/-b/-l flags).
-mineru[pipeline]>=3.4.4,<4
-torchvision>=0.28.0            # mineru leaves it unpinned; floor = resolved reference
-lxml==6.1.1
+# ── Retrieval ───────────────────────────────────────────────────────────────
+# Parsing / chunking / indexing / search run in the external RAG service
+# (assets/rag-service-contract.md). Only the clause keyword tokenizer is local.
+jieba==0.42.1
 
-# ── Business document handling ──────────────────────────────────────────────
+# ── Business document handling (local plain-text parse fallback) ────────────
 pdfplumber==0.11.9
 python-docx>=1.1.2
 openpyxl==3.1.5

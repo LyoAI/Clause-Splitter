@@ -26,7 +26,6 @@ from clause_splitter.models import (
 )
 from clause_splitter.prompts import load, render
 from clause_splitter.utils import get_logger
-from chillrag.tools.searcher.store import DocumentStore
 
 logger = get_logger()
 
@@ -329,7 +328,6 @@ def write_report(report: str, output_dir: str | Path) -> Path:
 
 def generate_gap_report(
     result: CompareResult,
-    store: DocumentStore,
     llm: Any = None,
     *,
     output_dir: str | Path = "",
@@ -338,7 +336,6 @@ def generate_gap_report(
 
     Args:
         result: 比对结果。
-        store: 内规条款库 —— 兼容参数,批处理路径按批喂承接条款,不再喂整库全文。
         llm: ``LLM`` facade;None 或调用失败时用模板回退。
         output_dir: 非空则把报告写入该目录。
 

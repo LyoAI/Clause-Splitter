@@ -27,7 +27,13 @@ DERIVED_FIELDS: dict[str, dict[str, Any]] = {
         "applicability_confidence": 0.0,
         "applicability_truncated": False,
     },
-    "split": {"article_count": None, "split_mode": ""},
+    "split": {
+        "article_count": None,
+        "split_mode": "",
+        "doc_abstract": "",
+        "doc_keyword": "",
+        "doc_profile_state": "",
+    },
     "internalization": {"needs_internalization_count": None, "no_internalization_count": None},
     "analysis": {"analysis_summary": None, "analysis_index_signature": ""},
 }
@@ -63,9 +69,8 @@ class StageContext:
     """Everything one stage execution needs; built per job by the runner.
 
     ``progress`` reports the stage-local fraction (0.0–1.0) plus a step label;
-    the runner scales it into job progress. ``store_loader`` returns the pinned
-    internal DocumentStore for the analysis stage (loaded once, held for the
-    whole run so an index rebuild can't swap it mid-flight).
+    the runner scales it into job progress. ``rag`` is the external retrieval
+    service (parse / search / corpus inspection).
     """
 
     regulation: dict[str, Any]
@@ -73,7 +78,7 @@ class StageContext:
     repos: Repos
     payload: dict[str, Any] = field(default_factory=dict)
     progress: Callable[[float, str], None] = field(default=lambda p, s: None)
-    store_loader: Callable[[], Any] | None = None
+    rag: Any = None
     model: str = ""
     provider: str = ""
 

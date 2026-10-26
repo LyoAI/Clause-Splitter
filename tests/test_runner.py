@@ -1,10 +1,10 @@
-"""JobRunner tests — execution, failure isolation, recovery, RWLock."""
+"""JobRunner tests — execution, failure isolation, recovery."""
 
 from __future__ import annotations
 
 import asyncio
 
-from clause_splitter.jobs import AsyncRWLock, JobRunner
+from clause_splitter.jobs import JobRunner
 from clause_splitter.pipeline.contexts import StageError
 from tests.fakes import fake_repos
 
@@ -95,44 +95,3 @@ async def test_unknown_job_type_fails_job():
     finally:
         await runner.stop()
 
-
-async def test_rwlock_writer_waits_for_readers():
-    lock = AsyncRWLock()
-    order: list[str] = []
-
-    async def writer():
-        async with lock.write():
-            order.append("write")
-
-    async def reader():
-        async with lock.read():
-            order.append("read2")
-
-    async with lock.read():
-        order.append("read1")
-        w = asyncio.create_task(writer())
-        await asyncio.sleep(0.05)
-        assert order == ["read1"]  # writer blocked while a reader holds the lock
-    await w
-    assert order == ["read1", "write"]
-
-    # Concurrent readers are allowed.
-    async with lock.read():
-        async with lock.read():
-            pass
-
-
-async def test_rwlock_reader_waits_for_writer():
-    lock = AsyncRWLock()
-    order: list[str] = []
-
-    async def reader():
-        async with lock.read():
-            order.append("read")
-
-    async with lock.write():
-        r = asyncio.create_task(reader())
-        await asyncio.sleep(0.05)
-        assert order == []  # reader blocked while the writer holds the lock
-    await r
-    assert order == ["read"]

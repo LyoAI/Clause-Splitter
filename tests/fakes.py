@@ -1,8 +1,8 @@
-"""Shared test fakes — in-memory Mongo, mock LLM, deterministic searcher.
+"""Shared test fakes — in-memory Mongo, mock LLM, deterministic RAG service.
 
-Ported from ``outputs/mock_e2e/run_mock_e2e.py`` so the service-level tests
-run the real pipeline (episodes / grounding / reports / stages / runner)
-against a fake LLM and a deterministic substring searcher.
+The service-level tests run the real pipeline (episodes / grounding / reports /
+stages / runner) against a fake LLM and an in-memory ``RagService``. Production
+code has no fake backend; only tests inject one via ``set_rag_service``.
 """
 
 from __future__ import annotations
@@ -14,10 +14,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from clause_splitter.agent.hints import SEARCH_TOOL
 from clause_splitter.llm.provider.base import LLMResponse, ToolCallRequest
 from clause_splitter.pipeline.contexts import Repos
-from chillrag.tools.searcher.base import BaseSearcher, Hit
-from chillrag.tools.searcher.store import Chunk, DocumentStore
+from clause_splitter.rag import (
+    Chunk,
+    CorpusStats,
+    DocInfo,
+    Hit,
+    ParsedDoc,
+    RagCapabilities,
+    RagNotFound,
+    RagUnavailable,
+)
 
 
 # ── in-memory Mongo ───────────────────────────────────────────────────────
@@ -178,25 +187,79 @@ LIBRARY_DOCS = [
 ]
 
 
-def build_store(name: str = "mock-internal") -> DocumentStore:
-    store = DocumentStore(name=name)
-    for doc_id, clauses in LIBRARY_DOCS:
-        for i, (num, text) in enumerate(clauses):
-            store.add_chunk(Chunk(
-                chunk_id=f"{doc_id}#{i}", doc_id=doc_id, order=i,
-                text=f"{num}　{text}", meta={"doc": doc_id, "section": num, "clause_number": num},
-            ))
-    return store
+def build_rag_service() -> "FakeRagService":
+    """In-memory corpus over ``LIBRARY_DOCS`` (deterministic substring search)."""
+    return FakeRagService()
 
 
-class SubstringSearcher(BaseSearcher):
-    """Scores chunks by query token hits — deterministic, zero JVM."""
+class FakeRagService:
+    """In-memory ``RagService`` for tests.
 
-    name = "mock"
-    description = "deterministic substring searcher (tests)"
+    Search scores chunks by query bigram hits — deterministic and engine-free.
+    ``parse`` raises by default so split exercises the local fallback; set
+    ``parse_text``/``parse_markdown`` to simulate a successful remote parse.
+    """
 
-    def __init__(self, store: DocumentStore) -> None:
-        self.store = store
+    name = "fake"
+    available = True
+
+    def __init__(self) -> None:
+        self.parse_text = ""
+        self.parse_markdown = ""
+        self.parse_error: Exception | None = RagUnavailable("fake remote parse disabled")
+        self.ingest_error: Exception | None = None
+        self.ingests: list[tuple[str, str, str]] = []
+        self.deletes: list[str] = []
+        self.chunks: list[Chunk] = []
+        for doc_id, clauses in LIBRARY_DOCS:
+            for i, (num, text) in enumerate(clauses):
+                self.chunks.append(Chunk(
+                    chunk_id=f"{doc_id}#{i}", doc_id=doc_id, order=i,
+                    text=f"{num}　{text}",
+                    meta={"doc": doc_id, "section": num, "clause_number": num},
+                ))
+        self._version = "fake-v1"
+
+    # ── parsing ───────────────────────────────────────────────────────
+
+    def capabilities(self) -> RagCapabilities:
+        return RagCapabilities()
+
+    def parse(self, path: Path, doc_id: str) -> ParsedDoc:
+        if self.parse_error is not None and not (self.parse_text or self.parse_markdown):
+            raise self.parse_error
+        return ParsedDoc(doc_id=doc_id, text=self.parse_text, markdown=self.parse_markdown)
+
+    # ── corpus ────────────────────────────────────────────────────────
+
+    def ingest(self, path: Path, name: str, doc_id: str = "") -> DocInfo:
+        assert path.exists(), path
+        if self.ingest_error is not None:
+            raise self.ingest_error
+        self.ingests.append((name, doc_id, str(path)))
+        doc_id = doc_id or path.stem
+        return DocInfo(doc_id=doc_id, name=name, chunk_count=1, state="indexed")
+
+    def delete(self, doc_id: str) -> None:
+        if not any(c.doc_id == doc_id for c in self.chunks):
+            raise RagNotFound(f"unknown document: {doc_id}")
+        self.deletes.append(doc_id)
+        self.chunks = [c for c in self.chunks if c.doc_id != doc_id]
+
+    def fetch_chunks(self, doc_id: str) -> list[Chunk]:
+        return [c for c in self.chunks if c.doc_id == doc_id]
+
+    def documents(self) -> list[DocInfo]:
+        counts: dict[str, int] = {}
+        for chunk in self.chunks:
+            counts[chunk.doc_id] = counts.get(chunk.doc_id, 0) + 1
+        return [DocInfo(doc_id=d, name=d, chunk_count=n, state="indexed")
+                for d, n in sorted(counts.items())]
+
+    def stats(self) -> CorpusStats:
+        return CorpusStats(
+            doc_count=len(self.documents()), chunk_count=len(self.chunks), version=self._version
+        )
 
     def search(self, query: str, k: int) -> list[Hit]:
         chars = [c for c in query if c.strip() and c not in "，。；、？！（）《》\"'：“”\n\t "]
@@ -206,26 +269,22 @@ class SubstringSearcher(BaseSearcher):
         if not tokens:
             return []
         scored = []
-        for c in self.store.all_chunks():
+        for c in self.chunks:
             score = sum(1 for w in tokens if w in c.text)
             if score:
-                scored.append(Hit(score=float(score), chunk_id=c.chunk_id, text=c.text, meta=c.with_doc()))
-        scored.sort(key=lambda h: (-h.score, h.chunk_id))
+                scored.append(Hit(
+                    score=float(score), chunk_id=c.chunk_id, text=c.text,
+                    doc_id=c.doc_id, section=str(c.meta.get("section", "")),
+                    meta=c.meta,
+                ))
+        scored.sort(key=lambda h: (-(h.score or 0.0), h.chunk_id))
         return scored[:k]
 
 
-def patch_registry(monkeypatch, store: DocumentStore) -> None:
-    """Bind one mock tool instead of the real grep/bm25/faiss registry."""
-    import clause_splitter.orchestrator as orch
-    from chillrag.tools import ToolRegistry
-    from chillrag.tools.registry import _TOOL_HINTS
-
-    _TOOL_HINTS["mock_search"] = {"zh": "关键词检索(mock)", "en": "keyword search (mock)"}
-
-    def _registry(store_: DocumentStore, searcher: str = "hybrid"):
-        return ToolRegistry({"mock": SubstringSearcher(store_)}, store_)
-
-    monkeypatch.setattr(orch, "build_registry", _registry)
+def patch_rag(monkeypatch, service: FakeRagService) -> FakeRagService:
+    """Point the process-wide client at ``service`` for the duration of a test."""
+    monkeypatch.setattr("clause_splitter.rag._service", service)
+    return service
 
 
 # ── mock LLM ──────────────────────────────────────────────────────────────
@@ -348,6 +407,15 @@ class PipelineFakeLLM:
                 }, ensure_ascii=False),
                 finish_reason="stop",
             )
+        if "文档摘要与关键词" in system:
+            self.calls.append("doc_profile")
+            return LLMResponse(
+                content=json.dumps({
+                    "abstract": "mock 摘要:本法规规范数据安全管理与风险评估要求。",
+                    "keywords": ["数据安全", "风险管理"],
+                }, ensure_ascii=False),
+                finish_reason="stop",
+            )
         if "内化判定框架" in system:
             self.calls.append("internalization")
             spec = spec_by_clause_text(user)
@@ -372,7 +440,7 @@ class PipelineFakeLLM:
             spec = spec_by_clause_text(user)
             return LLMResponse(
                 content="需要检索内规条款库确认承接情况。",
-                tool_calls=[ToolCallRequest(id="call_mock_1", name="mock_search",
+                tool_calls=[ToolCallRequest(id="call_mock_1", name=SEARCH_TOOL,
                                             arguments={"query": spec["keyword"]})],
                 finish_reason="tool_calls",
             )

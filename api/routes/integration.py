@@ -25,4 +25,7 @@ async def push(body: dict | None = None):
 
 @router.get("/{doc_id}/result")
 async def result(doc_id: str):
-    return ok(await integration_service.build_result(doc_id))
+    # Deliberate envelope exception: the backend parses this body exactly like
+    # the ESG callback, so return the flat payload (errors still use the
+    # unified error envelope with a non-2xx status).
+    return await integration_service.build_result(doc_id)

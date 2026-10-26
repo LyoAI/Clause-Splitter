@@ -1,15 +1,10 @@
 """Deterministic batch pre-retrieval for the HTML 复核展示 page.
 
-For every external clause we *additionally* run each bound searcher once,
-offline and deterministically, to surface the top-k internal clauses the recall
-relates to — display-only evidence the 作业人员 judges against the episode's own
-result (relevance, trust). The batch query is the clause text itself (the same
-input the agent works from), but the batch result never feeds back into the
-episode: no LLM, no state, no score contamination.
-
-Merging across backends: a chunk recalled by several searchers keeps its best
-score and a comma-joined backend tag; ties break by ``chunk_id`` so the page is
-stable across runs.
+For every external clause we additionally run one remote search and surface
+the top-k internal clauses the recall relates to — display-only evidence the
+作业人员 judges against the episode's own result. The batch query is the clause
+text itself; the batch result never feeds back into the episode (no LLM, no
+state, no score contamination). Duplicate chunk ids keep their best score.
 """
 
 from __future__ import annotations
@@ -19,9 +14,8 @@ import re
 
 from clause_splitter.config import REVIEW_TOP_K
 from clause_splitter.models import RetrievedCandidate
+from clause_splitter.rag import RagError, RagService
 from clause_splitter.utils import get_logger
-from chillrag.tools.searcher import DocumentStore
-from chillrag.tools.searcher.base import Hit
 from .ground import _segment_label
 
 logger = get_logger()
@@ -134,63 +128,55 @@ def highlight(text: str, query: str) -> str:
 
 
 def pre_retrieve(
-    store: DocumentStore,
-    searchers: list,
+    service: RagService,
     clause_text: str,
     *,
     top_k: int = REVIEW_TOP_K,
 ) -> list[RetrievedCandidate]:
-    """Top-k internal chunks for ``clause_text`` across all ``searchers``.
+    """Top-k internal chunks for ``clause_text`` from the RAG service.
 
     Args:
-        store: The internal store; ``doc_name`` / ``clause_label`` / full text
-            are resolved from its chunks (single source of truth).
-        searchers: Bound ``BaseSearcher`` instances (grep / bm25 / faiss).
+        service: External retrieval service.
         clause_text: The external clause text — used verbatim as the query.
         top_k: How many candidates to keep, best score first.
 
     Returns:
-        Candidates, highest best-score first; a searcher that raises is skipped
-        (logged) rather than aborting the page.
+        Candidates, highest score first; a failed search is logged and yields
+        no candidates rather than failing the batch.
     """
-    if not clause_text or not searchers:
+    if not clause_text:
         return []
+    try:
+        hits = service.search(clause_text, top_k)
+    except RagError as e:
+        logger.warning("pre_retrieve 检索失败,本条无候选: %s", e)
+        return []
+
     best: dict[str, dict] = {}
-    for searcher in searchers:
-        try:
-            hits = searcher.search(clause_text, k=top_k)
-        except Exception as e:  # noqa: BLE001 — 单后端失败不拖垮复核页
-            logger.warning("pre_retrieve 后端 %s 失败,跳过: %s", getattr(searcher, "name", "?"), e)
+    for h in hits:
+        if not h.chunk_id:
             continue
-        for h in hits:
-            entry = best.get(h.chunk_id)
-            if entry is None:
-                best[h.chunk_id] = {"score": h.score, "backends": [searcher.name], "hit": h}
-            else:
-                if h.score > entry["score"]:
-                    entry["score"] = h.score
-                if searcher.name not in entry["backends"]:
-                    entry["backends"].append(searcher.name)
+        entry = best.get(h.chunk_id)
+        if entry is None:
+            best[h.chunk_id] = {"score": h.score, "hit": h}
+        elif h.score is not None and (entry["score"] is None or h.score > entry["score"]):
+            entry["score"] = h.score
 
-    def _neg_score(entry: dict) -> float:
-        s = entry["score"]
-        return -(s if s is not None else float("-inf"))
+    def _key(entry: dict) -> tuple[float, str]:
+        score = entry["score"]
+        return (-(score if score is not None else float("-inf")), entry["hit"].chunk_id)
 
-    ordered = sorted(best.values(), key=lambda e: (_neg_score(e), e["hit"].chunk_id))
     candidates: list[RetrievedCandidate] = []
-    for entry in ordered[:top_k]:
-        h: Hit = entry["hit"]
-        chunk = store.get_chunk(h.chunk_id)
-        doc_name = (
-            chunk.doc_id if chunk else (h.meta.get("doc") or h.chunk_id.split("#", 1)[0])
-        )
-        clause_label = _segment_label(chunk) if chunk else ""
+    for entry in sorted(best.values(), key=_key)[:top_k]:
+        h = entry["hit"]
+        chunk = h.to_chunk()
+        doc_name = h.doc_id or str(h.meta.get("doc") or h.chunk_id.split("#", 1)[0])
         candidates.append(
             RetrievedCandidate(
                 chunk_id=h.chunk_id,
                 doc_name=doc_name,
-                clause_label=clause_label,
-                backend=",".join(entry["backends"]),
+                clause_label=_segment_label(chunk),
+                backend=service.name,
                 score=entry["score"],
                 query=clause_text,
                 snippet=_snippet(h.text, clause_text),

@@ -10,11 +10,6 @@ COPY pip.conf /root/.pip/
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Runtime tools: JDK 21 (PySerini BM25) and ripgrep (grep searcher).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openjdk-21-jre-headless ripgrep \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
@@ -23,7 +18,6 @@ COPY api /mapi/api
 COPY common /mapi/common
 COPY config /mapi/config
 COPY clause_splitter /mapi/clause_splitter
-COPY chillrag /mapi/chillrag
 COPY tests /mapi/tests
 # Fixed PingAn sidecar agent package — copied into the build context on the intranet.
 COPY detector-python-agent-v3.2.0 /mapi/detector-python-agent-v3.2.0

@@ -1,18 +1,9 @@
-"""Global configuration — business knobs only.
+"""Global configuration — service and business knobs.
 
-Two layers, deliberately kept apart:
-- **Business knobs (this module)**: LLM timeouts, review page, compare
-  concurrency, report batching, split thresholds — plus the per-article
-  chunking contract (CHUNK_LEVEL/SIZE/MIN_TOKENS) and the episode tool budget
-  (CONTEXT_SCOPE_MAX / MAX_TOOL_CALLS), passed explicitly to the engine.
-- **Engine knobs (chillrag.config)**: retrieval top_k, snippets, embedding,
-  tokenizer, MinerU backend. Same-named env vars (SEARCH_TOP_K /
-  SNIPPET_MAX_TOKENS / EMBED_MODEL / MINERU_BACKEND …) are read by chillrag;
-  they are not redefined here.
-
-``load_dotenv`` runs at import time so heavy dependencies (PySerini's JVM via
-``JAVA_HOME``, the OpenAI SDK) see environment variables the moment they are
-imported — this import-order guarantee is what makes the BM25 index build work.
+Retrieval itself lives in the external RAG service (``clause_splitter/rag``);
+this module holds the client address, timeouts, and the chunking / agent
+contracts that stay in this repository. ``load_dotenv`` runs at import time so
+every module sees the same environment.
 """
 
 from __future__ import annotations
@@ -37,6 +28,8 @@ load_dotenv(REPO_ROOT / ".env")
 LLM_CONFIG_DIR = REPO_ROOT / "config" / "llm"
 # Per-call LLM request timeout (s) and per-episode wall-clock deadline.
 LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
+# Document summary / keyword call — shorter so a slow profile can't stall the chain.
+DOC_PROFILE_TIMEOUT_S = float(os.getenv("DOC_PROFILE_TIMEOUT_S", "90"))
 EPISODE_TIMEOUT_S = float(os.getenv("EPISODE_TIMEOUT_S", "600"))
 # Agent prompt language: "zh" | "en".
 PROMPT_LANG = os.getenv("PROMPT_LANG", "zh")
@@ -66,9 +59,28 @@ COMPARE_CONCURRENCY = int(os.getenv("COMPARE_CONCURRENCY", "2"))
 # Gap-analysis report: external clauses per batch-summary sub-agent call.
 REPORT_BATCH_SIZE = int(os.getenv("REPORT_BATCH_SIZE", "20"))
 
-# ── Per-article chunking contract (passed to chillrag's chunker) ─────
-# Directory name under ``doc_cache_dir(name)`` holding MinerU's output.
-MINERU_MD_DIRNAME = "md"
+# ── External RAG service ───────────────────────────────────────────────
+# Base URL of the RAG HTTP service. Empty = retrieval unavailable; analysis
+# fails with a readable "未配置" message and external parsing falls back to
+# local text extraction.
+RAG_API_BASE = os.getenv("RAG_API_BASE", "")
+# Sent as ``Authorization: Bearer <key>`` when non-empty.
+RAG_API_KEY = os.getenv("RAG_API_KEY", "")
+# Per-call timeout for search / inspect endpoints (seconds).
+RAG_TIMEOUT_S = float(os.getenv("RAG_TIMEOUT_S", "30"))
+# Parse / ingest uploads may run OCR server-side — allow a long deadline.
+RAG_PARSE_TIMEOUT_S = float(os.getenv("RAG_PARSE_TIMEOUT_S", "300"))
+# External parsing when the remote fails: "local" = extract plain text here,
+# "none" = fail the stage.
+PARSE_FALLBACK = os.getenv("PARSE_FALLBACK", "local")
+
+# ── Retrieval / agent budget ───────────────────────────────────────────
+# Top-k internal clauses per search call.
+SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "10"))
+# Snippet token cap for search results handed to the LLM.
+SNIPPET_MAX_TOKENS = int(os.getenv("SNIPPET_MAX_TOKENS", "512"))
+
+# ── Per-article chunking contract ──────────────────────────────────────
 # Structure chunking: a ``title`` block with level <= CHUNK_LEVEL opens a new
 # chunk; deeper sub-headings stay inside the current chunk. Default 4 = the
 # deepest regulation marker level (编=1 章=2 节=3 条=4, as leveled by
@@ -79,12 +91,6 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
 # Adjacent chunks smaller than this many tokens merge into the previous one
 # when the section path matches. 0 = strict section boundaries, no merging.
 CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", "50"))
-
-# ── Index cache ────────────────────────────────────────────────────────
-# Derived per-corpus cache root: .cache/<store_name>/{store, chunks, bm25, faiss}.
-# ``INDEX_CACHE_DIR`` relocates it (e.g. a shared network volume).
-CACHE_DIR = REPO_ROOT / ".cache"
-INDEX_CACHE_DIR = os.getenv("INDEX_CACHE_DIR", "")
 
 # ── Backend integration (push → dispatch → ESG callback) ────────────────
 # How pushed regulations reach the chain: immediate | cron | auto.
@@ -99,19 +105,6 @@ ESG_OPEN_END_POINT = os.getenv("ESG_OPEN_END_POINT", "")
 ESG_CLIENT_ID = os.getenv("ESG_CLIENT_ID", "")
 ESG_CLIENT_SECRET = os.getenv("ESG_CLIENT_SECRET", "")
 ESG_CALLBACK_PATH = os.getenv("ESG_CALLBACK_PATH", "/paerm/paermModelReturn")
-
-
-def doc_cache_dir(store_name: str, root: str | Path | None = None) -> Path:
-    """Root for one corpus's derived artifacts: materialized chunk txt,
-    the BM25 Lucene index, the faiss vector db, and the serialized store.
-
-    Args:
-        store_name: Corpus identity (e.g. "internal" → ``<root>/internal/``).
-        root: Override the cache parent; default ``INDEX_CACHE_DIR`` env var,
-            then ``CACHE_DIR``.
-    """
-    base = Path(root) if root else (Path(INDEX_CACHE_DIR) if INDEX_CACHE_DIR else CACHE_DIR)
-    return base / store_name
 
 
 # ── Split-pipeline thresholds (legacy Settings) ────────────────────────

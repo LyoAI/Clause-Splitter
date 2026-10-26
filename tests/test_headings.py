@@ -1,7 +1,7 @@
 """Tests for the regulation-structure pass (``headings.infer_regulation_headings``).
 
 Hand-written internal regulations bold the article markers (``**第一条**　…``)
-but keep every paragraph in the ``Normal`` style, so MinerU emits no ``title``
+but the parser emits every paragraph as a ``paragraph`` block — no ``title``
 blocks. ``infer_regulation_headings`` re-interprets such paragraph blocks as
 hierarchy-aware headings so the chunker groups per-条 (one retrieval unit per
 article) with the chapter path kept as ``meta.section`` context.
@@ -12,7 +12,7 @@ Design under test:
   Levels are strictly increasing so sibling 条 pop each other on the section
   path ("第一章　总则 > 第一条", never "第X条 > 第Y条").
 - 条 always opens its own chunk (unified per-article granularity).
-- Documents that already carry MinerU ``title`` blocks are *augmented*, not
+- Documents that already carry ``title`` blocks are *augmented*, not
   skipped: marker paragraphs are still split into heading + body.
 - A regulation numbered 一、二、三、 (no 第X条) falls back to per-ordinal
   article headings.
@@ -22,9 +22,9 @@ Design under test:
 
 from __future__ import annotations
 
-from chillrag.tools.parser import Block, chunk_doc
-
 from clause_splitter.compare.headings import infer_regulation_headings
+from clause_splitter.parsing.blocks import Block
+from clause_splitter.split.chunker import chunk_doc
 
 
 def p(text: str, block_id: str = "p") -> Block:
@@ -142,7 +142,7 @@ def test_bian_without_chapter_relative_depth() -> None:
 
 # ------------------------------------------------------------- augmenting -----
 
-def test_augments_real_mineru_titles_with_marker_articles() -> None:
+def test_augments_parser_title_blocks_with_marker_articles() -> None:
     # A docx whose 章 use real heading styles but whose 条 are plain paragraphs
     # is augmented, not skipped: 章 title re-leveled, 条 paragraphs split.
     blocks = [t("第一章　总则"), p("**第一条**　甲。")]

@@ -40,17 +40,17 @@ class ExternalClause:
 
 @dataclass
 class EpisodeResult:
-    """Compare-domain view of an episode — an adapter over chillrag's AgentResult.
+    """Compare-domain view of an episode — an adapter over ``AgentResult``.
 
-    chillrag's ``answer`` is the verbatim final assistant message; the compare
+    The agent's ``answer`` is the verbatim final assistant message; the compare
     side calls it ``raw_answer`` and the ``<answer>`` JSON is parsed by
-    ``ground.parse_answer_json`` (the engine carries no answer_parser — the
+    ``ground.parse_answer_json`` (the loop carries no answer parser — the
     answer contract is business logic and stays clause-side).
     """
 
     question: str
     raw_answer: str
-    trajectory: list  # list[chillrag.agent.AgentTurn]
+    trajectory: list  # list[clause_splitter.agent.AgentTurn]
     messages: list[dict[str, Any]] = field(default_factory=list)
     num_tool_calls: int = 0
     total_tokens: int = 0

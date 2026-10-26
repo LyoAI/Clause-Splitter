@@ -18,9 +18,8 @@ import json
 import re
 from typing import Any
 
-from chillrag.tools.searcher.store import DocumentStore
-
 from clause_splitter.models import CoverageStatus, normalize_internalization_decision
+from clause_splitter.rag.protocols import ChunkLookup
 from clause_splitter.utils import get_logger
 from .episode import EpisodeResult, ExternalClause
 
@@ -79,14 +78,14 @@ def collect_seen_chunk_ids(trajectory: list) -> set[str]:
 
 def ground_episode(
     result: EpisodeResult,
-    store: DocumentStore,
+    lookup: ChunkLookup,
     ext: ExternalClause,
 ) -> dict[str, Any]:
     """Convert one episode into a verifiable MatchResult dict.
 
     Args:
         result: The finished episode.
-        store: Internal clause library (single source of text).
+        lookup: Chunks retrieved in this run (single source of text).
         ext: External clause (fills provenance + source text).
 
     Returns:
@@ -139,7 +138,7 @@ def ground_episode(
         if cid not in seen:
             logger.warning("claim %r not in retrieval trajectory, dropped", cid)
             continue
-        chunk = store.get_chunk(cid)
+        chunk = lookup.get_chunk(cid)
         if chunk is None:
             logger.warning("claim %r not in store, dropped", cid)
             continue
@@ -166,7 +165,7 @@ def ground_episode(
     # of them "✓ adopted"). Chunk layout is hierarchical: doc_id = 制度名,
     # clause label = last section-path leaf (e.g. "第二十条"), with order
     # fallback for untitled docs.
-    head = store.get_chunk(grounded[0])
+    head = lookup.get_chunk(grounded[0])
     return {
         **base,
         "status": status,
@@ -175,7 +174,7 @@ def ground_episode(
         "matched_internal_clause_number": _segment_label(head) if head else "",
         "matched_internal_source_text": head.text if head else "",
         "matched_internal_clause_ids": grounded,
-        "analysis": _merge_analysis(analysis, grounded, store),
+        "analysis": _merge_analysis(analysis, grounded, lookup),
     }
 
 
@@ -235,7 +234,7 @@ def _segment_label(chunk) -> str:
     return ""
 
 
-def _merge_analysis(analysis: str, grounded: list[str], store: DocumentStore) -> str:
+def _merge_analysis(analysis: str, grounded: list[str], lookup: ChunkLookup) -> str:
     """Fall back to the adopted-clause list when the analysis is empty.
 
     A non-empty analysis is never appended to — adoption is already shown by
@@ -248,7 +247,7 @@ def _merge_analysis(analysis: str, grounded: list[str], store: DocumentStore) ->
         return analysis
     refs = []
     for cid in grounded:
-        chunk = store.get_chunk(cid)
+        chunk = lookup.get_chunk(cid)
         doc = chunk.doc_id if chunk else ""
         label = _segment_label(chunk) if chunk else ""
         refs.append(f"{doc} {label}".strip() or cid)

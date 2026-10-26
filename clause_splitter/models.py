@@ -238,7 +238,7 @@ class RetrievedCandidate(BaseModel):
         description="Section leaf of the chunk — e.g. '第一条' or '第一章　总则'",
     )
     backend: str = Field(
-        default="", description="Which searcher(s) recalled it: grep|bm25|faiss (comma-joined)",
+        default="", description="What recalled it: the RAG service name or \"episode\".",
     )
     score: float | None = Field(default=None, description="Best score across searchers (nullable)")
     query: str = Field(default="", description="The external clause text used as the query")

@@ -128,7 +128,7 @@ curl -sS "$BASE/jobs?state=scheduled" | python3 -m json.tool
 | `GET /regulations/{id}/artifacts` | 产物列表 |
 | `GET /jobs/{id}` | 轮询任务状态 |
 | `POST /regulations/push` | 后端推送，支持 `OptType` |
-| `GET /regulations/{docId}/result` | 按 docId 拉结果 + `extraParams` 回显 |
+| `GET /regulations/{docId}/result` | 按 docId 拉取结果 |
 
 以下接口目前没有自动覆盖，可用 `/docs` 或 curl 手工验证：
 
@@ -171,11 +171,11 @@ upload_materials/
 
 | 后缀 | 说明 |
 |---|---|
-| `.pdf` | 推荐，MinerU 解析 |
-| `.docx` | 推荐，MinerU 解析 |
+| `.pdf` | 远端 `POST /parse` 优先；不可用时本地 pdfplumber 抽取(扫描件无 OCR) |
+| `.docx` | 远端解析优先；本地回退用 python-docx |
 | `.doc` | 可上传；优先用系统 `antiword` 抽取，没有 antiword 时只能识别误命名的 docx；建议转 `.docx`/`.pdf` |
 | `.txt` | 按行合成 blocks，适合简单测试 |
-| `.md` | Markdown 解析 |
+| `.md` | 按 `#` 标题层级解析 |
 
 push 接口还会按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖文件名后缀。
 
@@ -183,11 +183,12 @@ push 接口还会按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不�
 
 | 后缀 | 说明 |
 |---|---|
-| `.pdf` `.docx` `.pptx` | MinerU 解析 |
-| `.xlsx` | 多制度 Excel，按 sheet 拆成多篇内规 |
-| `.xls` | 可上传，但索引阶段不支持，会提示转 `.xlsx` |
-| `.png` `.jpg` `.jpeg` | 图片，MinerU 解析 |
-| `.txt` `.md` | 文本解析 |
+| `.pdf` `.docx` `.pptx` `.xlsx` `.xls` | 原样转发外部 RAG 服务 `POST /documents`,由其解析、分块、入库 |
+| `.png` `.jpg` `.jpeg` | 同上(远端需支持 OCR) |
+| `.txt` `.md` | 同上 |
+
+本仓只保留原文镜像与 Mongo 镜像行;实际解析/分块/索引都在 RAG 服务侧。
+`GET /library/index` 的 `rag.available=false` 表示 `RAG_API_BASE` 未配置。
 
 外部法规不支持图片、PPT、Excel；这些只用于内规库。
 

@@ -1,37 +1,31 @@
 """Core orchestrator — the single meeting point of engine wiring and pipeline.
 
-Two responsibilities, one file:
-
-1. **Engine wiring (seam)**: the only place (besides the compare.ingest /
-   compare.index preparation modules) that imports the vendored ``chillrag``.
-   Searchers, tool registry and the ReAct agent are all built here; business
-   code depends only on these products. ChillRAG stays generic — the compare
-   system prompt / force-answer wording are passed in as injected arguments
-   (``ReActAgent``'s ``system_prompt`` / ``force_answer_msg`` hooks), so the
-   engine loop carries no domain assumptions.
-2. **Chain orchestration** (formerly pipeline/chain.py): applicability →
-   split → internalization → analysis in one job, with the manual-push skip
-   for stage 1 and per-stage progress weighting.
+1. **Engine wiring (seam)**: the tool registry and ReAct agent are assembled
+   here over the external RAG service. Business code depends only on these
+   products; swapping to the internal team's service only changes
+   ``clause_splitter/rag/client.py``.
+2. **Chain orchestration**: applicability → split → internalization → analysis
+   in one job, with the manual-push skip for stage 1 and per-stage progress
+   weighting.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# Import clause_splitter.config first: it loads .env into os.environ, and
-# chillrag.config's load_dotenv never overrides existing vars — this order
-# gives clause-side .env values priority.
-from clause_splitter.config import CONTEXT_SCOPE_MAX, MAX_TOOL_CALLS, PROMPT_LANG, doc_cache_dir
-from clause_splitter.pipeline import applicability, analysis, internalize, split_stage
-from clause_splitter.pipeline.contexts import DERIVED_FIELDS, STAGES, StageContext
+from clause_splitter.agent import ReActAgent, ToolRegistry
+from clause_splitter.config import (
+    CONTEXT_SCOPE_MAX,
+    MAX_TOOL_CALLS,
+    PROMPT_LANG,
+    SEARCH_TOP_K,
+    SNIPPET_MAX_TOKENS,
+)
+from clause_splitter.pipeline import applicability, analysis, doc_profile, internalize, split_stage
+from clause_splitter.pipeline.contexts import DERIVED_FIELDS, STAGES, StageContext, StageError
 from clause_splitter.prompts import load, render
+from clause_splitter.rag import RagService, get_rag_service
 from clause_splitter.utils import get_logger
-
-from chillrag.agent import ReActAgent
-from chillrag.config import SEARCH_TOP_K, SNIPPET_MAX_TOKENS
-from chillrag.tools import ToolRegistry
-from chillrag.tools.searcher import build_searchers as _engine_searchers
-from chillrag.tools.searcher.store import DocumentStore
 
 logger = get_logger()
 
@@ -41,38 +35,10 @@ logger = get_logger()
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def build_searchers(store: DocumentStore, searcher: str = "hybrid") -> dict[str, Any]:
-    """Build retrieval backends for ``searcher`` (hybrid = grep+bm25+faiss).
-
-    Index locations match compare.index.py's build layout (missing faiss dir →
-    None → the faiss searcher falls back to in-store vectors); a failed
-    assembly downgrades to bm25 so comparison is never blocked.
-    """
-    cache_root = doc_cache_dir(store.cache_key(), root=store.index_root or None)
-    kwargs: dict[str, Any] = {}
-    if searcher in ("grep", "hybrid"):
-        kwargs["rg_dir"] = str(cache_root / "chunks")
-    if searcher in ("faiss", "hybrid"):
-        kwargs["faiss_index_dir"] = str(cache_root / "faiss")
-        try:
-            from chillrag.config import EMBED_DEVICE, EMBED_MODEL
-            from chillrag.tools.searcher.embed import Embedder
-
-            kwargs["embed_query"] = Embedder(model_name=EMBED_MODEL, device=EMBED_DEVICE).encode_query
-        except Exception as e:  # noqa: BLE001 — missing model degrades gracefully
-            logger.warning("embedding unavailable, skipping faiss backend: %s", e)
-    try:
-        return _engine_searchers(searcher, store, bm25_index_dir=str(cache_root / "bm25"), **kwargs)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("searcher assembly failed (%s), falling back to bm25: %s", searcher, e)
-        return _engine_searchers("bm25", store, bm25_index_dir=str(cache_root / "bm25"))
-
-
-def build_registry(store: DocumentStore, searcher: str = "hybrid") -> ToolRegistry:
-    """Searchers → tool registry (one ``<name>_search`` tool per backend + get_context)."""
+def build_registry(service: RagService | None = None) -> ToolRegistry:
+    """RAG service → tool registry (search + optional context/materials tools)."""
     registry = ToolRegistry(
-        build_searchers(store, searcher),
-        store,
+        service or get_rag_service(),
         top_k=SEARCH_TOP_K,
         snippet_max_tokens=SNIPPET_MAX_TOKENS,
         context_scope_max=CONTEXT_SCOPE_MAX,
@@ -90,7 +56,6 @@ def build_agent(llm: Any, registry: ToolRegistry) -> ReActAgent:
         max_tool_calls=MAX_TOOL_CALLS,
         system_prompt=render("analysis_agent", tools=registry.tool_hints(PROMPT_LANG)),
         force_answer_msg=load("force_answer"),
-        lang=PROMPT_LANG,
     )
 
 
@@ -154,8 +119,15 @@ async def run_chain(ctx: StageContext) -> dict[str, Any]:
             fields[f"{name}_state"] = "skipped"
             fields.update(DERIVED_FIELDS.get(name, {}))
         await regs.update(ctx.reg_id, fields)
+        # The cleared DERIVED_FIELDS["split"] above wipes any profile, so build
+        # it only after that write.
+        raw_progress(offset, "生成文档摘要")
+        await doc_profile.ensure(ctx)
         logger.info("chain stopped after stage 1 for %s: %s", ctx.reg_id, reason)
         return {"chain_stopped": reason}
+
+    if not ctx.rag.available:
+        raise StageError("RAG 服务未配置 —— 请设置 RAG_API_BASE 后重启服务")
 
     await run_stage("split", split_stage.run)
     await run_stage("internalization", internalize.run)

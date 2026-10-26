@@ -10,7 +10,6 @@ back into clause rows (all fields the review page shows).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from typing import Any
 
 from clause_splitter.compare.aggregate import run_compare
@@ -25,8 +24,8 @@ from clause_splitter.models import CompareResult
 from clause_splitter.split.decompose import decompose_batch
 from clause_splitter.split.plan import plan_batches
 from clause_splitter.split.structure import estimate_complexity
+from clause_splitter.rag import RagError, RagService, get_rag_service
 from clause_splitter.utils import get_logger
-from config.config_app import CONFIG_APP
 from .contexts import StageContext, StageError
 
 logger = get_logger()
@@ -64,13 +63,13 @@ async def _decompose_obligations(
     return grouped
 
 
-def _index_signature(store: Any) -> str:
-    """Cheap corpus fingerprint: hash over chunk ids (positional ids move on edit)."""
-    sha = hashlib.sha256()
-    for chunk in store.all_chunks():
-        sha.update(chunk.chunk_id.encode("utf-8"))
-        sha.update(b"\n")
-    return sha.hexdigest()[:16]
+def _index_signature(service: RagService) -> str:
+    """Corpus version reported by the RAG service (empty when it can't tell)."""
+    try:
+        return service.stats().version or ""
+    except RagError as exc:
+        logger.warning("rag stats failed while stamping the analysis: %s", exc)
+        return ""
 
 
 def _row_updates(match: Any) -> dict[str, Any]:
@@ -95,9 +94,9 @@ async def run(ctx: StageContext) -> dict[str, Any]:
     if not rows:
         raise StageError("没有可分析的条款 —— 请先执行拆条与内化判定。")
 
-    store = ctx.store_loader() if ctx.store_loader else None
-    if store is None:
-        raise StageError("内规索引不可用 —— 请先构建内规库索引。")
+    service = ctx.rag or get_rag_service()
+    if not service.available:
+        raise StageError("RAG 服务未配置 —— 请设置 RAG_API_BASE 后重启服务。")
 
     title = ctx.regulation.get("title") or ""
     target = [r for r in rows if (r.get("internalization_decision") or "").strip() != _NO_NEED]
@@ -131,8 +130,7 @@ async def run(ctx: StageContext) -> dict[str, Any]:
         ctx.progress(0.2 + 0.7 * clauses_done / total, f"条款比对 {clauses_done}/{total}")
 
     result: CompareResult = await run_compare(
-        clauses, store, ctx.llm,
-        searcher=CONFIG_APP.searcher,
+        clauses, service, ctx.llm,
         persist_dir=str(ctx.reg_dir / "episodes"),
         model=ctx.model,
         provider=ctx.provider,
@@ -150,11 +148,11 @@ async def run(ctx: StageContext) -> dict[str, Any]:
 
     # 4) gap report (sync llm.invoke inside → thread), then filter, then review page.
     rep = await asyncio.to_thread(
-        generate_gap_report, result, store, ctx.llm, output_dir=str(reg_dir)
+        generate_gap_report, result, ctx.llm, output_dir=str(reg_dir)
     )
     if REVIEW_FILTER_RELEVANCE:
         await filter_relevant_candidates(result, ctx.llm, concurrency=COMPARE_CONCURRENCY)
-    render_review_html(result, reg_dir / "内规检索复核.html", store_name="internal")
+    render_review_html(result, reg_dir / "内规检索复核.html", store_name=service.name)
 
     # 5) matches ↔ rows are order-aligned by construction (one episode per row).
     for row, match in zip(rows, result.matches):
@@ -173,4 +171,5 @@ async def run(ctx: StageContext) -> dict[str, Any]:
         "analysis stage done for %s: coverage=%.1f%% mode=%s",
         ctx.reg_id, summary["coverage_rate"] * 100, rep["mode"],
     )
-    return {"analysis_summary": summary, "analysis_index_signature": _index_signature(store)}
+    signature = await asyncio.to_thread(_index_signature, service)
+    return {"analysis_summary": summary, "analysis_index_signature": signature}

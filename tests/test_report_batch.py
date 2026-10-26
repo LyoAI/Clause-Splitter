@@ -126,7 +126,7 @@ def test_generate_gap_report_batched(monkeypatch):
     result = _mk_result(25)
     llm = _FakeLLM(final_report="按 Skill 撰写的完整报告")
 
-    out = generate_gap_report(result, store=None, llm=llm, output_dir="")
+    out = generate_gap_report(result, llm=llm, output_dir="")
 
     assert out["mode"] == "llm"
     assert out["report"] == "按 Skill 撰写的完整报告"
@@ -164,7 +164,7 @@ def test_batch_failure_falls_back_template():
             raise RuntimeError("batch 失败")
 
     bad = _ExplodingLLM()
-    out = generate_gap_report(result, store=None, llm=bad, output_dir="")
+    out = generate_gap_report(result, llm=bad, output_dir="")
 
     assert out["mode"] == "template"
     assert "完全覆盖" in out["report"]

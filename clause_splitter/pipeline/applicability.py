@@ -1,6 +1,7 @@
 """Stage 1 — document-level applicability judgment (是否适用于平安科技).
 
-Light text extraction (no MinerU — irrelevant regulations never pay that cost),
+Light text extraction (no remote parse — irrelevant regulations never pay that
+cost),
 one LLM call against ``prompts/applicability.md``. Fail-open: any error ⇒
 ``applicable=None`` (需人工复核), never silently false — a wrong "no" would
 drop the whole regulation from the pipeline.

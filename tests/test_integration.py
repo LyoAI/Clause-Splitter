@@ -17,10 +17,10 @@ import clause_splitter.pipeline.split_stage as split_stage_mod
 from tests.fakes import (
     CLAUSE_SPECS,
     PipelineFakeLLM,
-    build_store,
+    build_rag_service,
     data_dir,
     fake_repos,
-    patch_registry,
+    patch_rag,
 )
 
 SOURCE_TEXT = "\n".join(
@@ -37,8 +37,8 @@ class NoApplicabilityLLM(PipelineFakeLLM):
         return await super().ainvoke(messages, tools, **kwargs)
 
 
-async def _no_mineru(src, llm):
-    raise RuntimeError("MinerU disabled in tests")
+async def _no_remote_parse(src, llm, service=None):
+    raise RuntimeError("block parsing disabled in tests")
 
 
 async def _wait(repos, job_id: str, timeout_s: float = 60.0) -> dict:
@@ -57,14 +57,9 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
         runner = JobRunner(repos, workers=1, llm_factory=lambda: llm)
         services.init(repos, runner)
         integration_service.register(runner)
-        store = build_store()
-        patch_registry(monkeypatch, store)
+        patch_rag(monkeypatch, build_rag_service())
 
-        async def pinned_store(ctx):
-            return store
-
-        monkeypatch.setattr(runner, "_pinned_store", pinned_store)
-        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
         object.__setattr__(config_app_mod.CONFIG_APP, "backend_callback_url", "http://cb")
         delivered: list[dict] = []
         monkeypatch.setattr(
@@ -92,38 +87,51 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
 
             assert len(delivered) == 1
             payload = delivered[0]
+            assert list(payload) == [
+                "code", "msg", "docId", "docKeyword", "docType", "docAbstract",
+                "taskId", "applicable", "applicableReason", "data",
+            ]
             assert payload["code"] == "1" and payload["msg"] == "成功"
-            assert payload["metadata"] == {
-                "docId": "doc1", "taskId": "task1", "uid": "u1",
-                "docType": "3", "optType": 0,
-            }
-            assert payload["extraParams"] == {"source": "iobs", "batch": "2026-10"}
-            assert payload["stages"] == {
-                "applicability": "done", "split": "done",
-                "internalization": "done", "analysis": "done",
-            }
+            assert payload["docId"] == "doc1"
+            assert payload["taskId"] == "task1"
+            assert payload["docType"] == "3"
+            assert payload["applicable"] is True
+            assert "手动" in payload["applicableReason"]
+            assert payload["docAbstract"] == "mock 摘要:本法规规范数据安全管理与风险评估要求。"
+            assert payload["docKeyword"] == "数据安全, 风险管理"
+
             data = payload["data"]
-            assert data["applicability"]["applicable"] is True
-            split = data["split"]
-            assert split["clauseCount"] == len(CLAUSE_SPECS)
-            assert [c["clauseName"] for c in split["clauses"]] == [
+            assert isinstance(data, list) and len(data) == len(CLAUSE_SPECS)
+            assert [c["termName"] for c in data] == [
                 s["clause_number"] for s in CLAUSE_SPECS
             ]
-            assert split["clauses"][0]["clauseId"] == "doc1_1"
-            assert split["clauses"][0]["orderNum"] == 1
-            assert "term" not in json.dumps(payload)  # clause naming only
+            first = data[0]
+            assert first["orderNum"] == "0"
+            assert first["termId"] == "doc1-0"
+            assert "金融机构应当建立数据分类分级制度" in first["termContent"]
+            assert first["termKeyword"]
+            assert "chapter" in first
+            assert first["internalize"] == "需要内化"
+            assert first["internalizeReason"]
+            assert first["coverageStatus"] == "完全覆盖"
+            assert first["analysis"]
+            assert first["coreRequirements"]
+            assert first["relationTerms"], "adopted internal clauses must be reported"
+            assert first["relationTerms"][0]["internalClauseId"].startswith("数据安全管理办法")
 
-            intl = data["internalization"]["clauses"]
-            assert len(intl) == len(CLAUSE_SPECS)
-            assert intl[0]["internalize"] == "需要内化"
+            second = data[1]
+            assert second["orderNum"] == "1"
+            assert second["termId"] == "doc1-1"
+            assert second["coverageStatus"] == "部分覆盖"
+            assert second["differenceAnalysis"] and second["remedySuggestion"]
 
-            analysis = data["analysis"]
-            covered = analysis["fullyCoveredCount"] + analysis["partiallyCoveredCount"]
-            assert analysis["coverageRate"] == f"{covered}/{analysis['internalizableCount']}"
-            assert {c["coverageStatus"] for c in analysis["clauses"]} >= {"完全覆盖", "部分覆盖"}
-            first = analysis["clauses"][0]
-            assert first["relationClauses"], "adopted internal clauses must be reported"
-            assert first["relationClauses"][0]["internalClauseId"].startswith("数据安全管理办法")
+            # Removed legacy-bridge keys must not leak back in.
+            raw = json.dumps(payload, ensure_ascii=False)
+            for gone in (
+                '"metadata"', '"stages"', '"relationClauses"',
+                '"extraParams"', '"clauseType"',
+            ):
+                assert gone not in raw
         finally:
             await runner.stop()
             services.reset()
@@ -263,14 +271,9 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
         runner = JobRunner(repos, workers=1, llm_factory=lambda: llm)
         services.init(repos, runner)
         integration_service.register(runner)
-        store = build_store()
-        patch_registry(monkeypatch, store)
+        patch_rag(monkeypatch, build_rag_service())
 
-        async def pinned_store(ctx):
-            return store
-
-        monkeypatch.setattr(runner, "_pinned_store", pinned_store)
-        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
         await runner.start()
         try:
             # Flat field map (no "args" wrapper) — spec shape pending.
@@ -281,20 +284,21 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
             assert result["dispatch"] == "scheduled"
             job = await repos.jobs.get(result["job_id"])
             assert job["state"] == "scheduled"
-            # docId pull before admission → processing, every stage pending
+            # docId pull before admission → processing, no clauses yet
             early = await integration_service.build_result("doc3")
             assert early["code"] == "2" and early["msg"] == "处理中"
-            assert set(early["stages"].values()) == {"pending"}
-            assert early["data"] is None
+            assert early["data"] == []
+            assert "stages" not in early
 
             assert await runner.drain_scheduled() == 1
             done = await _wait(repos, result["job_id"])
             assert done["state"] == "done", done["error"]
 
             payload = await integration_service.build_result("doc3")
-            assert payload["metadata"]["docId"] == "doc3"
+            assert payload["docId"] == "doc3"
             assert payload["code"] == "1"
-            assert len(payload["data"]["split"]["clauses"]) == len(CLAUSE_SPECS)
+            assert len(payload["data"]) == len(CLAUSE_SPECS)
+            assert payload["data"][0]["termId"] == "doc3-0"
         finally:
             await runner.stop()
             services.reset()
@@ -307,12 +311,6 @@ async def test_not_applicable_stops_chain_with_null_stages(tmp_path, monkeypatch
         repos = fake_repos()
         runner = JobRunner(repos, workers=1, llm_factory=lambda: PipelineFakeLLM(applicable=False))
         services.init(repos, runner)
-        store = build_store()
-
-        async def pinned_store(ctx):
-            return store
-
-        monkeypatch.setattr(runner, "_pinned_store", pinned_store)
         try:
             await runner.start()
             result = await integration_service.handle_push({"args": {
@@ -324,14 +322,11 @@ async def test_not_applicable_stops_chain_with_null_stages(tmp_path, monkeypatch
             payload = await integration_service.build_result("docX")
             assert payload["code"] == "1"
             assert "不适用于本公司" in payload["msg"]
-            assert payload["stages"] == {
-                "applicability": "done", "split": "done",
-                "internalization": "done", "analysis": "done",
-            }
-            assert payload["data"]["applicability"]["applicable"] is False
-            assert payload["data"]["split"] is None
-            assert payload["data"]["internalization"] is None
-            assert payload["data"]["analysis"] is None
+            assert payload["applicable"] is False
+            assert payload["applicableReason"]
+            assert payload["docAbstract"]  # profile still generated on the stop branch
+            assert payload["data"] == []
+            assert "stages" not in payload
         finally:
             await runner.stop()
             services.reset()
@@ -345,14 +340,9 @@ async def test_failed_stage_delivers_partial_results(tmp_path, monkeypatch):
         llm = PipelineFakeLLM()
         runner = JobRunner(repos, workers=1, llm_factory=lambda: llm)
         services.init(repos, runner)
-        store = build_store()
-        patch_registry(monkeypatch, store)
-        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_mineru)
+        patch_rag(monkeypatch, build_rag_service())
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
 
-        async def pinned_store(ctx):
-            return store
-
-        monkeypatch.setattr(runner, "_pinned_store", pinned_store)
 
         async def boom(ctx):
             raise RuntimeError("internalization boom")
@@ -371,13 +361,9 @@ async def test_failed_stage_delivers_partial_results(tmp_path, monkeypatch):
             payload = await integration_service.build_result("docY")
             assert payload["code"] == "0"
             assert "internalization boom" in payload["msg"]
-            assert payload["stages"] == {
-                "applicability": "done", "split": "done",
-                "internalization": "failed", "analysis": "done",
-            }
-            assert len(payload["data"]["split"]["clauses"]) == len(CLAUSE_SPECS)
-            assert payload["data"]["internalization"] is None
-            assert payload["data"]["analysis"] is None
+            assert len(payload["data"]) == len(CLAUSE_SPECS)
+            assert all(c["coverageStatus"] == "" for c in payload["data"])
+            assert all(c["analysis"] == "" for c in payload["data"])
         finally:
             await runner.stop()
             services.reset()
@@ -395,6 +381,19 @@ async def test_build_result_unknown_docid_404(tmp_path):
         finally:
             await runner.stop()
             services.reset()
+
+
+async def test_result_route_returns_flat_payload(monkeypatch):
+    """The pull endpoint is a deliberate envelope exception (backend parity)."""
+    from api.routes import integration as route_mod
+
+    async def fake_result(doc_id: str):
+        return {"code": "1", "msg": "成功", "docId": doc_id, "data": []}
+
+    monkeypatch.setattr(integration_service, "build_result", fake_result)
+    body = await route_mod.result("doc1")
+    assert body == {"code": "1", "msg": "成功", "docId": "doc1", "data": []}
+    assert "status" not in body
 
 
 async def test_cron_mode_schedules_even_manual_pushes(tmp_path, monkeypatch):
