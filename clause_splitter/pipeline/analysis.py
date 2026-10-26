@@ -155,7 +155,6 @@ async def run(ctx: StageContext) -> dict[str, Any]:
         await ctx.repos.clauses.update(row["_id"], _row_updates(match))
 
     summary = {
-        "coverage_rate": round(result.coverage_rate, 4),
         "fully_covered_count": result.fully_covered_count,
         "partially_covered_count": result.partially_covered_count,
         "missing_count": result.internalizable_missing_count,
@@ -165,7 +164,7 @@ async def run(ctx: StageContext) -> dict[str, Any]:
     }
     logger.info(
         "analysis stage done for %s: coverage=%.1f%% mode=%s",
-        ctx.reg_id, summary["coverage_rate"] * 100, rep["mode"],
+        ctx.reg_id, result.coverage_rate * 100, rep["mode"],
     )
     signature = await asyncio.to_thread(_index_signature, service)
     return {"analysis_summary": summary, "analysis_index_signature": signature}

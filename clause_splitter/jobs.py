@@ -181,9 +181,9 @@ class JobRunner:
             # check after stage 1 (a not-applicable regulation still completes).
             if job_type == "analysis" and not ctx.rag.available:
                 raise StageError("RAG 服务未配置 —— 请设置 RAG_API_BASE 后重启服务")
-            await self._execute(
-                job, handler, ctx, single_stage=job_type not in ("analysis", "chain")
-            )
+            # Chain owns its own per-stage state transitions; every other job
+            # (including a standalone analysis run) updates its stage here.
+            await self._execute(job, handler, ctx, single_stage=job_type != "chain")
         except Exception as e:  # noqa: BLE001 — job-level failure
             logger.error("job %s (%s) failed: %s", job["_id"], job_type, e)
             await self.repos.jobs.update(

@@ -91,7 +91,6 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
             assert summary["fully_covered_count"] == 1
             assert summary["partially_covered_count"] == 1
             assert summary["no_internalization_count"] == 1
-            assert abs(summary["coverage_rate"] - 0.5) < 1e-6
             assert doc["analysis_index_signature"]
 
             # ── clause rows ───────────────────────────────────────────

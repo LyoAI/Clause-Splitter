@@ -40,6 +40,30 @@ async def test_runner_executes_handler_and_marks_stage_done():
         await runner.stop()
 
 
+async def test_standalone_analysis_marks_stage_done(monkeypatch):
+    from tests.fakes import FakeRagService, patch_rag
+
+    patch_rag(monkeypatch, FakeRagService())
+    repos = fake_repos()
+    runner = JobRunner(repos, workers=1, llm_factory=lambda: object())
+
+    async def handler(ctx):
+        return {"analysis_summary": {"report_mode": "llm"}}
+
+    runner.register("analysis", handler)
+    reg = await repos.regulations.create({"title": "t"})
+    await runner.start()
+    job = await runner.enqueue("analysis", regulation_id=reg["_id"])
+    try:
+        done = await _wait(repos, job["_id"])
+        assert done["state"] == "done"
+        doc = await repos.regulations.get(reg["_id"])
+        assert doc["analysis_state"] == "done"
+        assert doc["analysis_summary"] == {"report_mode": "llm"}
+    finally:
+        await runner.stop()
+
+
 async def test_runner_failure_marks_job_and_stage_failed():
     repos = fake_repos()
     runner = JobRunner(repos, workers=1, llm_factory=lambda: object())

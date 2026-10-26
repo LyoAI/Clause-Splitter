@@ -175,7 +175,6 @@ GET /regulations/{id}/artifacts/{name}         → 文件流
 
 ```json
 {
-  "coverage_rate": 0.5,
   "fully_covered_count": 1,
   "partially_covered_count": 1,
   "missing_count": 2,
