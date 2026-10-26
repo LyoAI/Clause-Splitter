@@ -1,9 +1,0 @@
-# Copy to qwen3.8-27b.yaml and fill credentials via env — never commit real keys.
-# Matches Settings.default_model; the intranet gateway serves 2 concurrent slots
-# (COMPARE_CONCURRENCY / JOB_WORKERS defaults are sized for that).
-pingan:
-  api_base: ${PINGAN_API_BASE}
-  appKey: ${PINGAN_APP_KEY}
-  appSecret: ${PINGAN_APP_SECRET}
-  sceneId: ${PINGAN_SCENE_ID}
-  model_name: qwen3.8-27b
