@@ -1,14 +1,15 @@
-# 冒烟测试脚本
+# 测试脚本
 
 服务启动、MongoDB 可连通后，在仓库根目录执行：
 
 ```bash
-./scripts/smoke_test.sh
+./scripts/smoke_test.sh          # 一键冒烟：健康检查 → 内规建索引 → 外规整链 → push/结果
+uv run python scripts/api_lab.py # 逐接口手工实验，见下文
 ```
 
-默认依次执行：健康检查 → 内规上传/建索引 → 外规上传/跑整链 → 后端 push/结果拉取。
+`smoke_test.sh` 适合回归；`api_lab.py` 适合边看服务日志边逐个接口试参数。
 
-## 命令
+## 冒烟脚本命令
 
 ```bash
 ./scripts/smoke_test.sh health          # /healthz + OpenAPI 路由前缀
@@ -39,6 +40,38 @@ MATERIALS_DIR=./upload_materials \
 - `POLL_TIMEOUT` 是单次等待任务/结果的上限，单位秒；LLM 分析较慢时可调大。
 - `push` 默认 `OptType=0`；也支持 `push 1` 测自动推送的 `scheduled` 分支。
 - 脚本里的 push 会走真实回调配置：如果 `.env` 配了 `BACKEND_CALLBACK_URL` 或 ESG，任务完成后会真的发回调。
+
+## 接口实验脚本 `api_lab.py`
+
+一个子命令对应一个接口，直接打印请求方法与原始 JSON，无需另学 curl。默认地址
+`http://127.0.0.1:18998/api/v1/clause_splitter`，可用 `--base` 指到任意环境。
+
+```bash
+export API_KEY=...          # 服务配了 API_KEY 时才需要
+B=http://127.0.0.1:18998/api/v1/clause_splitter
+
+uv run python scripts/api_lab.py --base "$B" health
+uv run python scripts/api_lab.py --base "$B" lib-upload upload_materials/internal/某制度.docx
+uv run python scripts/api_lab.py --base "$B" lib-index --wait
+uv run python scripts/api_lab.py --base "$B" lib-status
+uv run python scripts/api_lab.py --base "$B" upload upload_materials/external/某办法.docx
+uv run python scripts/api_lab.py --base "$B" run <reg_id> --interval 5
+uv run python scripts/api_lab.py --base "$B" clauses <reg_id> --status 缺失
+uv run python scripts/api_lab.py --base "$B" artifacts <reg_id>
+uv run python scripts/api_lab.py --base "$B" artifact <reg_id> review.html --out /tmp
+uv run python scripts/api_lab.py --base "$B" push --doc-id DOC-1 \
+  --path upload_materials/external/某办法.docx --wait-result
+uv run python scripts/api_lab.py --base "$B" result DOC-1
+```
+
+- `chain <file>` = 上传 + 跑整链 + 等待 + 打印阶段状态与产物，用于快速验证全链路。
+- 单阶段：`apply` / `split` / `internalize` / `analyze`，加 `--wait` 会轮询到结束；
+  `run` 默认等待，可用 `--no-wait` 只入队。
+- `wait <job_id>` 可单独接管已有任务；`job` / `jobs` 查任务，`--state`、`--job-type` 过滤。
+- `push` 支持 `--path`（本地文件，走 `doclobsUrl`）、`--url`（http 下载）、`--content`（纯文本）。
+- 失败时脚本退出码非 0；HTTP 非 2xx 或信封 `status=error` 都会直接打印响应后退出。
+
+`python scripts/api_lab.py <命令> -h` 查看该接口的全部参数。
 
 ## 调度模式：实时 vs 定时
 
@@ -112,9 +145,9 @@ curl -sS "$BASE/jobs?state=scheduled" | python3 -m json.tool
 
 ## 接口覆盖范围
 
-当前脚本覆盖主链路，不是全部接口：
+`smoke_test.sh` 只覆盖主链路；其余接口用 `api_lab.py` 逐条实验。
 
-| 已覆盖 | 说明 |
+| smoke_test 已覆盖 | 说明 |
 |---|---|
 | `GET /healthz` | 存活检查 |
 | `GET /openapi.json` | 确认新路由前缀已挂载 |
@@ -130,30 +163,24 @@ curl -sS "$BASE/jobs?state=scheduled" | python3 -m json.tool
 | `POST /regulations/push` | 后端推送，支持 `OptType` |
 | `GET /regulations/{docId}/result` | 按 docId 拉取结果 |
 
-以下接口目前没有自动覆盖，可用 `/docs` 或 curl 手工验证：
+`api_lab.py` 覆盖的接口：
 
-- `GET /regulations`、`DELETE /regulations/{id}`
-- `PATCH /regulations/{id}/applicability`
-- 单阶段执行：`POST /regulations/{id}/applicability|split|internalization|analysis`
-- `GET /regulations/{id}/clauses/{clause_id}`
-- `GET /regulations/{id}/jobs`、`GET /jobs`
-- `GET /regulations/{id}/artifacts/{name}` 文件下载
-- `GET /library/documents`、`DELETE /library/documents/{id}`
-- ESG 回调 / `BACKEND_CALLBACK_URL` 回调
-- push 的 `doclobsUrl` 下载路径（当前只测 `docContent`）
+| 命令 | 接口 |
+|---|---|
+| `health` | `GET /healthz`（根路径，不带 API 前缀） |
+| `list` / `get` / `delete` | `GET|DELETE /regulations[/{id}]` |
+| `upload` / `chain` | `POST /regulations` |
+| `apply` / `split` / `internalize` / `analyze` / `run` | 对应阶段接口 |
+| `patch-applicability` | `PATCH /regulations/{id}/applicability` |
+| `clauses` / `clause` | `GET /regulations/{id}/clauses[/{clause_id}]` |
+| `jobs` / `job` / `wait` | `GET /jobs[/{id}]`、`GET /regulations/{id}/jobs` |
+| `artifacts` / `artifact` | 产物列表与下载（含 `episodes/xxx.json`） |
+| `lib-upload` / `lib-list` / `lib-delete` | `POST|GET|DELETE /library/documents` |
+| `lib-index` / `lib-status` | `GET|POST /library/index` |
+| `push` / `result` | 后端契约的两个入口 |
 
-示例：
-
-```bash
-BASE=http://127.0.0.1:18998/api/v1/clause_splitter
-
-curl -sS "$BASE/regulations?limit=5" | python3 -m json.tool
-curl -sS "$BASE/regulations/<reg_id>/jobs" | python3 -m json.tool
-curl -sS "$BASE/library/documents" | python3 -m json.tool
-curl -sS -X PATCH "$BASE/regulations/<reg_id>/applicability" \
-  -H 'Content-Type: application/json' \
-  -d '{"applicable": true, "reason": "人工确认适用"}'
-```
+回调（ESG / `BACKEND_CALLBACK_URL`）没有脚本入口：配好 `.env` 后跑 `push`，观察服务日志与
+回调接收端即可。
 
 ## 测试材料目录
 
@@ -171,25 +198,96 @@ upload_materials/
 
 | 后缀 | 说明 |
 |---|---|
-| `.pdf` | 远端 `POST /parse` 优先；不可用时本地 pdfplumber 抽取(扫描件无 OCR) |
-| `.docx` | 远端解析优先；本地回退用 python-docx |
-| `.doc` | 可上传；优先用系统 `antiword` 抽取，没有 antiword 时只能识别误命名的 docx；建议转 `.docx`/`.pdf` |
-| `.txt` | 按行合成 blocks，适合简单测试 |
-| `.md` | 按 `#` 标题层级解析 |
+| `.pdf` `.docx` `.pptx` `.xlsx` `.png` `.jpg` `.md` | 优先走 RAG provider 解析（上传→轮询→切片文本）；远端不可用或报错时本地回退 |
+| `.txt` | 本地按行合成 blocks，适合简单测试 |
+| `.doc` `.xls` `.jpeg` | 本地抽取：`.doc` 用 `antiword`（没有时只能识别误命名的 docx），`.xls` 用 openpyxl |
 
-push 接口还会按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖文件名后缀。
+远端失败回退由 `PARSE_FALLBACK=local` 控制；`structure.json` 的 `parse_source` 记录本次走的是
+`remote` 还是 `local`。扫描件本地无 OCR，远端是否支持取决于 RAG 服务。
+
+push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖文件名后缀。
 
 ### 内规库（`POST /library/documents`）
 
 | 后缀 | 说明 |
 |---|---|
-| `.pdf` `.docx` `.pptx` `.xlsx` `.xls` | 原样转发外部 RAG 服务 `POST /documents`,由其解析、分块、入库 |
-| `.png` `.jpg` `.jpeg` | 同上(远端需支持 OCR) |
-| `.txt` `.md` | 同上 |
+| `.pdf` `.docx` `.pptx` `.xlsx` `.png` `.jpg` `.jpeg` `.md` `.markdown` | 交给 RAG provider 入库，由其解析、分块、索引 |
 
-本仓只保留原文镜像与 Mongo 镜像行;实际解析/分块/索引都在 RAG 服务侧。
+本仓只保留原文镜像与 Mongo 镜像行；实际解析/分块/索引都在 RAG 服务侧。
 `GET /library/index` 的 `rag.available=false` 表示 `RAG_API_BASE` 未配置。
 
-外部法规不支持图片、PPT、Excel；这些只用于内规库。
-
 上传大小上限由 `MAX_UPLOAD_MB` 控制，默认 200 MB。
+
+## 迁移内网后的联调步骤
+
+1. 在 `.env`（或容器环境变量）里配置 RAG 与 LLM，重启服务：
+
+   ```ini
+   RAG_PROVIDER=chillrag            # 内网 provider 实现后改成对应名字
+   RAG_API_BASE=http://内网RAG地址
+   RAG_API_USER=...
+   RAG_API_PASSWORD=...
+   RAG_CORPUS=clause_splitter_internal
+   RAG_PARSE_CORPUS=clause_splitter_parse
+   ```
+
+   注意：`RAG_*` 只在进程启动时读取；改完必须重启，不能热更。
+
+2. 服务起来后先确认连通性与语料状态：
+
+   ```bash
+   export B=http://内网服务地址:18998/api/v1/clause_splitter
+   uv run python scripts/api_lab.py --base "$B" health
+   uv run python scripts/api_lab.py --base "$B" lib-status
+   ```
+
+   `lib-status` 里 `rag.available` 应为 `true`；`false` 说明 `RAG_API_BASE` 没生效或 provider 初始化失败。
+
+3. 内规入库并建索引（第一次会触发远端解析，耗时取决于文件大小）：
+
+   ```bash
+   uv run python scripts/api_lab.py --base "$B" lib-upload upload_materials/internal/某制度.docx
+   uv run python scripts/api_lab.py --base "$B" lib-index --wait
+   uv run python scripts/api_lab.py --base "$B" lib-status
+   ```
+
+   检查点：上传返回 `remote_state=indexed` 且 `chunk_count>0`；`lib-status` 的 `rag.version` 非空；
+   重复 `lib-index` 时 version 不变（语料未变），新增文件后 version 变化。
+
+4. 外规解析（确认真的走远端）：
+
+   ```bash
+   uv run python scripts/api_lab.py --base "$B" upload upload_materials/external/某办法.docx
+   uv run python scripts/api_lab.py --base "$B" split <reg_id> --wait
+   uv run python scripts/api_lab.py --base "$B" artifact <reg_id> structure.json --out /tmp
+   grep parse_source /tmp/structure.json
+   ```
+
+   `parse_source` 应为 `remote`，条款数为多条而不是整篇一段。若为 `local`，先看服务日志里
+   `远端解析失败(...)` 的原因（鉴权、网络、超时或不支持的后缀）。
+
+5. 内化与覆盖分析（真实 LLM + 真实检索）：
+
+   ```bash
+   uv run python scripts/api_lab.py --base "$B" internalize <reg_id> --wait
+   uv run python scripts/api_lab.py --base "$B" analyze <reg_id> --wait
+   uv run python scripts/api_lab.py --base "$B" clauses <reg_id> --include-candidates
+   uv run python scripts/api_lab.py --base "$B" artifacts <reg_id>
+   ```
+
+   检查点：`matched_internal_clause_ids` 里的每个 id 都来自本轮检索；`status` 只能是
+   `完全覆盖 / 部分覆盖 / 缺失`；`review.html` 按制度名分组。LLM 慢时可先只跑 `split`。
+
+6. 后端契约：
+
+   ```bash
+   uv run python scripts/api_lab.py --base "$B" push --doc-id DOC-INTRANET-1 \
+     --path upload_materials/external/某办法.docx --wait-result
+   uv run python scripts/api_lab.py --base "$B" result DOC-INTRANET-1
+   ```
+
+   检查点：push 返回 `job_id`、`dispatch`、`manual`；处理中 `result.code="2"`，成功 `"1"`，
+   失败 `"0"`；`data` 永远是数组，`termId={docId}-{orderNum}`。配了回调时同时观察
+   ESG 网关/`BACKEND_CALLBACK_URL` 是否收到同一份 payload。
+
+7. 全链路一把跑：`uv run python scripts/api_lab.py --base "$B" chain upload_materials/external/某办法.docx`。

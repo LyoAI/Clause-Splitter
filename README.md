@@ -128,7 +128,8 @@ uv run python serving.py              # 0.0.0.0:18998
 docker build -t clause-splitter . && bash docker_cmd.sh
 ```
 
-Create a `.env` (gitignored) with the LLM keys and service knobs. Key settings
+Create a `.env` (gitignored) with service knobs only; LLM credentials live in
+`config/llm/<model>.yaml`. Key settings
 (env-overridable): `DATA_DIR`, `MONGO_*`, `API_KEY`, `JOB_WORKERS`,
 `COMPARE_CONCURRENCY`, `SEARCH_TOP_K`, `REVIEW_FILTER_RELEVANCE`,
 `DOC_PROFILE_TIMEOUT_S`, `COMPANY_PROFILE`, `RAG_PROVIDER`, `RAG_API_BASE`,
@@ -145,7 +146,13 @@ With MongoDB and the service running, exercise the real HTTP API end to end:
 ./scripts/smoke_test.sh regulation   # upload upload_materials/external, run chain
 ./scripts/smoke_test.sh push         # POST /regulations/push + docId result pull
 ./scripts/smoke_test.sh              # all of the above
+
+# one command per endpoint, for step-by-step experiments
+uv run python scripts/api_lab.py health
+uv run python scripts/api_lab.py chain upload_materials/external/some.docx
 ```
+
+`scripts/README.md` also has an intranet migration checklist.
 
 See `scripts/README.md` for environment overrides and supported file types.
 
