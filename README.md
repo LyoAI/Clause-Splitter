@@ -136,6 +136,12 @@ Create a `.env` (gitignored) with service knobs only; LLM credentials live in
 `RAG_API_USER`, `RAG_API_PASSWORD`, `RAG_CORPUS`, `RAG_PARSE_CORPUS`,
 `RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `PARSE_FALLBACK`.
 
+LLM selection: the model is `Settings.default_model` (default `qwen3.8-27b`,
+matching `config/llm/<model>.yaml`). `LLM_PROVIDER` picks the yaml section and
+the provider implementation — `openai` (OpenAI-compatible, default) or
+`pingan` (intranet gateway with signed headers, section keys `appKey`,
+`appSecret`, `rsaPrivateKey`, `openApiCredential`, `sceneId`, `requestId`).
+
 ## Smoke test
 
 With MongoDB and the service running, exercise the real HTTP API end to end:

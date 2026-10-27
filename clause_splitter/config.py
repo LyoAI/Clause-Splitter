@@ -21,6 +21,9 @@ load_dotenv(REPO_ROOT / ".env")
 # ── LLM ───────────────────────────────────────────────────────────────
 # Per-model LLM configs: ``config/llm/<model_name>.yaml``, one section per provider.
 LLM_CONFIG_DIR = REPO_ROOT / "config" / "llm"
+# Provider implementation: ``openai`` (OpenAI-compatible) or ``pingan`` (signed
+# intranet gateway). Names the yaml section to read.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 # Per-call LLM request timeout (s) and per-episode wall-clock deadline.
 LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
 # Document profile call — shorter, so it cannot stall the chain.
