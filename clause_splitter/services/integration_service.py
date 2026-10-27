@@ -119,6 +119,8 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
 
     content, filename, title = await _ensure_content(args)
     repos = get_repos()
+    # Same bytes reuse the existing regulation even when docId/taskId change;
+    # the re-push then supersedes a pending scheduled chain job below.
     reg, created = await regulation_service.upload(content, filename, title, repos=repos)
 
     opt_type = _read_opt_type(args)
@@ -136,6 +138,7 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
         reg["_id"], "chain",
         payload={"skip_applicability": True} if manual else None,
         defer=mode == "scheduled",
+        replace_scheduled=True,
     )
     return {
         "regulation_id": reg["_id"],

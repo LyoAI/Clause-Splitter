@@ -213,6 +213,8 @@ GET    /library/index            → {doc_count, chunk_count, built_at, building
 
 推送入参新增可选字段 `extraParams`(JSON 对象):服务原样保存以兼容旧调用,但**不再出现在回调/查询报文中**,也不参与任何流程判定。完整入参表见 `assets/外规内化服务接口文档.docx` 3.3 节,结果报文见 `assets/callback-contract.md`。
 
+重复推送同一份内容时按 sha256 复用同一法规(改 `docId` / `taskId` 不会新建法规)。若该法规上还有 `scheduled` 的 chain 任务,新 push 会把旧任务标记为 `failed`(`superseded by re-push`)并新建任务重新跑;`queued` / `running` 任务仍返回 409。
+
 `/regulations/*` 其余路由、`/library`、`/jobs` 为内部运维接口。
 
 ---

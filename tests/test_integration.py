@@ -304,6 +304,52 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
             services.reset()
 
 
+async def test_re_push_supersedes_scheduled_chain_and_reruns(tmp_path, monkeypatch):
+    """Re-pushing the same bytes replaces a pending scheduled chain job.
+
+    Changing docId/taskId does not create a new regulation (sha256 dedupe);
+    the old scheduled job must be cancelled so the fresh job can run.
+    """
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "auto")
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: NoApplicabilityLLM())
+        services.init(repos, runner)
+        integration_service.register(runner)
+        patch_rag(monkeypatch, build_rag_service())
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
+
+        await runner.start()
+        try:
+            first = await integration_service.handle_push({"args": {
+                "optType": 1, "docContent": SOURCE_TEXT, "docId": "doc5", "taskId": "t5",
+            }})
+            assert first["dispatch"] == "scheduled"
+            old = await repos.jobs.get(first["job_id"])
+            assert old["state"] == "scheduled"
+
+            second = await integration_service.handle_push({"args": {
+                "optType": 0, "docContent": SOURCE_TEXT, "docId": "doc5b", "taskId": "t5b",
+            }})
+            assert second["job_id"] != first["job_id"]
+            assert second["dispatch"] == "immediate"
+            assert second["duplicate"] is True  # same sha256 → same regulation
+
+            old = await repos.jobs.get(first["job_id"])
+            assert old["state"] == "failed"
+            assert "superseded" in old["error"]
+
+            done = await _wait(repos, second["job_id"])
+            assert done["state"] == "done", done["error"]
+            reg = await repos.regulations.get(second["regulation_id"])
+            assert reg["push_doc_id"] == "doc5b"
+            assert reg["push_task_id"] == "t5b"
+            assert reg["push_opt_type"] == 0
+        finally:
+            await runner.stop()
+            services.reset()
+
+
 async def test_not_applicable_stops_chain_with_null_stages(tmp_path, monkeypatch):
     """Not applicable → clean stop: code 1, downstream stages done with null data."""
     with data_dir(tmp_path):

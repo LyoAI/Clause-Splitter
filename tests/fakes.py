@@ -67,10 +67,12 @@ class FakeCollection:
     async def count_documents(self, query: dict[str, Any]) -> int:
         return sum(1 for d in self.docs.values() if self._match(d, query))
 
-    async def update_one(self, query: dict[str, Any], update: dict[str, Any]) -> None:
+    async def update_one(self, query: dict[str, Any], update: dict[str, Any]) -> Any:
         for doc in self.docs.values():
             if self._match(doc, query):
                 doc.update(update.get("$set", {}))
+                return type("Result", (), {"modified_count": 1})()
+        return type("Result", (), {"modified_count": 0})()
 
     async def update_many(self, query: dict[str, Any], update: dict[str, Any]) -> Any:
         n = 0

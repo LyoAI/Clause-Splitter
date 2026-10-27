@@ -172,6 +172,22 @@ class JobRepo:
             {"regulation_id": reg_id, "state": {"$in": list(JOB_ACTIVE_STATES)}}
         ) > 0
 
+    async def list_active_for_regulation(self, reg_id: str) -> list[dict[str, Any]]:
+        """All queued/running/scheduled jobs on this regulation."""
+        cursor = self._col.find(
+            {"regulation_id": reg_id, "state": {"$in": list(JOB_ACTIVE_STATES)}},
+            sort=[("created_at", 1)],
+        )
+        return await cursor.to_list(length=100)
+
+    async def cancel_scheduled(self, job_id: str, reason: str) -> bool:
+        """Cancel one scheduled job; false if the cron dispatcher already admitted it."""
+        result = await self._col.update_one(
+            {"_id": job_id, "state": "scheduled"},
+            {"$set": {"state": "failed", "error": reason, "updated_at": now()}},
+        )
+        return result.modified_count > 0
+
     async def mark_interrupted(self) -> int:
         """Startup crash recovery: queued/running jobs can't survive a restart."""
         result = await self._col.update_many(

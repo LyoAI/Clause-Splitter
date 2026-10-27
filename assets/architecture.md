@@ -75,6 +75,7 @@ episode 语义:直接读取条款原文,先在内部逐项列出义务再逐项�
 ## 5. 后端对接细节(对齐旧版)
 
 - **doclobsUrl 优先**,docContent(str 入参)兜底;URL 下载失败且有 docContent → 降级落盘,无兜底 → 502。
+- **重复 push**:内容 sha256 相同则复用同一法规(改 docId/taskId 无效);旧 `scheduled` chain 任务会被新 push 标 `failed`(`superseded by re-push`)后重新建任务;`queued`/`running` 仍 409。
 - **魔数嗅探**:`%PDF-`→.pdf、`PK\x03\x04`→.docx、`D0CF11E0`→.doc、可 UTF-8 解码→.txt、其余 415;文件名 = 标题(attname 或 docId)+ 嗅探后缀。
 - docContent 是 str 不是文件:`_materialize_text` 显式适配(`<br/>`→换行)写内部文件,流水线保持文件驱动。
 - 非 http(s) 的 doclobsUrl 视为本地挂载路径直接读。

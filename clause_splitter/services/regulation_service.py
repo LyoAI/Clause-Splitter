@@ -99,11 +99,14 @@ async def override_applicability(
 
 
 async def start_stage(reg_id: str, job_type: str, *, force: bool = False,
-                      payload: dict | None = None, defer: bool = False) -> dict:
+                      payload: dict | None = None, defer: bool = False,
+                      replace_scheduled: bool = False) -> dict:
     """Validate preconditions, reset downstream, enqueue one stage / chain.
 
     ``defer=True`` parks the job in ``scheduled`` (cron admission) instead of
     the live queue — used by backend pushes under cron/auto dispatch.
+    ``replace_scheduled=True`` lets a re-push cancel a pending scheduled chain
+    job instead of raising 409; queued/running jobs still block.
     """
     runner = _runner()
     repos = runner.repos
@@ -111,8 +114,30 @@ async def start_stage(reg_id: str, job_type: str, *, force: bool = False,
         reg = await repos.regulations.get(reg_id)
         if reg is None:
             raise ApiError(404, "regulation not found")
-        if await repos.jobs.has_active_for_regulation(reg_id):
-            raise ApiError(409, "a job is already queued/running for this regulation")
+        active = await repos.jobs.list_active_for_regulation(reg_id)
+        if active:
+            replaceable = (
+                replace_scheduled
+                and job_type == "chain"
+                and all(
+                    job.get("job_type") == "chain" and job.get("state") == "scheduled"
+                    for job in active
+                )
+            )
+            if not replaceable:
+                raise ApiError(409, "a job is already queued/running for this regulation")
+            # The cron dispatcher may admit a job between the list and the
+            # conditional update; if that happens, keep the 409 and let the
+            # caller retry after it finishes.
+            cancelled = 0
+            for job in active:
+                if await repos.jobs.cancel_scheduled(job["_id"], "superseded by re-push"):
+                    cancelled += 1
+            if cancelled != len(active):
+                raise ApiError(409, "a job is already queued/running for this regulation")
+            logger.info(
+                "re-push superseded %d scheduled chain job(s) for %s", cancelled, reg_id
+            )
         _check_precondition(reg, job_type, force)
         await _reset(reg_id, job_type, repos)
         if defer:
