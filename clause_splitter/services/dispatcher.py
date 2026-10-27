@@ -3,7 +3,7 @@
 Push always lands as a job row; ``CHAIN_DISPATCH`` decides when it runs:
 - immediate: every push runs right away (no scheduler started);
 - cron:      every push waits as ``scheduled`` until the cron admits it;
-- auto:      OptType 0 (manual) pushes run immediately, the rest wait.
+- auto:      optType 0 (manual) pushes run immediately, the rest wait.
 """
 
 from __future__ import annotations

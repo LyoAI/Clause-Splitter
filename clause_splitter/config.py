@@ -79,7 +79,7 @@ CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", "50"))
 
 # ── Backend integration (push → dispatch → ESG callback) ────────────────
 # How pushed regulations reach the chain: immediate | cron | auto.
-# auto = OptType 0 (manual) pushes run immediately, the rest wait for cron.
+# auto = optType 0 (manual) pushes run immediately, the rest wait for cron.
 CHAIN_DISPATCH = os.getenv("CHAIN_DISPATCH", "auto")
 # 5-field crontab admitting scheduled chain jobs (see services.dispatcher).
 CHAIN_CRON = os.getenv("CHAIN_CRON", "0 20 * * mon-sat")

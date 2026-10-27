@@ -252,7 +252,7 @@ def cmd_lib_status(client: Client, args) -> None:
 
 
 def cmd_push(client: Client, args) -> None:
-    payload = {"docId": args.doc_id, "OptType": args.opt_type, "taskId": args.task_id}
+    payload = {"docId": args.doc_id, "optType": args.opt_type, "taskId": args.task_id}
     if args.path:
         payload["doclobsUrl"] = str(Path(args.path).resolve())
     elif args.url:

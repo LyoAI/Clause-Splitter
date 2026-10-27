@@ -74,7 +74,7 @@ GET    /regulations/{id}/jobs · GET /jobs?state=&job_type= · GET /jobs/{id}
 GET    /regulations/{id}/artifacts · GET /regulations/{id}/artifacts/{name}
 POST   /library/documents · GET /library/documents · DELETE /library/documents/{id}
 POST   /library/index {rebuild?} · GET /library/index
-POST   /regulations/push                 backend doc push (docContent or doclobsUrl; OptType=manual
+POST   /regulations/push                 backend doc push (docContent or doclobsUrl; optType=manual
                                            skips stage 1) → auto-runs the chain
 GET    /healthz
 ```

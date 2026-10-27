@@ -87,13 +87,13 @@ async def run_chain(ctx: StageContext) -> dict[str, Any]:
         raw_progress(offset, f"{name} done")
         return out
 
-    # Manual backend pushes (OptType=手动) are applicable by definition — skip
+    # Manual backend pushes (optType=手动) are applicable by definition — skip
     # the stage-1 LLM call and stamp the override directly.
     if ctx.payload.get("skip_applicability"):
         await regs.update(ctx.reg_id, {
             "applicability_applicable": True,
             "applicability_confidence": 1.0,
-            "applicability_reason": "手动推送(OptType=手动),默认适用于平安科技",
+            "applicability_reason": "手动推送(optType=手动),默认适用于平安科技",
             "applicability_state": "done",
         })
         offset = WEIGHTS["applicability"]

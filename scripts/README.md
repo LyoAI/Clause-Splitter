@@ -16,8 +16,8 @@ uv run python scripts/api_lab.py # 逐接口手工实验，见下文
 ./scripts/smoke_test.sh library         # 上传 upload_materials/internal/*，构建索引
 ./scripts/smoke_test.sh regulation      # 上传 external 下第一个文件并跑整链
 ./scripts/smoke_test.sh regulation ./upload_materials/external/某文件.docx
-./scripts/smoke_test.sh push            # OptType=0，随后拉 docId 结果
-./scripts/smoke_test.sh push 1          # OptType=1，auto 模式下进入 scheduled
+./scripts/smoke_test.sh push            # optType=0，随后拉 docId 结果
+./scripts/smoke_test.sh push 1          # optType=1，auto 模式下进入 scheduled
 ./scripts/smoke_test.sh all             # 全部（默认）
 ./scripts/watch_job.sh <job_id>         # 另开终端实时轮询一个任务
 ```
@@ -38,7 +38,7 @@ MATERIALS_DIR=./upload_materials \
 
 - `API_KEY` 未设置时会尝试从根目录 `.env` 读取；仍为空则不发 `X-API-Key`（本地无鉴权）。
 - `POLL_TIMEOUT` 是单次等待任务/结果的上限，单位秒；LLM 分析较慢时可调大。
-- `push` 默认 `OptType=0`；也支持 `push 1` 测自动推送的 `scheduled` 分支。
+- `push` 默认 `optType=0`；也支持 `push 1` 测自动推送的 `scheduled` 分支。
 - 脚本里的 push 会走真实回调配置：如果 `.env` 配了 `BACKEND_CALLBACK_URL` 或 ESG，任务完成后会真的发回调。
 
 ## 接口实验脚本 `api_lab.py`
@@ -82,7 +82,7 @@ CHAIN_DISPATCH=auto          # auto | immediate | cron
 CHAIN_CRON=0 20 * * mon-sat  # 5 段 crontab，服务端本地时区
 ```
 
-| CHAIN_DISPATCH | `OptType=0`（手动） | `OptType=1`（自动） |
+| CHAIN_DISPATCH | `optType=0`（手动） | `optType=1`（自动） |
 |---|---|---|
 | `immediate` | 立即执行 | 立即执行 |
 | `auto` | 立即执行 | `scheduled`，等 cron 放行 |
@@ -92,7 +92,7 @@ CHAIN_CRON=0 20 * * mon-sat  # 5 段 crontab，服务端本地时区
 
 - 改 `.env` 后必须重启服务，配置在进程启动时读取。
 - `/regulations/{id}/run` 和单阶段接口不受 `CHAIN_DISPATCH` 影响，始终立即入队；所以 `smoke_test.sh regulation` 测的是实时任务。
-- push 才走调度器：`auto` + `OptType=0` 是实时，`auto` + `OptType=1` 或 `cron` 是定时。
+- push 才走调度器：`auto` + `optType=0` 是实时，`auto` + `optType=1` 或 `cron` 是定时。
 - 定时任务会一直保持 `scheduled`，直到 cron 触发 `drain_scheduled`；重启服务不会丢 scheduled 任务。
 - 从 `cron/auto` 切到 `immediate` 后不会启动调度器；已经处于 `scheduled` 的旧任务不会自己跑，需要切回 cron 放行或手工处理。
 
@@ -106,7 +106,7 @@ CHAIN_DISPATCH=auto
 
 ```bash
 ./scripts/smoke_test.sh regulation   # 上传+整链，始终立即执行
-./scripts/smoke_test.sh push 0       # auto 模式下 OptType=0 立即执行
+./scripts/smoke_test.sh push 0       # auto 模式下 optType=0 立即执行
 ```
 
 ### 定时任务测试
@@ -160,7 +160,7 @@ curl -sS "$BASE/jobs?state=scheduled" | python3 -m json.tool
 | `GET /regulations/{id}/clauses` | 条款总数（只取 limit=1） |
 | `GET /regulations/{id}/artifacts` | 产物列表 |
 | `GET /jobs/{id}` | 轮询任务状态 |
-| `POST /regulations/push` | 后端推送，支持 `OptType` |
+| `POST /regulations/push` | 后端推送，支持 `optType` |
 | `GET /regulations/{docId}/result` | 按 docId 拉取结果 |
 
 `api_lab.py` 覆盖的接口：

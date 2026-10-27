@@ -8,7 +8,7 @@
 #   ./scripts/smoke_test.sh regulation      # upload external doc, run the chain
 #   ./scripts/smoke_test.sh regulation FILE # run one specific external file
 #   ./scripts/smoke_test.sh push            # backend push + docId result pull
-#   ./scripts/smoke_test.sh push 1          # OptType=1 (auto dispatch -> scheduled)
+#   ./scripts/smoke_test.sh push 1          # optType=1 (auto dispatch -> scheduled)
 #
 # Environment overrides:
 #   HOST=127.0.0.1 SERVICE_PORT=18998 API_KEY=... POLL_TIMEOUT=1800 ./scripts/smoke_test.sh
@@ -127,9 +127,9 @@ cmd_push() {
     local opt_type="${1:-0}"
     case "$opt_type" in
         0|1) ;;
-        *) die "OptType must be 0 (manual) or 1 (auto), got: ${opt_type}" ;;
+        *) die "optType must be 0 (manual) or 1 (auto), got: ${opt_type}" ;;
     esac
-    say "4. backend push -> docId result (OptType=${opt_type})"
+    say "4. backend push -> docId result (optType=${opt_type})"
     local stamp doc_id payload resp dispatch job_id body code clauses
     stamp="$(date +%Y%m%d%H%M%S)"
     doc_id="smoke-push-${stamp}"
@@ -141,7 +141,7 @@ cmd_push() {
     "taskId": "task-${stamp}",
     "uid": "smoke",
     "docType": "2",
-    "OptType": ${opt_type},
+    "optType": ${opt_type},
     "extraParams": {"source": "smoke-test", "run": "${stamp}"},
     "docContent": "第一条 为了规范数据安全管理，制定本办法（冒烟测试 ${stamp}）。\n第二条 数据处理者应当建立数据安全管理制度，并定期开展风险评估。\n第三条 本办法自发布之日起施行。"
   }
@@ -155,9 +155,9 @@ JSON
     ok "push accepted: docId=${doc_id} dispatch=${dispatch:-?} job=${job_id:-?}"
 
     if [ "$dispatch" = "scheduled" ]; then
-        warn "push is scheduled (CHAIN_DISPATCH=cron, or OptType=1 under auto)."
+        warn "push is scheduled (CHAIN_DISPATCH=cron, or optType=1 under auto)."
         warn "it waits for CHAIN_CRON; follow it with: ./scripts/watch_job.sh ${job_id:-<job_id>}"
-        warn "for an immediate test use OptType=0 with CHAIN_DISPATCH=auto, or CHAIN_DISPATCH=immediate."
+        warn "for an immediate test use optType=0 with CHAIN_DISPATCH=auto, or CHAIN_DISPATCH=immediate."
         SKIPPED=1
         return 0
     fi

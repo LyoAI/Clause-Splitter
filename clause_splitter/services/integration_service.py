@@ -24,7 +24,7 @@ from clause_splitter.utils import get_logger
 
 logger = get_logger()
 
-#: Push ``OptType`` — 0 = manual (always applicable to 平安科技), 1 = auto.
+#: Push ``optType`` — 0 = manual (always applicable to 平安科技), 1 = auto.
 #: Mapping awaiting backend confirmation; flip here if reversed.
 OPT_MANUAL = 0
 DOWNLOAD_TIMEOUT_S = 60
@@ -92,6 +92,14 @@ async def _ensure_content(args: dict[str, Any]) -> tuple[bytes, str, str]:
     return _materialize_text(doc_content), f"{title}.txt", title
 
 
+def _read_opt_type(args: dict[str, Any]) -> Any:
+    """Read the push opt-type field case-insensitively (0 = manual, 1 = auto)."""
+    for key, value in args.items():
+        if key.lower() == "opttype":
+            return value
+    return None
+
+
 async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
     """One backend push → one regulation + one chain job (manual skips stage 1).
 
@@ -113,13 +121,14 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
     repos = get_repos()
     reg, created = await regulation_service.upload(content, filename, title, repos=repos)
 
-    manual = args.get("OptType") == OPT_MANUAL
+    opt_type = _read_opt_type(args)
+    manual = opt_type == OPT_MANUAL
     await repos.regulations.update(reg["_id"], {
         "push_doc_id": str(args.get("docId") or ""),
         "push_task_id": str(args.get("taskId") or ""),
         "push_uid": str(args.get("uid") or ""),
         "push_doc_type": str(args.get("docType") or ""),
-        "push_opt_type": args.get("OptType"),
+        "push_opt_type": opt_type,
         "push_extra_params": extra_params,
     })
     mode = dispatch_mode(manual)

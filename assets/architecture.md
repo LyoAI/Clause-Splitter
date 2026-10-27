@@ -6,7 +6,7 @@
 
 ```
 系统后端(平安 ESG)
-   │ ① POST /api/v1/clause_splitter/regulations/push          (docId/doclobsUrl/docContent/OptType/extraParams…)
+   │ ① POST /api/v1/clause_splitter/regulations/push          (docId/doclobsUrl/docContent/optType/extraParams…)
    ▼
 FastAPI(api/)──► IntegrationService ──► 取内容(doclobsUrl 优先,docContent 兜底)
    │                    │                    魔数嗅探定后缀(URL 名不可信)
@@ -14,7 +14,7 @@ FastAPI(api/)──► IntegrationService ──► 取内容(doclobsUrl 优先,
    │              Regulation 入库(sha256 去重)+ Chain Job 入队
    │                    │
    │         CHAIN_DISPATCH = auto │ cron │ immediate
-   │           auto: OptType=0(手动)→ 立即;其余 → scheduled 等 cron
+   │           auto: optType=0(手动)→ 立即;其余 → scheduled 等 cron
    │           cron: 全部 scheduled,CHAIN_CRON 定时放行(默认 0 20 * * mon-sat)
    │           immediate: 全部立即
    │                    │
@@ -65,7 +65,7 @@ JobRunner(clause_splitter/jobs.py, workers=1)
 
 | 阶段 | 行为 |
 |---|---|
-| applicability | LLM 判定法规是否适用于平安科技(手动推送 OptType=0 跳过,视为必适用) |
+| applicability | LLM 判定法规是否适用于平安科技(手动推送 optType=0 跳过,视为必适用) |
 | split | 四层阶梯拆条,条款入库 |
 | internalization | 逐条 LLM 判定条款类型/是否需要内化 |
 | analysis | 逐条 ReAct episode:经 RAG 服务检索内规库 → grounding 证据 → 覆盖判定(完全/部分/缺失)+ 差异 + 整改建议 |

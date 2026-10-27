@@ -69,7 +69,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
         await runner.start()
         try:
             result = await integration_service.handle_push({"args": {
-                "OptType": 0, "docContent": SOURCE_TEXT, "docType": "3",
+                "optType": 0, "docContent": SOURCE_TEXT, "docType": "3",
                 "docId": "doc1", "taskId": "task1", "uid": "u1",
                 "extraParams": {"source": "iobs", "batch": "2026-10"},
             }})
@@ -147,7 +147,7 @@ async def test_auto_push_downloads_from_url(tmp_path, monkeypatch):
         try:
             monkeypatch.setattr(integration_service, "_fetch", lambda url: SOURCE_TEXT.encode("utf-8"))
             result = await integration_service.handle_push({"args": {
-                "OptType": 1, "docType": "3", "docId": "doc2",
+                "optType": 1, "docType": "3", "docId": "doc2",
                 "doclobsUrl": "http://iobs.example/download/abc?attname=测试外规管理办法",
                 "taskId": "task2", "uid": "u2",
             }})
@@ -199,7 +199,7 @@ async def test_url_wins_over_doccontent(tmp_path, monkeypatch):
         try:
             monkeypatch.setattr(integration_service, "_fetch", lambda url: b"PK\x03\x04docx-bytes")
             result = await integration_service.handle_push({"args": {
-                "OptType": 1, "docId": "docA", "taskId": "tA",
+                "optType": 1, "docId": "docA", "taskId": "tA",
                 "doclobsUrl": "http://iobs.example/a?attname=%E5%88%B6%E5%BA%A6.pdf",
                 "docContent": "第一条　URL 与内容并存时不应使用我。",
             }})
@@ -221,7 +221,7 @@ async def test_bad_url_falls_back_to_doccontent(tmp_path, monkeypatch):
 
             monkeypatch.setattr(integration_service, "_fetch", boom)
             result = await integration_service.handle_push({"args": {
-                "OptType": 1, "docId": "docB", "taskId": "tB",
+                "optType": 1, "docId": "docB", "taskId": "tB",
                 "doclobsUrl": "http://iobs.example/dead-link", "docContent": SOURCE_TEXT,
             }})
             reg = await repos.regulations.get(result["regulation_id"])
@@ -230,7 +230,7 @@ async def test_bad_url_falls_back_to_doccontent(tmp_path, monkeypatch):
             # no docContent to fall back on → hard 502
             with pytest.raises(ApiError) as exc:
                 await integration_service.handle_push({"args": {
-                    "OptType": 1, "docId": "docC", "taskId": "tC",
+                    "optType": 1, "docId": "docC", "taskId": "tC",
                     "doclobsUrl": "http://iobs.example/dead-link",
                 }})
             assert exc.value.status_code == 502
@@ -262,7 +262,7 @@ def test_sniff_suffix_and_local_path_fetch(tmp_path):
 
 
 async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatch):
-    """Flat (unwrapped) body + auto dispatch: OptType=1 parks in scheduled
+    """Flat (unwrapped) body + auto dispatch: optType=1 parks in scheduled
     until drain_scheduled admits it; the chain then runs and build_result
     serves the payload by docId."""
     with data_dir(tmp_path):
@@ -278,7 +278,7 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
         try:
             # Flat field map (no "args" wrapper) — spec shape pending.
             result = await integration_service.handle_push({
-                "OptType": 1, "docContent": SOURCE_TEXT, "docType": "3",
+                "optType": 1, "docContent": SOURCE_TEXT, "docType": "3",
                 "docId": "doc3", "taskId": "task3", "uid": "u3",
             })
             assert result["dispatch"] == "scheduled"
@@ -314,7 +314,7 @@ async def test_not_applicable_stops_chain_with_null_stages(tmp_path, monkeypatch
         try:
             await runner.start()
             result = await integration_service.handle_push({"args": {
-                "OptType": 1, "docContent": SOURCE_TEXT, "docId": "docX", "taskId": "tX",
+                "optType": 1, "docContent": SOURCE_TEXT, "docId": "docX", "taskId": "tX",
             }})
             done = await _wait(repos, result["job_id"])
             assert done["state"] == "done", done["error"]
@@ -353,7 +353,7 @@ async def test_failed_stage_delivers_partial_results(tmp_path, monkeypatch):
         try:
             await runner.start()
             result = await integration_service.handle_push({"args": {
-                "OptType": 1, "docContent": SOURCE_TEXT, "docId": "docY", "taskId": "tY",
+                "optType": 1, "docContent": SOURCE_TEXT, "docId": "docY", "taskId": "tY",
             }})
             done = await _wait(repos, result["job_id"])
             assert done["state"] == "failed"
@@ -404,7 +404,7 @@ async def test_cron_mode_schedules_even_manual_pushes(tmp_path, monkeypatch):
         services.init(repos, runner)
         try:
             result = await integration_service.handle_push({"args": {
-                "OptType": 0, "docContent": SOURCE_TEXT, "docId": "doc4", "taskId": "t4",
+                "optType": 0, "docContent": SOURCE_TEXT, "docId": "doc4", "taskId": "t4",
             }})
             assert result["dispatch"] == "scheduled"
             job = await repos.jobs.get(result["job_id"])
