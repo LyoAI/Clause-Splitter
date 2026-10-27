@@ -9,19 +9,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 from datetime import datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from clause_splitter.config import (
-    COMPARE_CONCURRENCY,
-    REVIEW_FILTER_CANDIDATE_MAX_CHARS,
-    REVIEW_FILTER_EXTERNAL_MAX_CHARS,
-    REVIEW_MIN_CANDIDATES,
-)
 from clause_splitter.models import (
     CompareResult,
     CoverageStatus,
@@ -29,9 +22,7 @@ from clause_splitter.models import (
     RetrievedCandidate,
     normalize_internalization_decision,
 )
-from clause_splitter.prompts import load
 from clause_splitter.utils import get_logger
-from clause_splitter.utils.json_utils import parse_json_from_text
 from .retrieve import highlight
 
 logger = get_logger()
@@ -50,136 +41,12 @@ _BADGE = {
 }
 
 
-# ── Candidate relevance filter (LLM, display-only) ─────────────────────
-
-_RELEVANCE_SYSTEM = load("relevance_filter")
-
-
 def _truncate(text: str, max_chars: int) -> str:
     """按字符截断,并标注省略。"""
     text = (text or "").strip()
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "…"
-
-
-def _parse_related_indices(content: str, n: int) -> set[int] | None:
-    """解析 1 起始候选编号;任何非法输入 → None(保留全部,绝不静默清空)。"""
-    if not content or not content.strip():
-        return None
-    try:
-        data = parse_json_from_text(content)
-    except Exception:  # noqa: BLE001
-        return None
-    related = data.get("related")
-    if not isinstance(related, list):
-        return None
-    indices: set[int] = set()
-    for v in related:
-        if not isinstance(v, int) or isinstance(v, bool) or v < 1 or v > n:
-            return None  # 0 / 越界 / 非整数 → fail-open,宁多勿少
-        indices.add(v)
-    return indices
-
-
-async def _judge_candidates(llm, match: MatchResult) -> list[RetrievedCandidate]:
-    """一次 LLM 调用判定该条外规的所有候选;失败则保留全部(fail-open)。
-
-    返回该条应展示的候选子集(原地改写由 ``filter_relevant_candidates`` 负责)。
-    """
-    cands = match.retrieved_candidates
-    lines = [
-        f"外规条款:\n{_truncate(match.external_source_text, REVIEW_FILTER_EXTERNAL_MAX_CHARS)}\n",
-        "候选内规条款:",
-    ]
-    for i, c in enumerate(cands, 1):
-        lines.append(
-            f"{i}. [{c.doc_name}] {c.clause_label or c.chunk_id}\n"
-            f"{_truncate(c.full_text, REVIEW_FILTER_CANDIDATE_MAX_CHARS)}"
-        )
-    user_prompt = "\n\n".join(lines) + "\n"
-
-    try:
-        resp = await llm.ainvoke([
-            {"role": "system", "content": _RELEVANCE_SYSTEM},
-            {"role": "user", "content": user_prompt},
-        ], temperature=0.0)
-    except Exception as e:  # noqa: BLE001 — 任何失败都 fail-open
-        logger.warning("候选相关性判定失败(保留全部): %s", e)
-        return cands
-
-    content = resp.content if hasattr(resp, "content") else str(resp)
-    kept = _parse_related_indices(content, len(cands))
-    if kept is None:
-        logger.warning("候选相关性判定输出不可解析(保留全部): %r", (content or "")[:80])
-        return cands
-
-    relevant = [
-        c for i, c in enumerate(cands)
-        if (i + 1) in kept or c.adopted  # adopted(= grounding 采用)无条件保留
-    ]
-    # 最少展示 REVIEW_MIN_CANDIDATES 条:不足时按得分降序从全部候选补齐(不论相关性),
-    # 避免严格过滤把召回清空、页面出现「没有可展示的检索召回」。
-    return _min_display_candidates(relevant, cands)
-
-
-def _min_display_candidates(
-    kept: list[RetrievedCandidate],
-    all_cands: list[RetrievedCandidate],
-    minimum: int = REVIEW_MIN_CANDIDATES,
-) -> list[RetrievedCandidate]:
-    """候选不足 minimum 条时,按得分降序从全部候选补齐(保留的在前)。
-
-    采用条款已在 kept 中(adopted 无条件保留);补齐只填得分最高的候选,确保
-    复核页始终能看到至少 minimum 条召回,除非原本就一条候选都没有。
-    """
-    if len(kept) >= minimum:
-        return kept
-    kept_ids = {c.chunk_id for c in kept}
-    topup = [
-        c for c in sorted(all_cands, key=lambda c: -(c.score or 0.0))
-        if c.chunk_id not in kept_ids
-    ]
-    return kept + topup[: minimum - len(kept)]
-
-
-async def filter_relevant_candidates(
-    result: CompareResult,
-    llm,
-    *,
-    concurrency: int = COMPARE_CONCURRENCY,
-) -> int:
-    """LLM 过滤复核页候选:剔除与外规条款完全不相关的 top-k 候选(原地)。
-
-    只处理候选非空的 match;``adopted`` 候选(= grounding 采用的条款)无条件保留;
-    单条失败 → 该条保留全部(fail-open)。每条最终至少展示 ``REVIEW_MIN_CANDIDATES``
-    条(不足时按得分补齐,不论相关性),故「净剔除」= 原始候选数 - 最终候选数。
-
-    注意:调用方必须把它放在 ``compare_result.json`` 落盘**之后**——过滤会原地
-    改写 ``match.retrieved_candidates``,若在落盘前调用会静默剥掉 json 里的候选。
-    """
-    if llm is None:
-        return 0
-    targets = [m for m in result.matches if m.retrieved_candidates]
-    if not targets:
-        return 0
-
-    sem = asyncio.Semaphore(concurrency)
-    dropped = 0
-
-    async def _one(m: MatchResult) -> None:
-        nonlocal dropped
-        async with sem:
-            kept = await _judge_candidates(llm, m)
-            dropped += len(m.retrieved_candidates) - len(kept)
-            m.retrieved_candidates = kept
-
-    await asyncio.gather(*(_one(m) for m in targets))
-    logger.info(
-        "复核页相关性过滤完成:%d/%d 条外规条款参与判定,净剔除 %d 条候选(每条至少展示 %d 条)",
-        len(targets), len(result.matches), dropped, REVIEW_MIN_CANDIDATES,
-    )
-    return dropped
 
 
 _INTL_BADGE = {

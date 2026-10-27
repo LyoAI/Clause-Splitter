@@ -8,7 +8,6 @@ code has no fake backend; only tests inject one through ``rag._service``.
 from __future__ import annotations
 
 import json
-import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -379,9 +378,9 @@ def spec_by_clause_text(text: str) -> dict:
 
 
 class PipelineFakeLLM:
-    """Dispatches by system prompt: applicability / internalization / relevance / episode.
+    """Dispatches by system prompt: applicability / doc_profile / internalization / episode.
 
-    ``invoke`` (report calls) raises → template fallback, keeping the e2e LLM-free.
+    ``invoke`` raises so split's LLM fallback degrades to the builtin path.
     """
 
     def __init__(self, applicable: bool | None = True) -> None:
@@ -420,11 +419,6 @@ class PipelineFakeLLM:
                 "internalization_decision": spec["answer"]["internalization_decision"],
                 "internalization_reason": spec["answer"]["internalization_reason"],
             }, ensure_ascii=False), finish_reason="stop")
-        from clause_splitter.compare.review import _RELEVANCE_SYSTEM
-
-        if system == _RELEVANCE_SYSTEM:
-            self.calls.append("relevance")
-            return self._relevance(user)
         self.calls.append("episode")
         return self._episode(system, user, messages, tools)
 
@@ -446,22 +440,6 @@ class PipelineFakeLLM:
             finish_reason="stop",
         )
 
-    def _relevance(self, user: str) -> LLMResponse:
-        """Strict filter: candidates from 考勤/报销 docs are irrelevant → dropped."""
-        keep: list[int] = []
-        cur_idx: int | None = None
-        cur_ok = False
-        for line in user.splitlines():
-            m = re.match(r"^(\d+)\.\s*\[([^\]]+)\]", line.strip())
-            if m:
-                if cur_idx is not None and cur_ok:
-                    keep.append(cur_idx)
-                cur_idx = int(m.group(1))
-                cur_ok = "考勤" not in m.group(2) and "报销" not in m.group(2)
-        if cur_idx is not None and cur_ok:
-            keep.append(cur_idx)
-        return LLMResponse(content=json.dumps({"related": keep}, ensure_ascii=False), finish_reason="stop")
-
     def invoke(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
         self.calls.append("invoke")
-        raise RuntimeError("mock LLM does not write reports (template fallback)")
+        raise RuntimeError("mock LLM has no sync invoke")

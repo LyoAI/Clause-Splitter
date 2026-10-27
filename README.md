@@ -13,11 +13,10 @@ stages in the product flow):
    segmentation fallback.
 3. **Internalization judgment** — per article: 需要内化 / 无需内化 with reason.
 4. **Analysis** — per internalizable article: a **ReAct LLM agent over the
-   external RAG service** produces obligation decomposition,
-   coverage status (完全覆盖 / 部分覆盖 / 缺失), difference analysis, core
-   regulatory requirements, remediation suggestions, evidence-grounded
-   internal-clause matches and top-k retrieval candidates; then a gap-analysis
-   report (Markdown) and a self-contained HTML review page are rendered.
+   external RAG service** produces coverage status (完全覆盖 / 部分覆盖 / 缺失),
+   difference analysis, core regulatory requirements, remediation suggestions,
+   evidence-grounded internal-clause matches and top-k retrieval candidates;
+   a self-contained HTML review page is then rendered.
 
 Answer grounding is strict: a claimed internal chunk id must appear in the
 episode's retrieval trace *and* be resolvable from that run's retrieval cache,
@@ -34,7 +33,7 @@ clause_splitter/
   parsing/              source document → blocks (remote parse first, local text fallback)
   agent/                in-repo ReAct agent + tool registry over the RAG service
   split/                split ladder (LLM scheme → headings → chunker) + per-article chunker
-  compare/              episodes, grounding, aggregation, review page, gap report
+  compare/              episodes, grounding, aggregation, review page
   pipeline/             the 4 stages + chain orchestration
   services/             regulation / library / integration use-cases
   jobs.py               in-process asyncio job runner (queue, workers, recovery)
@@ -52,7 +51,7 @@ Storage layout under `DATA_DIR` (default `data/`):
 ```
 data/
 ├── regulations/{id}/ source/ · split/structure.json · episodes/*.json
-│                      compare_result.json · 内外规合规差距分析报告.md · 内规检索复核.html
+│                      compare_result.json · 内规检索复核.html
 └── internal/docs/     uploaded internal documents (mirrored into the RAG service)
 ```
 
@@ -131,7 +130,7 @@ docker build -t clause-splitter . && bash docker_cmd.sh
 Create a `.env` (gitignored) with service knobs only; LLM credentials live in
 `config/llm/<model>.yaml`. Key settings
 (env-overridable): `DATA_DIR`, `MONGO_*`, `API_KEY`, `JOB_WORKERS`,
-`COMPARE_CONCURRENCY`, `SEARCH_TOP_K`, `REVIEW_FILTER_RELEVANCE`,
+`COMPARE_CONCURRENCY`, `SEARCH_TOP_K`,
 `DOC_PROFILE_TIMEOUT_S`, `COMPANY_PROFILE`, `RAG_PROVIDER`, `RAG_API_BASE`,
 `RAG_API_USER`, `RAG_API_PASSWORD`, `RAG_CORPUS`, `RAG_PARSE_CORPUS`,
 `RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `PARSE_FALLBACK`, `LLM_PROVIDER`,
@@ -167,11 +166,11 @@ See `scripts/README.md` for environment overrides and supported file types.
 ## Development
 
 ```bash
-uv run --extra dev python -m pytest tests/ -q    # 137 tests, fully offline
+uv run --extra dev python -m pytest tests/ -q    # 120 tests, fully offline
 ```
 
 The e2e test drives the real chain (upload → applicability → split → judge →
-episodes → report → review HTML) against a scripted LLM and an in-memory fake
+episodes → review HTML) against a scripted LLM and an in-memory fake
 RAG service — no network, no MongoDB.
 
 Notes: run uvicorn with 1 worker (in-process queue); scanning PDFs have no local

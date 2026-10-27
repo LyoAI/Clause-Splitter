@@ -3,7 +3,7 @@
 Every claimed internal chunk id must appear in the retrieval trajectory AND
 resolve from this run's chunk cache. A coverage verdict without a groundable
 claim degrades to 缺失 with the analysis replaced, so hallucinated citations
-never reach the gap report.
+never reach the final result.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from .episode import ExternalClause
 
 logger = get_logger()
 
-# Surfaces in the review page / report — keep user-facing wording.
+# Surfaces in the review page — keep user-facing wording.
 _DOWNGRADE_ANALYSIS = (
     "内规库中未检索到可承接的候选条款。判定声称已覆盖，但引用的内规条款 ID "
     "无法对应到任何检索结果（疑似幻觉），已降级为缺失。请人工复核该外规义务是否确有内规承接。"

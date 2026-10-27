@@ -18,7 +18,6 @@ def _external_clause_from_chunk(doc_id: str, chunk: Chunk) -> ExternalClause:
         clause_number=leaf or "全文",
         section=section or None,
         full_text=chunk.text,
-        obligations=[],
     )
 
 

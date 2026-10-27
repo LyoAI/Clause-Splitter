@@ -1,4 +1,4 @@
-"""Pydantic models — split-side obligations and compare-side matching.
+"""Pydantic models — document structure and compare-side matching.
 
 Chinese Excel headers are serialization aliases: serialize with ``by_alias=True``.
 """
@@ -8,14 +8,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-
-class ObligationRule(str, Enum):
-    """Obligation rule — 应当 (shall) or 禁止 (prohibit)."""
-
-    SHALL = "应当"
-    PROHIBIT = "禁止"
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StructureLevel(str, Enum):
@@ -33,121 +26,6 @@ class ComplexityLabel(str, Enum):
 
     SIMPLE = "simple"
     COMPLEX = "complex"
-
-
-class ClauseObligation(BaseModel):
-    """Single atomic obligation — one verb = one record."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    index: int = Field(
-        default=0,
-        serialization_alias="序号",
-        description="A — row index",
-    )
-    trigger_condition: str = Field(
-        default="/",
-        serialization_alias="触发义务条件",
-        description="B — time/place/scenario/precondition that triggers this obligation",
-    )
-    trigger_sub_condition: str = Field(
-        default="/",
-        serialization_alias="触发义务子条件",
-        description="C — sub-condition (if any)",
-    )
-    subject: str = Field(
-        default="/",
-        serialization_alias="义务主体",
-        description="D — entity or role that performs the action (most likely one)",
-    )
-    object: str = Field(
-        default="/",
-        serialization_alias="义务客体",
-        description="E — target of the action (entity/person/matter)",
-    )
-    obligation_rule: ObligationRule = Field(
-        default=ObligationRule.SHALL,
-        serialization_alias="义务规则",
-        description="F — '应当' or '禁止'",
-    )
-    action_verb: str = Field(
-        default="/",
-        serialization_alias="义务动作",
-        description="G — single predicate verb, e.g. '负责' '建立' '承担'",
-    )
-    action_target: str = Field(
-        default="/",
-        serialization_alias="义务事项",
-        description="H — specific business content the verb points to",
-    )
-    method: str = Field(
-        default="/",
-        serialization_alias="实现义务方式",
-        description="I — how the obligation is fulfilled",
-    )
-    document_name: str = Field(
-        default="",
-        serialization_alias="文件名称",
-        description="J — source regulation/document name",
-    )
-    clause_number: str = Field(
-        default="",
-        serialization_alias="条款编号",
-        description="K — clause reference, e.g. '第十四条'",
-    )
-    source_text: str = Field(
-        default="",
-        serialization_alias="引用原文",
-        description="L — shortest complete original sentence",
-    )
-    ambiguity_note: str = Field(
-        default="无歧义",
-        serialization_alias="歧义说明",
-        description="M — '无歧义' or specific ambiguity explanation",
-    )
-    ambiguity_detail: str = Field(
-        default="",
-        serialization_alias="歧义详情",
-        description="Detailed ambiguity notes; empty when unambiguous",
-    )
-    should_split: str = Field(
-        default="是",
-        serialization_alias="是否拆分",
-        description="N — '是'=需拆分提取义务, '否'=定义/列举类条款不拆分",
-    )
-
-    @field_validator("trigger_condition", "trigger_sub_condition", "object", "method")
-    @classmethod
-    def normalize_slash(cls, v: str) -> str:
-        """Normalize empty / placeholder values to '/'."""
-        stripped = v.strip()
-        if stripped in ("", "无", "None", "N/A", "n/a"):
-            return "/"
-        return stripped
-
-    @field_validator("ambiguity_note")
-    @classmethod
-    def validate_ambiguity(cls, v: str) -> str:
-        """Default to '无歧义' when empty."""
-        stripped = v.strip()
-        if not stripped or stripped in ("无", "None", ""):
-            return "无歧义"
-        return stripped
-
-
-class ClauseSplitResult(BaseModel):
-    """Complete split result for one document."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    document_name: str = Field(description="Source file name")
-    total_articles: int = Field(default=0, ge=0)
-    total_obligations: int = Field(default=0, ge=0)
-    obligations: list[ClauseObligation] = Field(default_factory=list)
-    processing_notes: list[str] = Field(default_factory=list)
-    processing_time_seconds: float = Field(default=0.0, ge=0.0)
-    model_used: str = Field(default="")
-    excel_path: str = Field(default="", description="Exported Excel file path")
 
 
 class ArticleInfo(BaseModel):
@@ -179,7 +57,7 @@ class DocumentStructure(BaseModel):
 
 
 class CoverageStatus(str, Enum):
-    """Coverage status for a single external obligation match."""
+    """Coverage status for a single external clause match."""
 
     FULLY_COVERED = "完全覆盖"
     PARTIALLY_COVERED = "部分覆盖"
@@ -228,7 +106,7 @@ class MatchResult(BaseModel):
 
     external_clause_id: str = Field(
         ...,
-        description="External obligation index (matches split result index)",
+        description="External clause id (matches the clause row)",
     )
     external_document_name: str = Field(
         default="",
@@ -240,7 +118,7 @@ class MatchResult(BaseModel):
     )
     external_source_text: str = Field(
         default="",
-        description="Full source text of the external obligation — quoted in the report",
+        description="Full source text of the external clause — quoted on the review page",
     )
     status: CoverageStatus = Field(
         ...,
@@ -248,7 +126,7 @@ class MatchResult(BaseModel):
     )
     matched_internal_id: str | None = Field(
         default=None,
-        description="Matched internal obligation index, null if not covered",
+        description="Matched internal clause id, null if not covered",
     )
     matched_internal_document_name: str | None = Field(
         default=None,
@@ -256,11 +134,11 @@ class MatchResult(BaseModel):
     )
     matched_internal_clause_number: str = Field(
         default="",
-        description="Clause reference of the matched internal obligation, e.g. '第十四条'",
+        description="Clause reference of the matched internal clause, e.g. '第十四条'",
     )
     matched_internal_source_text: str = Field(
         default="",
-        description="Full source text of the matched internal obligation — evidence for the gap analysis report",
+        description="Full source text of the matched internal clause — evidence on the review page",
     )
     matched_internal_clause_ids: list[str] = Field(
         default_factory=list,
@@ -401,24 +279,11 @@ class CompareResult(BaseModel):
             return 1.0
         return (self.fully_covered_count + self.partially_covered_count) / total
 
-    def to_summary_dict(self) -> dict:
-        """Return a dict suitable for LLM consumption in summary report."""
-        return {
-            "external_documents": self.external_documents,
-            "internal_documents": self.internal_documents,
-            "total_external_obligations": self.total_external_obligations,
-            "total_internal_obligations": self.total_internal_obligations,
-            "details": [m.model_dump(exclude={"retrieved_candidates"}) for m in self.matches],
-        }
-
 
 __all__ = [
     "ArticleInfo",
-    "ClauseObligation",
-    "ClauseSplitResult",
     "ComplexityLabel",
     "DocumentStructure",
-    "ObligationRule",
     "StructureLevel",
     "CompareResult",
     "CoverageStatus",

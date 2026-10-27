@@ -70,7 +70,7 @@ JobRunner(clause_splitter/jobs.py, workers=1)
 | internalization | 逐条 LLM 判定条款类型/是否需要内化 |
 | analysis | 逐条 ReAct episode:经 RAG 服务检索内规库 → grounding 证据 → 覆盖判定(完全/部分/缺失)+ 差异 + 整改建议 |
 
-episode 语义:主谓宾拆解只作为分析期提示燃料,不改变条级拆分粒度。
+episode 语义:直接读取条款原文,先在内部逐项列出义务再逐项判断承接情况;不改变条级拆分粒度。
 
 ## 5. 后端对接细节(对齐旧版)
 

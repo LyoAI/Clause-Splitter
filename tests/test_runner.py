@@ -48,7 +48,7 @@ async def test_standalone_analysis_marks_stage_done(monkeypatch):
     runner = JobRunner(repos, workers=1, llm_factory=lambda: object())
 
     async def handler(ctx):
-        return {"analysis_summary": {"report_mode": "llm"}}
+        return {"analysis_summary": {"fully_covered_count": 1}}
 
     runner.register("analysis", handler)
     reg = await repos.regulations.create({"title": "t"})
@@ -59,7 +59,7 @@ async def test_standalone_analysis_marks_stage_done(monkeypatch):
         assert done["state"] == "done"
         doc = await repos.regulations.get(reg["_id"])
         assert doc["analysis_state"] == "done"
-        assert doc["analysis_summary"] == {"report_mode": "llm"}
+        assert doc["analysis_summary"] == {"fully_covered_count": 1}
     finally:
         await runner.stop()
 

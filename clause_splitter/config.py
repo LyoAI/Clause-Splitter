@@ -41,19 +41,8 @@ MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "15"))
 CONTEXT_SCOPE_MAX = int(os.getenv("CONTEXT_SCOPE_MAX", "8"))
 # Top-k internal clauses shown on the review page (display-only pre-retrieval).
 REVIEW_TOP_K = int(os.getenv("REVIEW_TOP_K", "10"))
-# LLM relevance filter for review-page candidates (display-only; the stored
-# result keeps all candidates). 1 = on, 0 = off.
-REVIEW_FILTER_RELEVANCE = int(os.getenv("REVIEW_FILTER_RELEVANCE", "1"))
-# Truncation (chars) for the clause / candidate when judging relevance.
-REVIEW_FILTER_EXTERNAL_MAX_CHARS = int(os.getenv("REVIEW_FILTER_EXTERNAL_MAX_CHARS", "500"))
-REVIEW_FILTER_CANDIDATE_MAX_CHARS = int(os.getenv("REVIEW_FILTER_CANDIDATE_MAX_CHARS", "300"))
-# After filtering, keep at least this many candidates by score so a clause never
-# shows an empty recall list.
-REVIEW_MIN_CANDIDATES = int(os.getenv("REVIEW_MIN_CANDIDATES", "3"))
 # Parallel clause episodes; keep aligned with the model's concurrency limit.
 COMPARE_CONCURRENCY = int(os.getenv("COMPARE_CONCURRENCY", "2"))
-# Gap-analysis report: external clauses per batch-summary sub-agent call.
-REPORT_BATCH_SIZE = int(os.getenv("REPORT_BATCH_SIZE", "20"))
 
 # ── External RAG service ───────────────────────────────────────────────
 # Which provider implementation to use (see clause_splitter/rag/providers).
@@ -126,12 +115,9 @@ class Settings:
         (r"([一二三四五六七八九十]+)、\s*", "中文顿号编号"),
     ])
 
-    # Batch planning
-    max_batch_chars: int = 30000          # 一次 batch 最多 30K 字符
-    max_batch_obligations: int = 100      # 或 100 条预估义务
-    complex_solo_threshold: float = 6.0   # 复杂度超此值的条款单独成批
-
     # Complexity estimation
+    complex_solo_threshold: float = 6.0   # 复杂度超此值的条款标注为复杂
+
     complexity_length_tiers: list[tuple[int, float]] = field(default_factory=lambda: [
         (500, 3.0), (200, 2.0), (100, 1.0),
     ])
@@ -139,16 +125,9 @@ class Settings:
         (3, 2.0), (0, 1.0),
     ])
 
-    # ReAct decomposition
-    max_react_iterations: int = 5
-
     # LLM
     default_model: str = LLM_MODEL_NAME  # needs a matching config/llm/<name>.yaml
     llm_max_input_chars: int = 12000  # max chars sent to LLM in structure analysis
-
-    # Obligation rule keyword mapping
-    obligation_shall_words: set[str] = field(default_factory=lambda: {"应当", "必须", "需", "须", "要"})
-    obligation_prohibit_words: set[str] = field(default_factory=lambda: {"禁止", "不得", "严禁"})
 
 # ── Singleton ──────────────────────────────────────────────────────────
 

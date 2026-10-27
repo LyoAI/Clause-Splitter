@@ -67,7 +67,7 @@ def _ensure_adopted_in_candidates(
 
 
 def _corpus_view(service: RagService) -> tuple[list[str], int]:
-    """Document names + chunk count for report headers; failures degrade to empty."""
+    """Document names + chunk count for the review page; failures degrade to empty."""
     docs: list[str] = []
     chunks = 0
     try:

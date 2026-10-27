@@ -1,8 +1,8 @@
 """Service-level e2e — upload → full chain (4 stages) → artifacts, all offline.
 
 Runs the REAL chain orchestration, split fallback, internalization, episodes
-(ReAct loop + grounding), report-template fallback, relevance filter and
-review-page render against the fake LLM + substring searcher + in-memory Mongo.
+(ReAct loop + grounding) and review-page render against the fake LLM +
+substring searcher + in-memory Mongo.
 """
 
 from __future__ import annotations
@@ -91,6 +91,13 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
             assert summary["fully_covered_count"] == 1
             assert summary["partially_covered_count"] == 1
             assert summary["no_internalization_count"] == 1
+            assert set(summary) == {
+                "fully_covered_count",
+                "partially_covered_count",
+                "missing_count",
+                "internalizable_count",
+                "no_internalization_count",
+            }
             assert doc["analysis_index_signature"]
 
             # ── clause rows ───────────────────────────────────────────
@@ -112,7 +119,6 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
             reg_dir = tmp_path / "regulations" / reg["_id"]
             result = json.loads((reg_dir / "compare_result.json").read_text(encoding="utf-8"))
             assert len(result["matches"]) == len(CLAUSE_SPECS)
-            assert (reg_dir / "内外规合规差距分析报告.md").exists()
             assert (reg_dir / "内规检索复核.html").exists()
             episodes = list((reg_dir / "episodes").glob("*.json"))
             # One trajectory per internalized clause (4).
@@ -123,7 +129,6 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
             assert "applicability" in llm.calls
             assert "doc_profile" in llm.calls
             assert "internalization" in llm.calls
-            assert "relevance" in llm.calls
         finally:
             await runner.stop()
             services.reset()

@@ -5,7 +5,7 @@ Stages (each ``async def run(ctx) -> dict`` returning regulation field updates):
 1. ``applicability`` — document-level, does the regulation apply to us
 2. ``split_stage``   — split into articles (parse → headings → LLM fallback)
 3. ``internalize``   — per-article internalization judgment
-4. ``analysis``      — obligation decomposition + ReAct compare + report
+4. ``analysis``      — ReAct compare + review page
 
 The 1→4 chain with skip logic lives in ``clause_splitter.orchestrator.run_chain``
 (the engine-wiring composition root); ``contexts`` wires per-job state.

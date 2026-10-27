@@ -36,7 +36,7 @@
 | applicability | 文档级适用性判定(是否适用于平安科技) | 无 |
 | split | 拆条(第X条…) | applicability=done 且 applicable=true(`force` 可跳过) |
 | internalization | 逐条内化判定(需要内化/无需内化) | split=done |
-| analysis | 逐条差距分析/整改建议/报告(需要内化的条款) | internalization=done |
+| analysis | 逐条差距分析/整改建议(需要内化的条款) | internalization=done |
 
 - 重跑某阶段会把它及其下游阶段重置为 `not_run` 并清空派生数据(不会出现新旧混杂)。
 - 一个外规同时只允许一个任务在跑(否则 409)。
@@ -167,7 +167,6 @@ GET /regulations/{id}/artifacts/{name}         → 文件流
 |---|---|
 | structure.json | 拆条结构 |
 | compare_result.json | 全量比对结果(含召回候选) |
-| gap_report.md | 内外规合规差距分析报告 |
 | review.html | 内规检索复核页(自包含,可发作业人员) |
 | episodes/{clause_id}.json | 单条款 ReAct 轨迹(检索/推理过程) |
 
@@ -179,8 +178,7 @@ GET /regulations/{id}/artifacts/{name}         → 文件流
   "partially_covered_count": 1,
   "missing_count": 2,
   "internalizable_count": 4,
-  "no_internalization_count": 1,
-  "report_mode": "llm"
+  "no_internalization_count": 1
 }
 ```
 
@@ -233,11 +231,11 @@ GET /healthz        → 200
 后端                          本服务
  │ POST /regulations/push ────▶│ (下载/落库,排队整链任务)
  │◀── 202 {job_id} ────────────│
- │                             │ 阶段1 适用性 → 阶段2 拆条 → 阶段3 内化判定 → 阶段4 分析+报告
+ │                             │ 阶段1 适用性 → 阶段2 拆条 → 阶段3 内化判定 → 阶段4 分析
  │ (可选) GET /jobs/{job_id} ─▶│ 轮询进度 progress/step
  │◀── {state:"done"} ──────────│
  │◀── POST ESG 回调(最终结果)─│ 失败可 GET /regulations/{docId}/result
- │ (可选) GET .../artifacts ──▶│ 下载 gap_report.md / review.html / episodes
+ │ (可选) GET .../artifacts ──▶│ 下载 review.html / episodes
 ```
 
 人工介入点:适用性需人工复核时(applicable=null),作业人员通过 `PATCH .../applicability` 改判后再触发后续阶段。
