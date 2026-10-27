@@ -15,6 +15,7 @@ from time import perf_counter
 from typing import Any
 
 from clause_splitter.llm.provider.base import LLMResponse, ToolCallRequest
+from clause_splitter.rag import RagAuthError, RagNotConfigured
 from clause_splitter.utils import get_logger
 
 from .registry import ToolRegistry
@@ -142,6 +143,10 @@ class ReActAgent:
         t0 = perf_counter()
         try:
             result = self.tools.execute(tc.name, tc.arguments)
+        except (RagAuthError, RagNotConfigured):
+            # Credential/configuration errors must fail the job, not become a
+            # tool message that silently degrades every clause to "缺失".
+            raise
         except Exception as e:  # noqa: BLE001 — tool failure becomes a tool message
             logger.warning("tool %s failed: %s", tc.name, e)
             result = f"Error executing tool {tc.name}: {e}"

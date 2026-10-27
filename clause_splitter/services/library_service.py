@@ -129,7 +129,7 @@ def register_index_job(runner) -> None:
 
         service = ctx.rag or get_rag_service()
         if not service.available:
-            raise ApiError(409, "RAG 服务未配置(RAG_API_BASE),无法入库")
+            raise ApiError(409, "RAG 服务未配置（RAG_API_BASE / provider 凭据），无法入库")
 
         failed: list[str] = []
         for i, row in enumerate(rows):

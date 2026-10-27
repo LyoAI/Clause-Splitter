@@ -97,20 +97,26 @@ review).
 Parsing, chunking, indexing and search all run in an **external HTTP service**.
 Business code depends only on the `RagService` interface
 (`clause_splitter/rag/base.py`); the configured implementation is a provider
-(`RAG_PROVIDER`, currently `chillrag`) and owns every wire detail. Set
+(`RAG_PROVIDER`: `chillrag` for local development, `zeus` for the intranet
+knowledge base) and owns every wire detail. ChillRAG uses
 `RAG_API_BASE` (local dev: `http://127.0.0.1:9022`) plus `RAG_API_USER` /
-`RAG_API_PASSWORD`.
+`RAG_API_PASSWORD`; Zeus uses `RAG_API_BASE` plus `ZEUS_APP_ID` /
+`ZEUS_APP_SECRET` / `ZEUS_INDEX` (see `assets/rag-service-contract.md`).
 
 - Split sends the document to the provider's `parse`; when the service is
   unavailable or unsupported, `PARSE_FALLBACK=local` extracts plain text locally
   (pdfplumber / python-docx / openpyxl / md / txt). `structure.json` records the
-  chosen path as `parse_source`.
+  chosen path as `parse_source`. Zeus returns no parsed text (`supports_parse =
+  False`), so external regulations always parse locally under that provider.
 - Internal-library uploads forward to `ingest`; Mongo keeps a mirror row (remote
   doc id, chunk count, state). `POST /library/index` re-ingests every stored
-  file — also the recovery path after a service outage.
-- The agent picks per turn from `knowledge_search`, `get_context`,
-  `get_materials` and `calculate`. Grounding resolves claimed chunk ids from the
-  run's retrieval cache.
+  file — also the recovery path after a service outage. Zeus indexes in the
+  background and exposes no status endpoint, so the mirror stores an optimistic
+  `indexed` state and `chunk_count=0` (unknown).
+- The agent picks per turn from `knowledge_search`, `calculate` and — when the
+  provider supports them — `get_context` / `get_materials` (Zeus has no
+  per-document chunk or listing endpoints, so both are hidden). Grounding
+  resolves claimed chunk ids from the run's retrieval cache.
 
 To target a different service, add a provider under
 `clause_splitter/rag/providers/` and register it in `_PROVIDERS`; business code,
@@ -133,8 +139,10 @@ Create a `.env` (gitignored) with service knobs only; LLM credentials live in
 `COMPARE_CONCURRENCY`, `SEARCH_TOP_K`,
 `DOC_PROFILE_TIMEOUT_S`, `COMPANY_PROFILE`, `RAG_PROVIDER`, `RAG_API_BASE`,
 `RAG_API_USER`, `RAG_API_PASSWORD`, `RAG_CORPUS`, `RAG_PARSE_CORPUS`,
-`RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `PARSE_FALLBACK`, `LLM_PROVIDER`,
-`LLM_MODEL_NAME`.
+`RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `ZEUS_APP_ID`, `ZEUS_APP_SECRET`,
+`ZEUS_INDEX`, `ZEUS_KB_LIMIT`, `ZEUS_MAX_K`, `ZEUS_RECALL_MIN_SCORE`,
+`ZEUS_RERANK_MIN_SCORE`, `ZEUS_MAX_CONCURRENCY`, `ZEUS_UPLOAD_TIMEOUT_S`,
+`PARSE_FALLBACK`, `LLM_PROVIDER`, `LLM_MODEL_NAME`.
 
 LLM selection: `LLM_MODEL_NAME` (default `qwen3.8-27b`) resolves
 `config/llm/<model>.yaml` and is sent as the request model. `LLM_PROVIDER` picks
@@ -166,7 +174,7 @@ See `scripts/README.md` for environment overrides and supported file types.
 ## Development
 
 ```bash
-uv run --extra dev python -m pytest tests/ -q    # 120 tests, fully offline
+uv run --extra dev python -m pytest tests/ -q    # 154 tests, fully offline
 ```
 
 The e2e test drives the real chain (upload → applicability → split → judge →

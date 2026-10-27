@@ -82,7 +82,14 @@ class ToolRegistry:
     # ── tool surface ────────────────────────────────────────────────────
 
     def tool_names(self) -> list[str]:
-        return [SEARCH_TOOL, "get_context", "get_materials", "calculate"]
+        """Tools this provider can actually back (hidden ones are never offered)."""
+        names = [SEARCH_TOOL]
+        if getattr(self.service, "supports_document_chunks", True):
+            names.append("get_context")
+        if getattr(self.service, "supports_document_listing", True):
+            names.append("get_materials")
+        names.append("calculate")
+        return names
 
     def tool_hints(self, lang: str = "zh") -> str:
         return build_tool_hints(self.tool_names(), lang)
@@ -151,7 +158,8 @@ class ToolRegistry:
                 },
             },
         })
-        return defs
+        enabled = set(self.tool_names())
+        return [d for d in defs if d["function"]["name"] in enabled]
 
     # ── retrieval cache ────────────────────────────────────────────────
 
@@ -182,6 +190,12 @@ class ToolRegistry:
 
     def execute(self, name: str, args: dict) -> str:
         """Run ``name`` with ``args`` and return a JSON string."""
+        if name not in self.tool_names():
+            # A hidden tool (no backing endpoint) must not silently look empty.
+            logger.error(
+                "unsupported tool %r (have: %s)", name, ", ".join(self.tool_names())
+            )
+            raise KeyError(f"Unknown tool: {name}")
         t0 = perf_counter()
         result = self._execute(name, args)
         logger.info(

@@ -198,12 +198,13 @@ upload_materials/
 
 | 后缀 | 说明 |
 |---|---|
-| `.pdf` `.docx` `.pptx` `.xlsx` `.png` `.jpg` `.md` | 优先走 RAG provider 解析（上传→轮询→切片文本）；远端不可用或报错时本地回退 |
+| `.pdf` `.docx` `.pptx` `.xlsx` `.png` `.jpg` `.md` | 优先走 RAG provider 解析（上传→轮询→切片文本）；远端不可用、报错或 provider 不返回文本（如 `zeus`）时本地回退 |
 | `.txt` | 本地按行合成 blocks，适合简单测试 |
 | `.doc` `.xls` `.jpeg` | 本地抽取：`.doc` 用 `antiword`（没有时只能识别误命名的 docx），`.xls` 用 openpyxl |
 
 远端失败回退由 `PARSE_FALLBACK=local` 控制；`structure.json` 的 `parse_source` 记录本次走的是
 `remote` 还是 `local`。扫描件本地无 OCR，远端是否支持取决于 RAG 服务。
+`RAG_PROVIDER=zeus` 时接口不返回解析文本，外规固定走本地。
 
 push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖文件名后缀。
 
@@ -214,7 +215,7 @@ push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖�
 | `.pdf` `.docx` `.pptx` `.xlsx` `.png` `.jpg` `.jpeg` `.md` `.markdown` | 交给 RAG provider 入库，由其解析、分块、索引 |
 
 本仓只保留原文镜像与 Mongo 镜像行；实际解析/分块/索引都在 RAG 服务侧。
-`GET /library/index` 的 `rag.available=false` 表示 `RAG_API_BASE` 未配置。
+`GET /library/index` 的 `rag.available=false` 表示 `RAG_API_BASE` 或 provider 凭据没配齐。
 
 上传大小上限由 `MAX_UPLOAD_MB` 控制，默认 200 MB。
 
@@ -223,15 +224,25 @@ push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖�
 1. 在 `.env`（或容器环境变量）里配置 RAG 与 LLM，重启服务：
 
    ```ini
-   RAG_PROVIDER=chillrag            # 内网 provider 实现后改成对应名字
+   RAG_PROVIDER=chillrag            # 或 zeus（内网知识库）
    RAG_API_BASE=http://内网RAG地址
-   RAG_API_USER=...
+   RAG_API_USER=...                 # chillrag 登录用
    RAG_API_PASSWORD=...
    RAG_CORPUS=clause_splitter_internal
    RAG_PARSE_CORPUS=clause_splitter_parse
    ```
 
-   注意：`RAG_*` 只在进程启动时读取；改完必须重启，不能热更。
+   `zeus` 改为填写凭据（详见 `assets/rag-service-contract.md`）：
+
+   ```ini
+   RAG_PROVIDER=zeus
+   RAG_API_BASE=http://zeus 域名
+   ZEUS_APP_ID=...
+   ZEUS_APP_SECRET=...
+   ZEUS_INDEX=...
+   ```
+
+   注意：`RAG_*` / `ZEUS_*` 只在进程启动时读取；改完必须重启，不能热更。
 
 2. 服务起来后先确认连通性与语料状态：
 
@@ -253,6 +264,8 @@ push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖�
 
    检查点：上传返回 `remote_state=indexed` 且 `chunk_count>0`；`lib-status` 的 `rag.version` 非空；
    重复 `lib-index` 时 version 不变（语料未变），新增文件后 version 变化。
+   `zeus` 例外：没有状态/统计接口，`remote_state` 是乐观值、`chunk_count=0`（未知）、
+   `rag.version` 为空；提交后要等 Zeus 后台解析/分块/embedding 完成才能检索到。
 
 4. 外规解析（确认真的走远端）：
 
@@ -264,7 +277,8 @@ push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖�
    ```
 
    `parse_source` 应为 `remote`，条款数为多条而不是整篇一段。若为 `local`，先看服务日志里
-   `远端解析失败(...)` 的原因（鉴权、网络、超时或不支持的后缀）。
+   `远端解析失败(...)` 的原因（鉴权、网络、超时或不支持的后缀）。`RAG_PROVIDER=zeus` 时
+   固定为 `local`：该 provider 不返回解析文本，属预期行为。
 
 5. 内化与覆盖分析（真实 LLM + 真实检索）：
 

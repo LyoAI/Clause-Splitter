@@ -56,7 +56,7 @@ async def run(ctx: StageContext) -> dict[str, Any]:
 
     service = ctx.rag or get_rag_service()
     if not service.available:
-        raise StageError("RAG 服务未配置 —— 请设置 RAG_API_BASE 后重启服务。")
+        raise StageError("RAG 服务未配置 —— 请检查 RAG_PROVIDER 与连接配置（RAG_API_BASE / ZEUS_*）后重启服务。")
 
     title = ctx.regulation.get("title") or ""
     target = [r for r in rows if (r.get("internalization_decision") or "").strip() != _NO_NEED]

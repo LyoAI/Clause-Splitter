@@ -25,6 +25,13 @@ class RagService(ABC):
 
     name: str = ""
 
+    # Optional capabilities. Providers whose service does not expose the backing
+    # endpoint set these False; callers must use ``getattr(service, flag, True)``
+    # because test doubles are duck-typed and may not define them.
+    supports_parse = True  # external document parsing returns plain text
+    supports_document_listing = True  # documents() / stats()
+    supports_document_chunks = True  # fetch_chunks()
+
     @property
     @abstractmethod
     def available(self) -> bool:

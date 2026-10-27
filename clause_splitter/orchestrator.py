@@ -118,7 +118,7 @@ async def run_chain(ctx: StageContext) -> dict[str, Any]:
         return {"chain_stopped": reason}
 
     if not ctx.rag.available:
-        raise StageError("RAG 服务未配置 —— 请设置 RAG_API_BASE 后重启服务")
+        raise StageError("RAG 服务未配置 —— 请检查 RAG_PROVIDER 与连接配置（RAG_API_BASE / ZEUS_*）后重启服务")
 
     await run_stage("split", split_stage.run)
     await run_stage("internalization", internalize.run)

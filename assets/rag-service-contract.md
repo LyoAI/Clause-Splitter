@@ -2,7 +2,7 @@
 
 本服务(条款拆分与内外规比对)不包含检索引擎:解析、分块、索引、检索全部由**外部 RAG 服务**提供。
 业务代码只依赖 `clause_splitter/rag/base.py` 的 `RagService` 抽象类;具体服务是 provider,
-由 `RAG_PROVIDER` 选择。当前已实现 `chillrag`,内网服务接入时新增一个 provider 即可。
+由 `RAG_PROVIDER` 选择。当前已实现 `chillrag`(本地开发)与 `zeus`(内网知识库)。
 
 ```
 业务代码(pipeline / compare / agent / library)
@@ -31,6 +31,15 @@ clause_splitter/rag/providers/<x>.py ← wire 细节(登录、字段、端点映
 | `documents() -> list[DocInfo]` | 内规语料文档列表 |
 | `stats() -> CorpusStats` | 文档数 / 切片数 / 索引版本 |
 | `delete(doc_id) -> bool` | 删除文档;不支持删除的 provider 返回 `False`(基类默认) |
+
+并非每个服务都暴露全部端点。`RagService` 用三个类属性声明能力(默认 `True`),
+调用方一律 `getattr(service, name, True)` 判断(测试替身是鸭子类型):
+
+| 属性 | 关闭后的行为 |
+|---|---|
+| `supports_parse` | 拆条不尝试远端解析,直接本地抽取 |
+| `supports_document_listing` | 不调用 `documents()` / `stats()`;复核页内规列表/计数为空 |
+| `supports_document_chunks` | agent 不提供 `get_context` 工具(无按文档列切片端点) |
 
 内部类型(`clause_splitter/rag/types.py`):
 
@@ -87,7 +96,54 @@ RAG_PARSE_TIMEOUT_S=1800          # 上传 + 入库轮询总时限
 - 响应统一信封 `{code, msg, data}`:先看 HTTP 状态,再验 `code == 0`。
 - 登录功能只是 ChillRAG 的实现细节;新 provider 可按内网要求使用 Bearer、网关 token 或不鉴权。
 
-## 3. 接入新内网 provider
+## 3. Zeus provider 映射
+
+实现:`clause_splitter/rag/providers/zeus.py`。Zeus 把解析、分块、embedding、入库都封装在
+文档提交后的后台流程里,对外只暴露「上传文件 → 提交文档 → 检索」;每个请求都带
+`x-app-id` / `x-app-secret` / `x-index` / `x-request-id`(每请求新 uuid)。
+
+| RagService | Zeus |
+|---|---|
+| `available` | `RAG_API_BASE` 与 `ZEUS_APP_ID` / `ZEUS_APP_SECRET` / `ZEUS_INDEX` 全部非空 |
+| `ingest` | ① `POST /api/v1/uns/text_data_process/app/file`(multipart 字段 `file`)→ 文件 URL;② `POST /api/v1/uns/text_data_process/app/doc/{x-index}`,body 为单元素列表:`org_data_id` / `file_name` / `file_type` / `file_size` / `url` / `text_labels` / `created_by`。提交成功即受理,返回 `DocInfo(doc_id=org_data_id, chunk_count=0, state="indexed")` |
+| `search` | `POST /api/v1/uns/zeus-search/{x-app-id}/server/standard_search`;`kb[0].alias = x-index`,`filter.data_type=["doc"]`,`kb[0].limit = max(k, ZEUS_KB_LIMIT)` 为召回条数,顶层 `limit = min(k, ZEUS_MAX_K)` 为最终条数;行映射 `id → chunk_id`、`text`(空则 `data`)`→ text`、`score`(空则 `recall_score`)`→ score` |
+| `parse` | 无文本返回 → `supports_parse=False`,外规拆分走本地抽取 |
+| `fetch_chunks` | 无按文档列切片端点 → `supports_document_chunks=False`,`get_context` 工具不提供 |
+| `documents` / `stats` | 无列表/统计端点 → 返回 `[]` / 空 `CorpusStats`;`get_materials` 不提供,复核页内规列表与计数为空 |
+| `delete` | `DELETE .../doc/batch/{x-index}`,body 为 `org_data_id` 数组;404 视为已删除 |
+
+注意:
+
+- **制度名来自标签**:检索结果不带文件名。`ingest` 给每份文档打
+  `text_labels=["doc:<文件名 stem>"]`,`search` 从标签还原 `doc_id`(回退进程内
+  `org_data_id → 文件名` 映射,再回退 `org_data_id`)。语料若由其他系统入库(无 `doc:`
+  标签),复核页与 ESG 回调中的内规制度名会退化为 `org_data_id`。
+- **入库异步**:提交成功只代表受理,后台解析/分块/embedding 完成后才可检索;Zeus 没有
+  状态接口,`state` / `chunk_count` 只是乐观值。刚入库就检索可能为空,需等 Zeus 处理完。
+- **检索 404 = 能力未开通**:文档说明搜索端点 404 表示该应用未配置检索,provider 转成
+  `RagNotConfigured`(任务失败并提示联系 RAG 团队),不当作“无结果”。
+- **并发 2**:文档写明并发上限 2;provider 用信号量(`ZEUS_MAX_CONCURRENCY`,默认 2)
+  限制同时在途的 HTTP 请求,排队超时按 `RagUnavailable` 处理。
+- **重试语义**:重复 `org_data_id` 是覆盖还是报错文档未说明,联调时需确认
+  `POST /library/index` 的重复入库行为。
+- 配置(`clause_splitter/config.py`):
+
+```
+RAG_PROVIDER=zeus
+RAG_API_BASE=http://<zeus 域名>
+ZEUS_APP_ID=
+ZEUS_APP_SECRET=
+ZEUS_INDEX=
+ZEUS_KB_LIMIT=20              # 每次检索的召回调大条数
+ZEUS_MAX_K=50                 # 最终返回条数上限
+ZEUS_RECALL_MIN_SCORE=0.1     # 召回过滤阈值
+ZEUS_RERANK_MIN_SCORE=0.0     # 0 = 不发送顶层 min_score
+ZEUS_MAX_CONCURRENCY=2        # 网关并发上限
+ZEUS_UPLOAD_TIMEOUT_S=300     # 上传单次超时
+ZEUS_CREATED_BY=clause_splitter
+```
+
+## 4. 接入新内网 provider
 
 1. 在 `clause_splitter/rag/providers/` 新增文件,继承 `RagService`,实现 7 个抽象方法;
    `delete` 仅在内网支持删除时覆盖。

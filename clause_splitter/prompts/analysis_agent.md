@@ -6,7 +6,7 @@
 
 {{tools}}
 
-每条约内规条款是一个检索单元,chunk_id 形如 "制度名#条款号"(例如 "网络数据安全管理条例#第十四条")。搜索命中后,可用 get_context 读取该条款相邻窗口的完整原文,确认上下文是否足以判断承接关系。
+每条约内规条款是一个检索单元,chunk_id 由检索工具返回,引用时必须逐字使用,不要自行拼接。搜索命中后,若工具列表中有 get_context,可用它读取该条款相邻窗口的完整原文,确认上下文是否足以判断承接关系。
 
 ## 判定标准
 
@@ -27,7 +27,7 @@
 
 最终判定用 JSON 包在 `<answer>` 标签内返回,不要输出其他内容:
 
-<answer>{"status":"完全覆盖|部分覆盖|缺失","matched_internal_clause_ids":["制度名#条款号",...],"evidence":{"制度名#条款号":"原文中支撑判定的关键句"},"analysis":"判定理由(简明)","difference_analysis":"内外规差异说明(仅部分覆盖)","core_regulatory_requirements":"核心监管要求(合规义务),编号逐条、每项一行","remedy_suggestion":"整改建议(仅部分覆盖/缺失需给出,完全覆盖可为空)"}</answer>
+<answer>{"status":"完全覆盖|部分覆盖|缺失","matched_internal_clause_ids":["<检索返回的 chunk_id>",...],"evidence":{"<检索返回的 chunk_id>":"原文中支撑判定的关键句"},"analysis":"判定理由(简明)","difference_analysis":"内外规差异说明(仅部分覆盖)","core_regulatory_requirements":"核心监管要求(合规义务),编号逐条、每项一行","remedy_suggestion":"整改建议(仅部分覆盖/缺失需给出,完全覆盖可为空)"}</answer>
 
 要求:
 - `status` 只能是 `完全覆盖` / `部分覆盖` / `缺失` 之一。

@@ -180,7 +180,7 @@ class JobRunner:
             # An analysis-only job has nothing to do without retrieval; chains
             # check after stage 1 (a not-applicable regulation still completes).
             if job_type == "analysis" and not ctx.rag.available:
-                raise StageError("RAG 服务未配置 —— 请设置 RAG_API_BASE 后重启服务")
+                raise StageError("RAG 服务未配置 —— 请检查 RAG_PROVIDER 与连接配置（RAG_API_BASE / ZEUS_*）后重启服务")
             # Chain owns its own per-stage state transitions; every other job
             # (including a standalone analysis run) updates its stage here.
             await self._execute(job, handler, ctx, single_stage=job_type != "chain")

@@ -12,7 +12,12 @@ from clause_splitter.models import (
     MatchResult,
     RetrievedCandidate,
 )
-from clause_splitter.rag import RagError, RagService
+from clause_splitter.rag import (
+    RagAuthError,
+    RagError,
+    RagNotConfigured,
+    RagService,
+)
 from clause_splitter.utils import get_logger, segment_label
 
 from .episode import ExternalClause, run_clause_episode
@@ -67,7 +72,13 @@ def _ensure_adopted_in_candidates(
 
 
 def _corpus_view(service: RagService) -> tuple[list[str], int]:
-    """Document names + chunk count for the review page; failures degrade to empty."""
+    """Document names + chunk count for the review page; failures degrade to empty.
+
+    Providers with no inventory endpoint (Zeus) report unknown instead of
+    paying for calls that cannot answer.
+    """
+    if not getattr(service, "supports_document_listing", True):
+        return [], 0
     docs: list[str] = []
     chunks = 0
     try:
@@ -165,6 +176,10 @@ async def run_compare(
                 )
                 await _attach_candidates(match, ext)
                 return match
+            except (RagAuthError, RagNotConfigured):
+                # Credential/configuration problems are deployment errors: fail
+                # the stage instead of emitting an all-missing report.
+                raise
             except Exception as e:  # noqa: BLE001 — one failure must not fail the batch
                 logger.error("episode failed %s: %s", ext.clause_id, e)
                 match = _fallback_match(

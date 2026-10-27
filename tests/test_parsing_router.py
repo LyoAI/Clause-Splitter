@@ -43,6 +43,15 @@ def test_empty_remote_response_falls_back_to_local(tmp_path):
     assert parsed.blocks
 
 
+def test_provider_without_parse_capability_goes_local(tmp_path):
+    # Zeus parses on ingest but returns no text, so the provider advertises
+    # supports_parse=False and the remote call is skipped entirely.
+    service = _service(parse_text="第一条　远端条款。", supports_parse=False)
+    parsed = parse_document(_source(tmp_path), "外规", service=service)
+    assert parsed.source == "local"
+    assert [b.text for b in parsed.blocks] == LOCAL_TEXT.splitlines()
+
+
 def test_fallback_disabled_surfaces_the_remote_error(tmp_path, monkeypatch):
     monkeypatch.setattr("clause_splitter.parsing.router.PARSE_FALLBACK", "none")
     with pytest.raises(ValueError, match="本地回退"):

@@ -68,6 +68,23 @@ RAG_PARSE_TIMEOUT_S = float(os.getenv("RAG_PARSE_TIMEOUT_S", "1800"))
 # "none" = fail the stage.
 PARSE_FALLBACK = os.getenv("PARSE_FALLBACK", "local")
 
+# ── Zeus knowledge base (RAG_PROVIDER=zeus) ────────────────────────────
+# App credentials sent as x-app-id / x-app-secret; x-index selects the corpus.
+ZEUS_APP_ID = os.getenv("ZEUS_APP_ID", "")
+ZEUS_APP_SECRET = os.getenv("ZEUS_APP_SECRET", "")
+ZEUS_INDEX = os.getenv("ZEUS_INDEX", "")
+# Raw recall candidates per kb alias before reranking, and the vendor's max k.
+ZEUS_KB_LIMIT = int(os.getenv("ZEUS_KB_LIMIT", "20"))
+ZEUS_MAX_K = int(os.getenv("ZEUS_MAX_K", "50"))
+# Score floors: recall filter and rerank (0 = omit, let the service default).
+ZEUS_RECALL_MIN_SCORE = float(os.getenv("ZEUS_RECALL_MIN_SCORE", "0.1"))
+ZEUS_RERANK_MIN_SCORE = float(os.getenv("ZEUS_RERANK_MIN_SCORE", "0.0"))
+# Documented gateway concurrency limit for this app.
+ZEUS_MAX_CONCURRENCY = int(os.getenv("ZEUS_MAX_CONCURRENCY", "2"))
+# Upload is one long request; the normal RAG timeout is too short for big files.
+ZEUS_UPLOAD_TIMEOUT_S = float(os.getenv("ZEUS_UPLOAD_TIMEOUT_S", "300"))
+ZEUS_CREATED_BY = os.getenv("ZEUS_CREATED_BY", "clause_splitter")
+
 # ── Retrieval / agent budget ───────────────────────────────────────────
 # Top-k internal clauses per search call.
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "10"))

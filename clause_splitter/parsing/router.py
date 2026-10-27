@@ -44,7 +44,7 @@ def parse_document(
     service = service or get_rag_service()
 
     remote_error: Exception | None = None
-    if service.available:
+    if service.available and getattr(service, "supports_parse", True):
         try:
             parsed = service.parse(path, doc_id)
             document = _from_remote(parsed, doc_id)
@@ -55,8 +55,13 @@ def parse_document(
         except RagError as exc:
             remote_error = exc
             logger.warning("远端解析失败(%s)，尝试本地抽取", exc)
+    elif not service.available:
+        remote_error = RagError("RAG 服务未配置(RAG_API_BASE / provider 凭据)")
     else:
-        remote_error = RagError("RAG_API_BASE 未配置")
+        remote_error = RagError(f"{service.name or 'provider'} 不返回解析文本")
+        logger.info(
+            "provider 不返回解析文本，外规解析走本地抽取: %s", service.name or "provider"
+        )
 
     if PARSE_FALLBACK != "local":
         raise ValueError(f"远端解析不可用且已禁用本地回退: {remote_error}")
