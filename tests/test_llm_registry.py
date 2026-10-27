@@ -69,3 +69,9 @@ def test_runner_uses_configured_provider(monkeypatch):
     )
     JobRunner._default_llm()
     assert seen == {"name": "m", "provider_type": "pingan"}
+
+
+def test_settings_model_comes_from_llm_model_name():
+    from clause_splitter.config import LLM_MODEL_NAME, Settings
+
+    assert Settings().default_model == LLM_MODEL_NAME

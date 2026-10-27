@@ -24,6 +24,8 @@ LLM_CONFIG_DIR = REPO_ROOT / "config" / "llm"
 # Provider implementation: ``openai`` (OpenAI-compatible) or ``pingan`` (signed
 # intranet gateway). Names the yaml section to read.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+# Model id — reads ``config/llm/<name>.yaml`` and is sent as the request model.
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "qwen3.8-27b")
 # Per-call LLM request timeout (s) and per-episode wall-clock deadline.
 LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
 # Document profile call — shorter, so it cannot stall the chain.
@@ -141,7 +143,7 @@ class Settings:
     max_react_iterations: int = 5
 
     # LLM
-    default_model: str = "qwen3.8-27b"  # needs a matching config/llm/<name>.yaml
+    default_model: str = LLM_MODEL_NAME  # needs a matching config/llm/<name>.yaml
     llm_max_input_chars: int = 12000  # max chars sent to LLM in structure analysis
 
     # Obligation rule keyword mapping

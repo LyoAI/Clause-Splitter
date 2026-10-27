@@ -134,13 +134,15 @@ Create a `.env` (gitignored) with service knobs only; LLM credentials live in
 `COMPARE_CONCURRENCY`, `SEARCH_TOP_K`, `REVIEW_FILTER_RELEVANCE`,
 `DOC_PROFILE_TIMEOUT_S`, `COMPANY_PROFILE`, `RAG_PROVIDER`, `RAG_API_BASE`,
 `RAG_API_USER`, `RAG_API_PASSWORD`, `RAG_CORPUS`, `RAG_PARSE_CORPUS`,
-`RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `PARSE_FALLBACK`.
+`RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `PARSE_FALLBACK`, `LLM_PROVIDER`,
+`LLM_MODEL_NAME`.
 
-LLM selection: the model is `Settings.default_model` (default `qwen3.8-27b`,
-matching `config/llm/<model>.yaml`). `LLM_PROVIDER` picks the yaml section and
-the provider implementation — `openai` (OpenAI-compatible, default) or
-`pingan` (intranet gateway with signed headers, section keys `appKey`,
-`appSecret`, `rsaPrivateKey`, `openApiCredential`, `sceneId`, `requestId`).
+LLM selection: `LLM_MODEL_NAME` (default `qwen3.8-27b`) resolves
+`config/llm/<model>.yaml` and is sent as the request model. `LLM_PROVIDER` picks
+the yaml section and the provider implementation — `openai`
+(OpenAI-compatible, default) or `pingan` (intranet gateway with signed headers,
+section keys `appKey`, `appSecret`, `rsaPrivateKey`, `openApiCredential`,
+`sceneId`, `requestId`).
 
 ## Smoke test
 
