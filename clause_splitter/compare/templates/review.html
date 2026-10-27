@@ -261,7 +261,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 <div class="panel panel-diff"><div class="panel-head">🆚 差异说明</div><div class="panel-body">{% if m.analysis_lines %}<div class="panel-sub">🔎 判定分析</div>{% for line in m.analysis_lines %}<div class="line editable" data-ann-id="m{{ mi }}:analysis:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}{% endif %}<div class="panel-sub">🆚 内外规不一致处</div>{% if m.diff_lines %}{% for line in m.diff_lines %}<div class="line editable" data-ann-id="m{{ mi }}:diff:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.diff_empty }}</div>{% endif %}</div></div>
 <div class="panel panel-remedy"><div class="panel-head">🛠️ 整改建议</div><div class="panel-body">{% if m.remedy_lines %}{% for line in m.remedy_lines %}<div class="line editable" data-ann-id="m{{ mi }}:remedy:{{ loop.index0 }}" data-original="{{ line }}">{{ line }}</div>{% endfor %}{% else %}<div class="panel-empty">{{ m.remedy_empty }}</div>{% endif %}</div></div>
 <div class="panel panel-inner"><div class="panel-head">✅ 采用内规&检索召回</div><div class="panel-body">
-{% if m.refs %}<div class="match">✓ 采用内规: {% for r in m.refs %}{% if not loop.first %}, {% endif %}<b>{{ r.ref }}</b>{% endfor %}</div>{% for r in m.refs %}<div class="match-snippet" data-title="{{ r.ref }}" data-full="{{ r.full }}" title="点击查看全文">{{ r.snippet }}</div>{% endfor %}{% else %}<div class="match none">— 无承接内规</div>{% endif %}
+{% if m.refs %}<div class="match">✓ 采用内规: {% for r in m.refs %}{% if not loop.first %}, {% endif %}<b>{{ r.ref }}</b>{% endfor %}</div>{% for r in m.refs %}<div class="match-snippet" data-title="{{ r.ref }}" data-full-key="{{ r.full_key }}" title="点击查看全文">{{ r.snippet }}</div>{% endfor %}{% else %}<div class="match none">— 无承接内规</div>{% endif %}
 <div class="recall">
 <div class="recall-head">🔍 检索召回 top-k<span class="recall-count">({{ m.total_candidates }} 条)</span></div>
 <div class="recall-body{% if m.more_count %} truncated{% endif %}">
@@ -271,7 +271,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 <div class="doc-group-head">📄 {{ g.doc }}<span class="doc-group-count">{{ g.count }} 条</span></div>
 <table class="cand-table"><tbody>
 {% for r in g.rows %}
-<tr class="cand-row{% if r.adopted %} adopted{% endif %}" data-title="{{ g.doc }} {{ r.label }}" data-full="{{ r.full }}" title="点击查看全文">
+<tr class="cand-row{% if r.adopted %} adopted{% endif %}" data-title="{{ g.doc }} {{ r.label }}" data-full-key="{{ r.full_key }}" title="点击查看全文">
 <td class="col-no">{% if r.adopted %}<span class="adopted-mark">✓</span> {% endif %}{{ r.label }}</td>
 <td class="col-text">{{ r.snippet_html | safe }}</td>
 <td class="col-score">{{ r.score }}</td>
@@ -298,7 +298,8 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-
 </main>
 <footer>「✓」= 该内规条款被比对 episode 采纳为承接条款;其余为批量预召回候选,供人工复核相关性。覆盖/缺失统计只算需内化处理条款,无需内化条款不构成制度缺口。</footer>
 </div>
-<script id="export-data" type="application/json">{{ export_data | tojson }}</script>
+<script id="export-data" type="application/json">{{ export_json }}</script>
+<script id="full-texts" type="application/json">{{ full_texts_json }}</script>
 <div class="modal-backdrop" id="modal" hidden>
 <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
 <div class="modal-head"><b id="modal-title"></b><button type="button" class="modal-close" aria-label="关闭">✕</button></div>
@@ -444,9 +445,13 @@ function openModal(title, text){
   openLayer(modal);
 }
 function closeModal(){ closeLayer(modal); }
+// 全文按 key 从共享表取:同一 chunk 被多条条款召回时页面只存一份。
+const FULL_TEXTS = JSON.parse(document.getElementById('full-texts').textContent);
 document.addEventListener('click', e=>{
-  const t = e.target.closest('[data-full]');
-  if (t && t.dataset.full) openModal(t.dataset.title || '条款全文', t.dataset.full);
+  const t = e.target.closest('[data-full-key]');
+  if (!t) return;
+  const text = FULL_TEXTS[t.dataset.fullKey];
+  if (text) openModal(t.dataset.title || '条款全文', text);
 });
 // ── 导出 Excel:SpreadsheetML 2003 纯前端字符串生成(零外部依赖,Excel/WPS 直接打开)。
 // 数据来自内嵌 JSON(#export-data);样式:蓝底白字表头 + 覆盖状态三色 + 细边框 + 冻结首行。
@@ -456,6 +461,10 @@ function xmlEsc(s){
 }
 function xCell(text, style){
   return '<Cell ss:StyleID="'+style+'"><Data ss:Type="String">'+xmlEsc(text)+'</Data></Cell>';
+}
+// 召回列:每条候选的「头信息 + 全文」,全文从共享表按 key 取。
+function recallText(r){
+  return (r.recall || []).map(p=>p.head + '\n' + (FULL_TEXTS[p.key] || '')).join('\n\n');
 }
 function exportExcel(){
   const HEADERS = ['条款号','覆盖状态','外规原文','核心监管要求','内化判定依据','判定分析','差异说明','整改建议','采用内规（snippet）','检索召回 top-k'];
@@ -480,7 +489,7 @@ function exportExcel(){
     xml += '<Row>' + xCell(r.clause,'cell') + xCell(r.status, STATUS_STYLE[r.status] || 'cell')
       + xCell(r.external,'cell') + xCell(r.core,'cell') + xCell(r.intl_reason,'cell')
       + xCell(r.analysis,'cell') + xCell(r.diff,'cell') + xCell(r.remedy,'cell')
-      + xCell(r.adopted,'cell') + xCell(r.recall,'cell') + '</Row>';
+      + xCell(r.adopted,'cell') + xCell(recallText(r),'cell') + '</Row>';
   });
   xml += '</Table>'
     + '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">'

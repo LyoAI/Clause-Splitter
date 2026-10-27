@@ -9,12 +9,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
+from jinja2.utils import htmlsafe_json_dumps
 
+from clause_splitter.config import (
+    REVIEW_FULL_TEXT_MAX_CHARS,
+    REVIEW_SIZE_WARN_MB,
+)
 from clause_splitter.models import (
     CompareResult,
     CoverageStatus,
@@ -47,6 +53,19 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "…"
+
+
+def _register_full(text: str, full_texts: dict[str, str]) -> str:
+    """Store one capped candidate text once and return its lookup key.
+
+    The same chunk is frequently recalled for many clauses; embedding it per row
+    (popup + Excel) is what blew the page up to ~1 GB. Popups and the Excel
+    export resolve the key against the shared ``#full-texts`` map instead.
+    """
+    text = _truncate(text, REVIEW_FULL_TEXT_MAX_CHARS)
+    key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    full_texts.setdefault(key, text)
+    return key
 
 
 _INTL_BADGE = {
@@ -101,7 +120,9 @@ def _split_lines(text: str) -> list[str]:
 _RECALL_ROWS_SHOWN_PER_GROUP = 2
 
 
-def _group_candidates(cands: list[RetrievedCandidate]) -> tuple[list[dict], int]:
+def _group_candidates(
+    cands: list[RetrievedCandidate], full_texts: dict[str, str]
+) -> tuple[list[dict], int]:
     """候选按来源制度分组(采用行优先、得分降序,按全文去重)。
 
     返回 ``(groups, more_count)``:``groups`` 是 ``[{"doc", "count", "rows"}]``
@@ -118,7 +139,9 @@ def _group_candidates(cands: list[RetrievedCandidate]) -> tuple[list[dict], int]
         if key in seen:
             continue
         seen.add(key)
-        groups.setdefault(cand.doc_name or "(未命名)", []).append(_cand_row_data(cand))
+        groups.setdefault(cand.doc_name or "(未命名)", []).append(
+            _cand_row_data(cand, full_texts)
+        )
     more_count = sum(
         max(0, len(rows) - _RECALL_ROWS_SHOWN_PER_GROUP) for rows in groups.values()
     )
@@ -128,13 +151,13 @@ def _group_candidates(cands: list[RetrievedCandidate]) -> tuple[list[dict], int]
     ], more_count
 
 
-def _cand_row_data(cand: RetrievedCandidate) -> dict:
+def _cand_row_data(cand: RetrievedCandidate, full_texts: dict[str, str]) -> dict:
     """表格一行的数据:条款号(采用打勾)| 高亮 snippet | 得分。
 
     不展示检索后端列(窄栏里把宽度让给条款文本;后端信息保留在导出 Excel 的
     召回行里)。``snippet_html`` 是唯一预渲染的 HTML(``highlight`` 包 ``<mark>``,
-    已转义),模板里 ``|safe`` 放行;``full`` 是完整条款文本(渲染进 ``data-full``
-    属性,点击该行弹窗展示),其余字段交 Jinja 自动转义。
+    已转义),模板里 ``|safe`` 放行;``full_key`` 指向共享全文表(点击该行弹窗
+    展示完整条款),其余字段交 Jinja 自动转义。
     """
     # 补入的采用条款来自比对检索(episode),无批量召回得分 → 显示「—」。
     score = f"{cand.score:.4f}" if cand.score is not None else "—"
@@ -143,7 +166,7 @@ def _cand_row_data(cand: RetrievedCandidate) -> dict:
         "snippet_html": highlight(cand.snippet, cand.query),
         "score": score,
         "adopted": cand.adopted,
-        "full": cand.full_text or cand.snippet or "",
+        "full_key": _register_full(cand.full_text or cand.snippet or "", full_texts),
     }
 
 
@@ -151,13 +174,13 @@ def _cand_row_data(cand: RetrievedCandidate) -> dict:
 _MATCH_SNIPPET_MAX_CHARS = 80
 
 
-def _matched_refs(m: MatchResult) -> list[dict]:
-    """所有被采纳的内规条款 ``[{"ref", "snippet", "full"}]``(``制度名 第X条``)。
+def _matched_refs(m: MatchResult, full_texts: dict[str, str]) -> list[dict]:
+    """所有被采纳的内规条款 ``[{"ref", "snippet", "full_key"}]``(``制度名 第X条``)。
 
     优先用已标记 adopted 的召回候选(一条 episode 可能承接多条内规);
     候选缺失时回退到头部字段(仅第一条承接)。``snippet`` 是被采用条款全文的
-    截断摘要(第四栏简要展示),``full`` 是完整文本(点击 snippet 弹窗展示),
-    原始文本交 Jinja 自动转义。
+    截断摘要(第四栏简要展示),``full_key`` 指向共享全文表(点击 snippet
+    弹窗展示),原始文本交 Jinja 自动转义。
     """
     refs: list[dict] = []
     seen: set[str] = set()
@@ -170,13 +193,13 @@ def _matched_refs(m: MatchResult) -> list[dict]:
             refs.append({
                 "ref": ref,
                 "snippet": _truncate(c.full_text or c.snippet or "", _MATCH_SNIPPET_MAX_CHARS),
-                "full": c.full_text or c.snippet or "",
+                "full_key": _register_full(c.full_text or c.snippet or "", full_texts),
             })
     if not refs and m.matched_internal_id:
         refs.append({
             "ref": f"{m.matched_internal_document_name or ''} {m.matched_internal_clause_number}".strip(),
             "snippet": _truncate(m.matched_internal_source_text or "", _MATCH_SNIPPET_MAX_CHARS),
-            "full": m.matched_internal_source_text or "",
+            "full_key": _register_full(m.matched_internal_source_text or "", full_texts),
         })
     return refs
 
@@ -197,7 +220,7 @@ def _no_intl_data(m: MatchResult) -> dict:
     }
 
 
-def _card_data(m: MatchResult) -> dict:
+def _card_data(m: MatchResult, full_texts: dict[str, str]) -> dict:
     """一张外规条款卡片的数据(模板渲染纵向单元 + 四栏并排)。
 
     四栏 = ① 核心监管要求(内化判定依据为栏内独立子块) ② 差异说明(判定分析 +
@@ -212,7 +235,7 @@ def _card_data(m: MatchResult) -> dict:
     cands = m.retrieved_candidates or []
     # 全部候选按来源制度分组展示(采用行优先、得分降序、按全文去重);被采用
     # 的行会在召回表中标「✓」浅绿高亮,第四栏只留「采用内规」摘要。
-    groups, more_count = _group_candidates(cands)
+    groups, more_count = _group_candidates(cands, full_texts)
     if m.status == CoverageStatus.NOT_COVERED:
         diff_empty = "缺失，无内规可对比"
     elif m.status == CoverageStatus.PARTIALLY_COVERED:
@@ -238,23 +261,25 @@ def _card_data(m: MatchResult) -> dict:
         "diff_empty": diff_empty,
         "remedy_lines": _split_lines(m.remedy_suggestion),
         "remedy_empty": "—",
-        "refs": _matched_refs(m),
+        "refs": _matched_refs(m, full_texts),
         "total_candidates": len(cands),
         "groups": groups,
         "more_count": more_count,
     }
 
 
-def _export_row(m: MatchResult) -> dict:
+def _export_row(m: MatchResult, full_texts: dict[str, str]) -> dict:
     """导出 Excel 的一行(模板把全部行以 JSON 内嵌进页面,由「导出 Excel」按钮
     在前端生成 .xls,页面保持零外部依赖)。
 
     文本一律用原始值(不带高亮 ``<mark>``);检索召回与页面展示同一顺序
-    (采用优先、得分降序、按全文去重),被采用候选带「✓」前缀;差异说明仅
-    部分覆盖导出。含核心监管要求 / 内化判定依据 / 整改建议(与页面四栏对齐)。
+    (采用优先、得分降序、按全文去重),被采用候选带「✓」前缀。``recall`` 只存
+    ``{head, key}``,正文由前端从共享全文表按 key 取,不再逐候选内嵌一次。
+    差异说明仅部分覆盖导出。含核心监管要求 / 内化判定依据 / 整改建议
+    (与页面四栏对齐)。
     """
     seen: set[str] = set()
-    recall_lines: list[str] = []
+    recall_parts: list[dict] = []
     for c in sorted(m.retrieved_candidates or [], key=lambda c: (not c.adopted, -(c.score or 0.0))):
         key = c.full_text or c.chunk_id
         if key in seen:
@@ -263,8 +288,11 @@ def _export_row(m: MatchResult) -> dict:
         mark = "✓ " if c.adopted else ""
         score = f"{c.score:.4f}" if c.score is not None else "—"
         ref = f"{c.doc_name} {c.clause_label or c.chunk_id}".strip()
-        recall_lines.append(f"{mark}{ref}（{c.backend or '—'} {score}）\n{c.full_text or c.snippet or ''}")
-    refs = _matched_refs(m)
+        recall_parts.append({
+            "head": f"{mark}{ref}（{c.backend or '—'} {score}）",
+            "key": _register_full(c.full_text or c.snippet or "", full_texts),
+        })
+    refs = _matched_refs(m, full_texts)
     adopted = "\n\n".join(f"【{r['ref']}】\n{r['snippet']}" for r in refs) if refs else "—"
     diff = m.difference_analysis if m.status == CoverageStatus.PARTIALLY_COVERED else ""
     return {
@@ -277,7 +305,7 @@ def _export_row(m: MatchResult) -> dict:
         "diff": diff or "",
         "remedy": m.remedy_suggestion or "",
         "adopted": adopted,
-        "recall": "\n\n".join(recall_lines),
+        "recall": recall_parts,
     }
 
 
@@ -316,6 +344,20 @@ def render_review_html(
     ]
 
     generated_at = f"{datetime.now():%Y-%m-%d %H:%M}"
+    # One entry per unique candidate text, shared by popups and the Excel export
+    # (the same chunk is usually recalled for many clauses).
+    full_texts: dict[str, str] = {}
+    # 导出 Excel / 批注存档的前端数据源(文件名剔除非法字符;generated_at
+    # 供批注存档识别页面版本,页面重新生成后旧批注不自动恢复)。
+    export_data = {
+        "name": f"内规检索复核-{re.sub(r'[\\/:*?\"<>|]', '_', ext_docs)[:40]}",
+        "generated_at": generated_at,
+        "rows": [_export_row(m, full_texts) for m in card_matches],
+    }
+    # ensure_ascii=False keeps Chinese as UTF-8 (roughly halves the JSON block);
+    # htmlsafe_json_dumps still escapes `</script>` and friends.
+    export_json = htmlsafe_json_dumps(export_data, ensure_ascii=False)
+    full_texts_json = htmlsafe_json_dumps(full_texts, ensure_ascii=False)
     doc = _TEMPLATE.render(
         ext_docs=ext_docs,
         store_name=store_name,
@@ -329,19 +371,21 @@ def render_review_html(
         stats=stats,
         chips=chips,
         no_intl=[_no_intl_data(m) for m in no_intl_matches],
-        cards=[_card_data(m) for m in card_matches],
-        # 导出 Excel / 批注存档的前端数据源(文件名剔除非法字符;generated_at
-        # 供批注存档识别页面版本,页面重新生成后旧批注不自动恢复)。
-        export_data={
-            "name": f"内规检索复核-{re.sub(r'[\\/:*?\"<>|]', '_', ext_docs)[:40]}",
-            "generated_at": generated_at,
-            "rows": [_export_row(m) for m in card_matches],
-        },
+        cards=[_card_data(m, full_texts) for m in card_matches],
+        export_json=export_json,
+        full_texts_json=full_texts_json,
     )
     output_path.write_text(doc, encoding="utf-8")
-    logger.info("内规检索复核页已生成: %s (%d 条款, %d 召回候选)",
-                output_path, len(result.matches),
-                sum(len(m.retrieved_candidates) for m in result.matches))
+    page_mb = output_path.stat().st_size / (1024 * 1024)
+    candidate_count = sum(len(m.retrieved_candidates) for m in result.matches)
+    logger.info("内规检索复核页已生成: %s (%d 条款, %d 召回候选, %.2f MB)",
+                output_path, len(result.matches), candidate_count, page_mb)
+    if page_mb > REVIEW_SIZE_WARN_MB:
+        logger.warning(
+            "内规检索复核页体积过大: %s (%.2f MB > %d MB); "
+            "检查候选全文/外部条款文本是否异常",
+            output_path, page_mb, REVIEW_SIZE_WARN_MB,
+        )
     return output_path
 
 

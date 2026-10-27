@@ -167,7 +167,7 @@ GET /regulations/{id}/artifacts/{name}         → 文件流
 |---|---|
 | structure.json | 拆条结构 |
 | compare_result.json | 全量比对结果(含召回候选) |
-| review.html | 内规检索复核页(自包含,可发作业人员) |
+| review.html | 内规检索复核页(自包含,可发作业人员)。同一检索 chunk 在弹窗与导出 Excel 间只内嵌一份;单条原文上限 `REVIEW_FULL_TEXT_MAX_CHARS`(默认 5000,仅截断整篇文档级的异常 chunk);完整候选原文见 `compare_result.json` |
 | episodes/{clause_id}.json | 单条款 ReAct 轨迹(检索/推理过程) |
 
 `analysis_summary`:

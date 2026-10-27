@@ -16,6 +16,7 @@ from pathlib import Path
 
 from clause_splitter.compare.retrieve import highlight, pre_retrieve
 from clause_splitter.compare.review import render_review_html
+from clause_splitter.config import REVIEW_FULL_TEXT_MAX_CHARS
 from clause_splitter.models import (
     CompareResult,
     CoverageStatus,
@@ -166,9 +167,9 @@ def test_render_review_html_self_contained(tmp_path: Path) -> None:
     # 第四栏「采用内规」:被采用条款摘要 + 内容 snippet(截断)。
     assert 'class="match-snippet"' in html_text
     assert "第二条　重要数据应当加密存储,并实施访问控制。" in html_text
-    # 弹窗查看全文:召回行/采用 snippet 带 data-full,页面含弹窗容器。
+    # 弹窗查看全文:召回行/采用 snippet 带 data-full-key,页面含弹窗容器。
     assert 'id="modal"' in html_text and 'id="modal-text"' in html_text
-    assert 'data-full="' in html_text
+    assert 'data-full-key="' in html_text
     # adopted candidate carries the full text; no separate 承接内规原文 block (dup removed)
     assert "承接内规原文" not in html_text
     # internalization decision not set on this match → gray 待判定 badge
@@ -246,15 +247,25 @@ def test_review_dedupes_identical_full_text(tmp_path):
         _cand("数据安全办法#0", "数据安全办法", "第一条", "第一条　本制度适用于数据分类分级。"),
     ])
     html_text = _render(tmp_path, match)
-    # 去重作用域是召回表的可见单元格(第四栏 snippet 与弹窗 data-full 属性刻意
+    # 去重作用域是召回表的可见单元格(第四栏 snippet 与全文表条目刻意
     # 含被采用条款文本,不计入):同一全文只渲染一个可见行。
     recall = html_text[html_text.index("检索召回 top-k"):]
     assert _strip_marks(recall).count(">第二条　重要数据应当加密存储。</td>") == 1
 
 
+def _script_json(html_text: str, script_id: str) -> dict:
+    tag = f'<script id="{script_id}" type="application/json">'
+    start = html_text.index(tag) + len(tag)
+    return json.loads(html_text[start:html_text.index("</script>", start)])
+
+
+def _full_texts(html_text: str) -> dict:
+    return _script_json(html_text, "full-texts")
+
+
 def test_review_candidate_shows_snippet_only(tmp_path):
-    """召回候选只展示关键词高亮的 snippet,不再渲染「展开全文」(条款普遍短)。"""
-    long_text = "第二条　" + "重要数据应当加密存储并实施访问控制。" * 20  # 远超 180 字窗口
+    """召回候选只展示关键词高亮的 snippet;弹窗全文按上限截断。"""
+    long_text = "第二条　" + "重要数据应当加密存储并实施访问控制。" * 300  # 超 5000 字上限
     match = _partial_match(candidates=[
         _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
         RetrievedCandidate(
@@ -264,10 +275,11 @@ def test_review_candidate_shows_snippet_only(tmp_path):
         ),
     ])
     html_text = _render(tmp_path, match)
-    # 长全文不渲染为可见文本,只进弹窗的 data-full 属性;表格单元格仅 snippet。
-    assert html_text.count(long_text) == 1
-    assert ('data-full="' + long_text) in html_text
-    assert ('<td class="col-text">' + long_text + "</td>") not in html_text
+    # 超长全文按 REVIEW_FULL_TEXT_MAX_CHARS 截断后进共享全文表,不原样写进页面。
+    capped = long_text[:REVIEW_FULL_TEXT_MAX_CHARS] + "…"
+    assert long_text not in html_text
+    assert capped in _full_texts(html_text).values()
+    assert ('<td class="col-text">' + capped + "</td>") not in html_text
     assert "<mark>" in html_text
     assert "重要数据应当加密存储" in _strip_marks(html_text)
     # 卡片窗口不做「展开全文」(与窗口内滚动冗余,已移除),全文走弹窗。
@@ -276,21 +288,32 @@ def test_review_candidate_shows_snippet_only(tmp_path):
 
 
 def test_review_modal_carries_full_text(tmp_path):
-    """召回行与第四栏采用 snippet 都携带 data-full(点击弹窗展示完整条款)。"""
+    """召回行与第四栏 snippet 用 data-full-key 指向共享全文表。"""
     match = _partial_match(candidates=[
         _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
     ])
     html_text = _render(tmp_path, match)
-    # 召回行:行级 data-full = 候选全文,data-title = 制度名 + 条款号。
-    assert 'data-full="第二条　重要数据应当加密存储。"' in html_text
+    texts = _full_texts(html_text)
+    assert "第二条　重要数据应当加密存储。" in texts.values()
+    keys = re.findall(r'data-full-key="([^"]+)"', html_text)
+    assert len(keys) == 2  # 召回行 + 第四栏采用 snippet
+    assert all(k in texts for k in keys)
     assert 'data-title="数据安全办法 第二条"' in html_text
-    # 第四栏采用 snippet 同样携带全文(弹窗内容不截断)。
-    assert html_text.count('class="match-snippet"') == 1
-    snippet = html_text[html_text.index('class="match-snippet"'):]
-    assert 'data-full="第二条　重要数据应当加密存储。"' in snippet
     # 弹窗容器 + 关闭按钮在页面里(JS 控制,静态断言只查结构)。
     assert 'id="modal"' in html_text and 'id="modal-text"' in html_text
     assert 'class="modal-close"' in html_text
+
+
+def test_review_dedupes_full_text_across_clauses(tmp_path):
+    """同一 chunk 被多条条款召回时,全文表里只存一份。"""
+    shared = "第二条　重要数据应当加密存储。"
+    first = _partial_match(candidates=[_cand("数据安全办法#1", "数据安全办法", "第二条", shared, adopted=True)])
+    second = _partial_match(candidates=[_cand("数据安全办法#1", "数据安全办法", "第二条", shared)])
+    second.external_article_id = "第二条"
+    html_text = _render_many(tmp_path, [first, second])
+    texts = _full_texts(html_text)
+    assert list(texts.values()).count(shared) == 1
+    assert len(re.findall(r'data-full-key="([^"]+)"', html_text)) >= 3  # 复用同一 key
 
 
 def test_review_embeds_export_data(tmp_path):
@@ -312,10 +335,51 @@ def test_review_embeds_export_data(tmp_path):
     assert "义务性条款且涉及核心业务。" in row["intl_reason"]  # 内化判定依据
     assert "建议在数据安全办法中补充访问控制条款。" in row["remedy"]  # 整改建议
     assert "【数据安全办法 第二条】" in row["adopted"]       # 采用内规 + snippet
-    assert "✓ 数据安全办法 第二条" in row["recall"]          # 采用候选 ✓ 前缀、优先
-    assert "（remote 1.0000）" in row["recall"]                # 页面去掉的后端列,导出仍保留
-    assert "第一条　本制度适用于数据分类分级。" in row["recall"]  # 未采用候选全文
+    texts = _full_texts(html_text)
+    heads = [p["head"] for p in row["recall"]]
+    bodies = [texts[p["key"]] for p in row["recall"]]
+    assert heads[0].startswith("✓ 数据安全办法 第二条")        # 采用候选 ✓ 前缀、优先
+    assert "（remote 1.0000）" in heads[0]                      # 页面去掉的后端列,导出仍保留
+    assert "第一条　本制度适用于数据分类分级。" in bodies       # 未采用候选全文(按 key 取)
     assert "外规要求加密存储并实施访问控制" in row["diff"]    # 差异说明(部分覆盖)
+
+
+def _export_json(html_text: str) -> dict:
+    return _script_json(html_text, "export-data")
+
+
+def test_review_caps_huge_full_text(tmp_path):
+    """RAG chunk 可能是整篇文档:1 MB 全文不能原样进页面。"""
+    huge = "第二条　" + "重要数据应当加密存储并实施访问控制。" * 50_000  # ~1 MB
+    match = _partial_match(candidates=[
+        RetrievedCandidate(
+            chunk_id="数据安全办法#9", doc_name="数据安全办法", clause_label="第二条",
+            backend="remote", score=1.0, query="外规要求数据加密",
+            snippet="第二条　重要数据应当加密存储。", full_text=huge,
+        ),
+    ])
+    html_text = _render(tmp_path, match)
+    # 页面体积与输入规模脱钩(模板 + 截断后文本)。
+    assert len(html_text.encode("utf-8")) < 150_000
+    assert huge not in html_text
+    capped = huge[:REVIEW_FULL_TEXT_MAX_CHARS] + "…"
+    texts = _full_texts(html_text)
+    assert capped in texts.values()
+    # 导出 recall 只存 key,正文同样从共享表取(不再重复内嵌)。
+    parts = _export_json(html_text)["rows"][0]["recall"]
+    assert [texts[p["key"]] for p in parts] == [capped]
+
+
+def test_review_export_json_keeps_utf8(tmp_path):
+    """导出 JSON 与全文表都用 UTF-8 中文(ensure_ascii=False),不膨胀成 \\uXXXX。"""
+    html_text = _render(tmp_path, _partial_match(candidates=[
+        _cand("数据安全办法#1", "数据安全办法", "第二条", "第二条　重要数据应当加密存储。", adopted=True),
+    ]))
+    for script_id, needle in (("export-data", "内规检索复核"), ("full-texts", "重要数据")):
+        tag = f'<script id="{script_id}" type="application/json">'
+        block = html_text[html_text.index(tag) + len(tag):html_text.index("</script>", html_text.index(tag))]
+        assert needle in block
+        assert "\\u" not in block
 
 
 def test_review_renders_difference_and_internalization_badge(tmp_path):

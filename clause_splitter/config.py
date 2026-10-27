@@ -40,7 +40,13 @@ MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "15"))
 # Max span (inclusive offsets) of a get_context window.
 CONTEXT_SCOPE_MAX = int(os.getenv("CONTEXT_SCOPE_MAX", "8"))
 # Top-k internal clauses shown on the review page (display-only pre-retrieval).
-REVIEW_TOP_K = int(os.getenv("REVIEW_TOP_K", "10"))
+# 3 keeps the page as short as the old LLM relevance filter (min 3, adopted kept).
+REVIEW_TOP_K = int(os.getenv("REVIEW_TOP_K", "3"))
+# Cap one embedded candidate text. Each unique text is stored once (popups and
+# Excel export share it); the cap only trims pathological whole-document chunks.
+REVIEW_FULL_TEXT_MAX_CHARS = int(os.getenv("REVIEW_FULL_TEXT_MAX_CHARS", "5000"))
+# Warn when one review page grows past this size (MB).
+REVIEW_SIZE_WARN_MB = int(os.getenv("REVIEW_SIZE_WARN_MB", "50"))
 # Parallel clause episodes; keep aligned with the model's concurrency limit.
 COMPARE_CONCURRENCY = int(os.getenv("COMPARE_CONCURRENCY", "2"))
 
