@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import requests
+
+from clause_splitter.utils import get_logger
 
 from ..base import RagService
 from ..errors import (
@@ -27,7 +28,7 @@ from ..errors import (
 )
 from ..types import Chunk, CorpusStats, DocInfo, Hit, ParsedDoc
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 _LOGIN = "/space/api/passport/login"
 _RESOURCES = "/space/api/service/asset-file/resource"

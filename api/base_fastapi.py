@@ -7,7 +7,6 @@ exception — it returns the flat callback payload directly.
 
 from __future__ import annotations
 
-import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -18,9 +17,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from api.prefix import API_PREFIX
-from common.loguru import configure_logger, logger, request_id
+from clause_splitter.utils import configure_root, get_logger
 from config.config_app import CONFIG_APP
 from config.config_env import RUN_ENV
+
+logger = get_logger(CONFIG_APP.log_level)
+# Module level so uvicorn's own startup lines use the same look (lifespan runs
+# after them); the lifespan call below only re-syncs the level.
+configure_root(CONFIG_APP.log_level)
 
 
 class ApiError(Exception):
@@ -40,7 +44,8 @@ def ok(data=None, msg: str = "") -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logger(CONFIG_APP.log_level)
+    get_logger(CONFIG_APP.log_level)
+    configure_root(CONFIG_APP.log_level)
     CONFIG_APP.data_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Service starting, env=%s data_dir=%s", RUN_ENV, CONFIG_APP.data_dir)
 
@@ -114,38 +119,27 @@ async def access_log(request: Request, call_next):
 @app.middleware("http")
 async def request_tracing(request: Request, call_next):
     rid = str(uuid.uuid4())
-    request_id.set(rid)
     request.state.request_id = rid
     body_preview = None
-    with logger.contextualize(request_id=rid):
-        if request.method == "POST" and request.url.path != "/healthz":
-            content_type = request.headers.get("content-type", "")
-            logger.info("Request | %s %s | client=%s | content-type=%s | content-length=%s",
-                        request.method, request.url.path,
-                        request.client.host if request.client else "-",
-                        content_type, request.headers.get("content-length", "-"))
-            # Capture JSON bodies only; multipart uploads may be hundreds of MB.
-            if content_type.startswith("application/json"):
-                try:
-                    raw = await request.body()
-                    body_preview = raw.decode("utf-8", errors="replace")[:500]
-                    logger.info("Request body preview: %s", body_preview)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Could not read request body: %s", exc)
-        response = await call_next(request)
-        if 400 <= response.status_code < 500 and request.url.path != "/healthz":
-            logger.warning("HTTP %s | %s %s", response.status_code, request.method, request.url.path)
-        return response
-
-
-class _InterceptHandler(logging.Handler):
-    """Route stdlib logging (engine modules) into loguru so all logs share one pipeline."""
-
-    def emit(self, record: logging.LogRecord) -> None:
-        logger.opt(depth=6, exception=record.exc_info).log(record.levelname, record.getMessage())
-
-
-logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
+    if request.method == "POST" and request.url.path != "/healthz":
+        content_type = request.headers.get("content-type", "")
+        logger.info("Request | %s %s | request-id=%s | client=%s | content-type=%s | content-length=%s",
+                    request.method, request.url.path, rid,
+                    request.client.host if request.client else "-",
+                    content_type, request.headers.get("content-length", "-"))
+        # Capture JSON bodies only; multipart uploads may be hundreds of MB.
+        if content_type.startswith("application/json"):
+            try:
+                raw = await request.body()
+                body_preview = raw.decode("utf-8", errors="replace")[:500]
+                logger.info("Request body preview: %s", body_preview)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not read request body: %s", exc)
+    response = await call_next(request)
+    if 400 <= response.status_code < 500 and request.url.path != "/healthz":
+        logger.warning("HTTP %s | %s %s | request-id=%s",
+                       response.status_code, request.method, request.url.path, rid)
+    return response
 
 
 @app.get("/healthz", description="Health check")

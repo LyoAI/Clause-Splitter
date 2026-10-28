@@ -4,8 +4,10 @@ boot in environments without vault access as long as nothing touches the DB."""
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from common.loguru import logger
+from clause_splitter.utils import get_logger
 from config.config_mongo import CONFIG_MONGO, MONGO_PASSWORD_OBJ
+
+logger = get_logger()
 
 _client: AsyncIOMotorClient | None = None
 
