@@ -20,6 +20,7 @@ sent as ``text_labels=[]``, which searches the whole knowledge base.
 
 from __future__ import annotations
 
+import mimetypes
 import threading
 import uuid
 from pathlib import Path
@@ -262,12 +263,17 @@ class ZeusProvider(RagService):
 
     def _upload(self, path: Path) -> str:
         logger.info("zeus upload: 上传文件中 %s (%.1f KB)", path.name, path.stat().st_size / 1024)
+        # The multipart part carries the real MIME type, like a browser/Postman
+        # POST. Sending application/octet-stream for every file makes Zeus reject
+        # the upload with a bare {"status":"fail","msg":"error"}.
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        logger.info("zeus upload: %s part Content-Type=%s", path.name, content_type)
         try:
             with path.open("rb") as fh:
                 data = self._request(
                     "POST",
                     _UPLOAD,
-                    files={"file": (path.name, fh, "application/octet-stream")},
+                    files={"file": (path.name, fh, content_type)},
                     timeout=self.upload_timeout_s,
                 )
         except RagError as exc:
@@ -318,13 +324,14 @@ class ZeusProvider(RagService):
         logger.debug("zeus %s %s → %s", method, path, resp.status_code)
         try:
             _raise_status(resp, method, path, request_id=request_id)
+            return _unwrap(resp)
         except RagError as exc:
             # Logged here so the failure is visible even when a per-clause
-            # caller degrades it into "需人工复核".
+            # caller degrades it into "需人工复核". Covers the envelope case
+            # too: a 200 with status=fail only surfaces here.
             logger.error("zeus %s %s 失败 (request-id=%s): %s",
                          method, path, request_id, exc)
             raise
-        return _unwrap(resp)
 
     def _doc_name(self, row: dict[str, Any]) -> str:
         for label in _labels(row.get("text_labels")):
@@ -379,8 +386,11 @@ def _unwrap(resp: requests.Response) -> Any:
         raise RagResponseError(f"Zeus 响应缺少 status: {detail}")
     status = str(body.get("status") or "").strip().lower()
     if status != "success":
+        # Zeus answers 200 with a bare {"status":"fail","msg":"error"} for most
+        # internal failures. msg alone is useless, so the whole body is kept.
+        detail = resp.text[:500].replace("\n", " ").strip()
         raise RagResponseError(
-            f"Zeus 业务错误: {body.get('msg') or status or 'unknown'}"
+            f"Zeus 业务错误({resp.status_code}, status={status or 'missing'}): {detail}"
         )
     return body.get("data")
 

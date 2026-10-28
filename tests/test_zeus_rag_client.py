@@ -209,6 +209,49 @@ def test_ingest_uploads_then_submits(tmp_path):
     }]
 
 
+@pytest.mark.parametrize("filename,expected", [
+    ("办法.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ("办法.pdf", "application/pdf"),
+    ("正文.txt", "text/plain"),
+    ("旧版.doc", "application/msword"),
+])
+def test_upload_part_carries_the_real_mime_type(tmp_path, filename, expected):
+    """Zeus rejects a file part typed application/octet-stream with a bare 'error'.
+
+    The part Content-Type must match the extension, as a browser or Postman
+    would send it — not a single hard-coded binary type.
+    """
+    src = tmp_path / filename
+    src.write_bytes(b"payload")
+
+    def handler(method, url, headers, kwargs):
+        if url.endswith("/text_data_process/app/file"):
+            return _upload_ok()
+        return _ok("remote-9")
+
+    session = _Session(handler)
+    _provider(session).ingest(src, filename, "doc-7")
+
+    name, _fh, part_type = session.calls[0]["files"]["file"]
+    assert name == filename
+    assert part_type == expected
+
+
+def test_upload_falls_back_to_octet_stream_for_unknown_suffix(tmp_path):
+    src = tmp_path / "payload.bin"
+    src.write_bytes(b"payload")
+
+    def handler(method, url, headers, kwargs):
+        if url.endswith("/text_data_process/app/file"):
+            return _upload_ok()
+        return _ok("remote-9")
+
+    session = _Session(handler)
+    _provider(session).ingest(src, "payload.bin", "doc-7")
+
+    assert session.calls[0]["files"]["file"][2] == "application/octet-stream"
+
+
 def test_ingest_writes_corpus_labels_before_name_label(tmp_path):
     src = tmp_path / "数据安全管理办法.docx"
     src.write_bytes(b"docx-bytes")
@@ -315,6 +358,22 @@ def test_delete_404_counts_as_removed():
 def test_bad_envelope_raises_response_error(body):
     with pytest.raises(RagResponseError):
         _provider(_Session(lambda *a: _Resp(200, body))).search("q", 1)
+
+
+def test_business_error_keeps_the_response_body():
+    """Zeus answers 200 + {"status":"fail","msg":"error"}; msg alone is useless.
+
+    The raised message must carry the HTTP status and the whole body so a
+    production failure is diagnosable without a packet capture.
+    """
+    body = {"status": "fail", "msg": "error", "data": None, "traceId": "abc123"}
+    with pytest.raises(RagResponseError) as excinfo:
+        _provider(_Session(lambda *a: _Resp(200, body))).search("q", 1)
+
+    message = str(excinfo.value)
+    assert "200" in message
+    assert "abc123" in message      # something only the raw body carries
+    assert "error" in message
 
 
 def test_non_json_response_raises_response_error():
