@@ -79,6 +79,30 @@ uv run python scripts/api_lab.py --base "$B" result DOC-1
 
 `python scripts/api_lab.py <命令> -h` 查看该接口的全部参数。
 
+## Zeus 探针 `zeus_probe.py`
+
+服务日志把 Zeus 失败压成一句「Zeus 业务错误: error」时，用这个脚本直连 Zeus，
+它会打印完整请求与响应体。不依赖服务、Mongo、LLM，只需要 `RAG_API_BASE` /
+`ZEUS_APP_ID` / `ZEUS_APP_SECRET` / `ZEUS_INDEX`（读 `.env`，也可用参数覆盖）。
+
+```bash
+uv run python scripts/zeus_probe.py ping                       # 连通+鉴权（一条平凡检索）
+uv run python scripts/zeus_probe.py upload --file 条例.docx     # 只测上传
+uv run python scripts/zeus_probe.py all --file 条例.docx \
+  --label internal-regulation --wait 180                        # 上传→提交→轮询可检索
+uv run python scripts/zeus_probe.py all --file 条例.docx --dry-run   # 只看要发什么
+```
+
+`upload` / `all` 的 `--part-ctype` 用来对齐 Postman：
+
+| 值 | multipart part 的 Content-Type |
+|---|---|
+| `auto`（默认） | 按后缀推，同 Postman；**生产代码现在的行为** |
+| `octet` | 固定 `application/octet-stream`；改造前的行为，Zeus 会回 `msg=error` |
+
+其它子命令：`submit --url --filename` 手工提交已上传的文件、`search --query` 检索、
+`delete --org-id` 删除。每个请求都会打印 request-id（Zeus 报错时带上它找 RAG 团队）。
+
 ## 调度模式：实时 vs 定时
 
 相关配置在 `.env`：
