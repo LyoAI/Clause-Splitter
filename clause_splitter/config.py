@@ -130,6 +130,18 @@ ESG_CLIENT_ID = os.getenv("ESG_CLIENT_ID", "")
 ESG_CLIENT_SECRET = os.getenv("ESG_CLIENT_SECRET", "")
 ESG_CALLBACK_PATH = os.getenv("ESG_CALLBACK_PATH", "/paerm/paermModelReturn")
 
+# ── Push docType → document kind ───────────────────────────────────────
+# Backend contract: 1 = 外规 (external), 2 = 内规 (internal), 3 = 附件 (attach).
+# Configurable because the mapping is still a verbal agreement.
+PUSH_DOCTYPE_EXTERNAL = os.getenv("PUSH_DOCTYPE_EXTERNAL", "1")
+PUSH_DOCTYPE_INTERNAL = os.getenv("PUSH_DOCTYPE_INTERNAL", "2")
+PUSH_DOCTYPE_ATTACH = os.getenv("PUSH_DOCTYPE_ATTACH", "3")
+
+# 内规/附件跑完「入库+拆条」后是否也回调后端。关掉时只能靠
+# GET /regulations/{docId}/result 主动拉取。
+_PUSH_INTERNAL_CALLBACK_RAW = os.getenv("PUSH_INTERNAL_CALLBACK", "1").strip().lower()
+PUSH_INTERNAL_CALLBACK = _PUSH_INTERNAL_CALLBACK_RAW not in ("0", "false", "no", "off")
+
 
 # ── Split-pipeline thresholds ──────────────────────────────────────────
 

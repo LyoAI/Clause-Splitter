@@ -22,6 +22,7 @@ from tests.fakes import (
     fake_repos,
     patch_rag,
 )
+from clause_splitter.rag import RagUnavailable
 
 SOURCE_TEXT = "\n".join(
     f"{spec['clause_number']}　{spec['full_text']}" for spec in CLAUSE_SPECS
@@ -69,7 +70,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
         await runner.start()
         try:
             result = await integration_service.handle_push({"args": {
-                "optType": 0, "docContent": SOURCE_TEXT, "docType": "3",
+                "optType": 0, "docContent": SOURCE_TEXT, "docType": "1",
                 "docId": "doc1", "taskId": "task1", "uid": "u1",
                 "extraParams": {"source": "iobs", "batch": "2026-10"},
             }})
@@ -94,7 +95,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
             assert payload["code"] == "1" and payload["msg"] == "成功"
             assert payload["docId"] == "doc1"
             assert payload["taskId"] == "task1"
-            assert payload["docType"] == "3"
+            assert payload["docType"] == "1"
             assert payload["applicable"] is True
             assert "手动" in payload["applicableReason"]
             assert payload["docAbstract"] == "mock 摘要:本法规规范数据安全管理与风险评估要求。"
@@ -147,7 +148,7 @@ async def test_auto_push_downloads_from_url(tmp_path, monkeypatch):
         try:
             monkeypatch.setattr(integration_service, "_fetch", lambda url: SOURCE_TEXT.encode("utf-8"))
             result = await integration_service.handle_push({"args": {
-                "optType": 1, "docType": "3", "docId": "doc2",
+                "optType": 1, "docType": "1", "docId": "doc2",
                 "doclobsUrl": "http://iobs.example/download/abc?attname=测试外规管理办法",
                 "taskId": "task2", "uid": "u2",
             }})
@@ -278,7 +279,7 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
         try:
             # Flat field map (no "args" wrapper) — spec shape pending.
             result = await integration_service.handle_push({
-                "optType": 1, "docContent": SOURCE_TEXT, "docType": "3",
+                "optType": 1, "docContent": SOURCE_TEXT, "docType": "1",
                 "docId": "doc3", "taskId": "task3", "uid": "u3",
             })
             assert result["dispatch"] == "scheduled"
@@ -297,6 +298,7 @@ async def test_flat_body_auto_push_waits_for_cron_then_runs(tmp_path, monkeypatc
             payload = await integration_service.build_result("doc3")
             assert payload["docId"] == "doc3"
             assert payload["code"] == "1"
+            assert payload["applicable"] is True  # external chain still judges
             assert len(payload["data"]) == len(CLAUSE_SPECS)
             assert payload["data"][0]["termId"] == "doc3-0"
         finally:
@@ -504,3 +506,268 @@ def test_esg_client_token_refresh_and_timeout_retry(monkeypatch):
     assert result == {"ret": "0"}
     assert calls == {"token": 2, "post": 3}  # 1 initial + 1 refresh after 13012
     assert sleeps == [60.0]  # one backoff for the 13016
+
+
+# ── docType classification (routing not implemented; classification logged) ──
+
+
+@pytest.mark.parametrize("doc_type,kind", [
+    ("1", "external"),
+    ("2", "internal"),
+    ("3", "attach"),
+    ("", "external"),        # missing → external
+    ("9", "external"),       # unknown → external
+])
+def test_classify_doc_type(doc_type, kind):
+    assert integration_service.classify_doc_type(doc_type)[0] == kind
+
+
+async def test_push_records_doc_type_and_kind(tmp_path):
+    with data_dir(tmp_path):
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: PipelineFakeLLM())
+        services.init(repos, runner)
+        try:
+            result = await integration_service.handle_push({"args": {
+                "optType": 1, "docId": "doc-internal", "taskId": "t",
+                "docType": "2", "docContent": SOURCE_TEXT,
+            }})
+            # The push response shape is part of the backend contract — unchanged.
+            assert list(result) == [
+                "regulation_id", "job_id", "task_id", "manual", "dispatch", "duplicate",
+            ]
+            reg = await repos.regulations.get(result["regulation_id"])
+            assert reg["push_doc_type"] == "2"
+            assert reg["push_doc_kind"] == "internal"
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+# ── internal / attachment pushes (docType 2 and 3) ──────────────────────
+
+
+async def test_internal_push_ingests_and_splits_only(tmp_path, monkeypatch):
+    """docType=2: corpus upload + split; no applicability / internalization / analysis."""
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "immediate")
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: NoApplicabilityLLM())
+        services.init(repos, runner)
+        integration_service.register(runner)
+        service = patch_rag(monkeypatch, build_rag_service())
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
+        object.__setattr__(config_app_mod.CONFIG_APP, "backend_callback_url", "http://cb")
+        delivered: list[dict] = []
+        monkeypatch.setattr(
+            integration_service, "_post_callback",
+            lambda url, payload: delivered.append(payload),
+        )
+        await runner.start()
+        try:
+            result = await integration_service.handle_push({"args": {
+                "optType": 0, "docContent": SOURCE_TEXT, "docType": "2",
+                "docId": "intl1", "taskId": "ti1",
+            }})
+            done = await _wait(repos, result["job_id"])
+            assert done["state"] == "done", done["error"]
+
+            reg = await repos.regulations.get(result["regulation_id"])
+            assert reg["push_doc_kind"] == "internal"
+            assert reg["applicability_state"] == "skipped"
+            assert reg["internalization_state"] == "skipped"
+            assert reg["analysis_state"] == "skipped"
+            assert reg["split_state"] == "done"
+            assert reg["applicability_applicable"] is None  # never stamped True
+            assert reg["article_count"] == len(CLAUSE_SPECS)
+
+            # Corpus upload with the internal corpus label.
+            assert service.ingests[0][0] == reg["source_filename"]
+            assert service.ingest_labels[0] == ["internal-regulation"]
+
+            # Mirror row lands in the library view too.
+            mirror = await repos.internal_docs.get_by_sha256(reg["file_sha256"])
+            assert mirror is not None and mirror["kind"] == "internal"
+            assert mirror["remote_state"] == "indexed"
+
+            # Callback still fires, with the external-only fields empty.
+            assert len(delivered) == 1
+            payload = delivered[0]
+            assert payload["code"] == "1" and payload["msg"] == "成功"
+            assert payload["applicable"] is None
+            assert payload["applicableReason"] == ""
+            assert len(payload["data"]) == len(CLAUSE_SPECS)
+            first = payload["data"][0]
+            assert first["termName"] == CLAUSE_SPECS[0]["clause_number"]
+            assert first["termContent"]
+            assert first["internalize"] == "" and first["internalizeReason"] == ""
+            assert first["coverageStatus"] == "" and first["analysis"] == ""
+            assert first["differenceAnalysis"] == ""
+            assert first["coreRequirements"] == "" and first["remedySuggestion"] == ""
+            assert first["relationTerms"] == []
+        finally:
+            await runner.stop()
+            services.reset()
+            object.__setattr__(config_app_mod.CONFIG_APP, "backend_callback_url", "")
+
+
+async def test_attach_push_uses_the_attach_label(tmp_path, monkeypatch):
+    """docType=3 behaves exactly like 内规, only the corpus label differs."""
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "immediate")
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: NoApplicabilityLLM())
+        services.init(repos, runner)
+        service = patch_rag(monkeypatch, build_rag_service())
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
+        await runner.start()
+        try:
+            result = await integration_service.handle_push({"args": {
+                "optType": 0, "docContent": SOURCE_TEXT, "docType": "3",
+                "docId": "att1", "taskId": "ta1",
+            }})
+            done = await _wait(repos, result["job_id"])
+            assert done["state"] == "done", done["error"]
+            assert service.ingest_labels[0] == ["attach-regulation"]
+            reg = await repos.regulations.get(result["regulation_id"])
+            assert reg["push_doc_kind"] == "attach"
+            mirror = await repos.internal_docs.get_by_sha256(reg["file_sha256"])
+            assert mirror["kind"] == "attach"
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_internal_push_ingest_failure_fails_the_job(tmp_path, monkeypatch):
+    """Corpus upload is the point of the push: its failure fails the job, but the
+    split results stay retrievable through /result."""
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "immediate")
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: NoApplicabilityLLM())
+        services.init(repos, runner)
+        service = patch_rag(monkeypatch, build_rag_service())
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
+        service.ingest_error = RagUnavailable("zeus 502 bad gateway")
+        await runner.start()
+        try:
+            result = await integration_service.handle_push({"args": {
+                "optType": 0, "docContent": SOURCE_TEXT, "docType": "2",
+                "docId": "intlBad", "taskId": "tib",
+            }})
+            done = await _wait(repos, result["job_id"])
+            assert done["state"] == "failed"
+            assert "内规入库失败" in done["error"]
+
+            payload = await integration_service.build_result("intlBad")
+            assert payload["code"] == "0"
+            assert "入库失败" in payload["msg"]
+            assert len(payload["data"]) == len(CLAUSE_SPECS)
+
+            reg = await repos.regulations.get(result["regulation_id"])
+            mirror = await repos.internal_docs.get_by_sha256(reg["file_sha256"])
+            assert mirror["remote_state"] == "failed"
+            assert "zeus 502" in mirror["remote_error"]
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_internal_callback_can_be_disabled(tmp_path, monkeypatch):
+    """PUSH_INTERNAL_CALLBACK=0: internal pushes stop calling back, external keeps going."""
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "immediate")
+        monkeypatch.setattr(cs_config, "PUSH_INTERNAL_CALLBACK", False)
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: NoApplicabilityLLM())
+        services.init(repos, runner)
+        integration_service.register(runner)
+        patch_rag(monkeypatch, build_rag_service())
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
+        object.__setattr__(config_app_mod.CONFIG_APP, "backend_callback_url", "http://cb")
+        delivered: list[dict] = []
+        monkeypatch.setattr(
+            integration_service, "_post_callback",
+            lambda url, payload: delivered.append(payload),
+        )
+        await runner.start()
+        try:
+            internal = await integration_service.handle_push({"args": {
+                "optType": 0, "docContent": SOURCE_TEXT, "docType": "2",
+                "docId": "quiet1", "taskId": "tq",
+            }})
+            assert (await _wait(repos, internal["job_id"]))["state"] == "done"
+            assert delivered == []  # disabled for internal/attach
+
+            external = await integration_service.handle_push({"args": {
+                "optType": 0, "docContent": SOURCE_TEXT + "补充条款\n", "docType": "1",
+                "docId": "loud1", "taskId": "tl",
+            }})
+            assert (await _wait(repos, external["job_id"]))["state"] == "done"
+            assert len(delivered) == 1 and delivered[0]["docId"] == "loud1"
+        finally:
+            await runner.stop()
+            services.reset()
+            object.__setattr__(config_app_mod.CONFIG_APP, "backend_callback_url", "")
+
+
+async def test_deleting_an_internal_regulation_removes_the_mirror_row(tmp_path, monkeypatch):
+    with data_dir(tmp_path):
+        monkeypatch.setattr(cs_config, "CHAIN_DISPATCH", "immediate")
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: NoApplicabilityLLM())
+        services.init(repos, runner)
+        patch_rag(monkeypatch, build_rag_service())
+        monkeypatch.setattr(split_stage_mod, "clauses_from_file", _no_remote_parse)
+        await runner.start()
+        try:
+            result = await integration_service.handle_push({"args": {
+                "optType": 0, "docContent": SOURCE_TEXT, "docType": "2",
+                "docId": "intlDel", "taskId": "td",
+            }})
+            assert (await _wait(repos, result["job_id"]))["state"] == "done"
+            reg = await repos.regulations.get(result["regulation_id"])
+            assert await repos.internal_docs.get_by_sha256(reg["file_sha256"]) is not None
+
+            from clause_splitter.services import regulation_service
+
+            await regulation_service.delete_regulation(result["regulation_id"])
+            assert await repos.internal_docs.get_by_sha256(reg["file_sha256"]) is None
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_split_precondition_is_skipped_for_internal(tmp_path):
+    """内规/附件 never run applicability, so split must not demand it."""
+    from clause_splitter.services import regulation_service
+
+    with data_dir(tmp_path):
+        repos = fake_repos()
+        runner = JobRunner(repos, workers=1, llm_factory=lambda: NoApplicabilityLLM())
+        services.init(repos, runner)
+        try:
+            reg, _ = await regulation_service.upload(
+                SOURCE_TEXT.encode("utf-8"), "内规.txt", "内规", repos=repos,
+            )
+            await repos.regulations.update(reg["_id"], {"push_doc_kind": "internal"})
+            job = await regulation_service.start_stage(reg["_id"], "split")
+            assert job["job_type"] == "split"
+
+            # An external regulation still hits the 409.
+            reg2, _ = await regulation_service.upload(
+                (SOURCE_TEXT + "另一版\n").encode("utf-8"), "外规.txt", "外规", repos=repos,
+            )
+            with pytest.raises(ApiError) as exc:
+                await regulation_service.start_stage(reg2["_id"], "split")
+            assert exc.value.status_code == 409
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+def test_local_path_title_comes_from_the_filename(tmp_path, monkeypatch):
+    """api_lab --path sends a bare path, not an IOBS url with attname."""
+    src = tmp_path / "网络数据安全风险评估办法.docx"
+    src.write_bytes(b"PK\x03\x04docx-bytes")
+    assert integration_service._title_from_url(str(src)) == "网络数据安全风险评估办法"

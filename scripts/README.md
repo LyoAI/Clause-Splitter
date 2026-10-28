@@ -69,6 +69,12 @@ uv run python scripts/api_lab.py --base "$B" result DOC-1
   `run` 默认等待，可用 `--no-wait` 只入队。
 - `wait <job_id>` 可单独接管已有任务；`job` / `jobs` 查任务，`--state`、`--job-type` 过滤。
 - `push` 支持 `--path`（本地文件，走 `doclobsUrl`）、`--url`（http 下载）、`--content`（纯文本）。
+  `--doc-type` 对应后端的 `docType`（1 外规 / 2 内规 / 3 附件）；不传则模拟缺失，
+  用于观察按外规兜底的 WARNING 日志。脚本会回查 `/regulations/{id}` 打印
+  `docType → kind → 链路`（推送响应本身是与后端约定的固定字段，不为此新增）。
+  内规/附件应看到 `链路=内规/附件(入库+拆条)`。
+- 验证内规/附件：`push --doc-type 2` 之后，`lib-list` 应出现 `kind=internal` 的镜像行，
+  `result` 的 `applicable` 应为 `null`、`data[]` 有条款。
 - 失败时脚本退出码非 0；HTTP 非 2xx 或信封 `status=error` 都会直接打印响应后退出。
 
 `python scripts/api_lab.py <命令> -h` 查看该接口的全部参数。

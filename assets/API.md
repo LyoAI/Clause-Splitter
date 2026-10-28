@@ -213,6 +213,27 @@ GET    /library/index            → {doc_count, chunk_count, built_at, building
 
 推送入参新增可选字段 `extraParams`(JSON 对象):服务原样保存以兼容旧调用,但**不再出现在回调/查询报文中**,也不参与任何流程判定。完整入参表见 `assets/外规内化服务接口文档.docx` 3.3 节,结果报文见 `assets/callback-contract.md`。
 
+`docType` 决定跑哪条链:
+
+| docType | 含义 | 流程 | 入库语料标签 |
+|---|---|---|---|
+| `1`(或不传/未知,按外规并告警) | 外规 | 适用性 → 拆条 → 内化 → 分析 | 不入库 |
+| `2` | 内规 | 拆条 → 入库 | `ZEUS_LABEL_INTERNAL` |
+| `3` | 附件 | 拆条 → 入库(与内规一致) | `ZEUS_LABEL_ATTACH` |
+
+内规/附件的适用性、内化、分析阶段标记为 `skipped`;结果报文里 `applicable` 为
+`null`、`applicableReason` 为空串,`data[]` 是拆条结果。入库失败会让本次任务
+`failed`,但拆条结果仍可从 `/regulations/{docId}/result` 取到。推送的同时会写一条
+`internal_docs` 镜像行,因此也能在 `GET /library/documents` 里看到(`kind` 区分
+`library`(运维上传)/ `internal` / `attach`)。内规/附件的回调默认开启,可用
+`PUSH_INTERNAL_CALLBACK=0` 关掉、改为后端主动拉取。
+
+> **对接报文不变。** `POST /regulations/push` 的入参字段与 202 响应字段
+> (`regulation_id` / `job_id` / `task_id` / `manual` / `dispatch` / `duplicate`)
+> 与改造前完全一致;结果报文(ESG 回调与 `/result`)的字段名与顺序也未变。
+> docType 分流只改变内部执行流程与 `applicable` 的取值。`kind` / `doc_kind`
+> 只出现在**内部运维接口**(`/library/documents`、`/regulations/{id}`)里。
+
 重复推送同一份内容时按 sha256 复用同一法规(改 `docId` / `taskId` 不会新建法规)。若该法规上还有 `scheduled` 的 chain 任务,新 push 会把旧任务标记为 `failed`(`superseded by re-push`)并新建任务重新跑;`queued` / `running` 任务仍返回 409。
 
 `/regulations/*` 其余路由、`/library`、`/jobs` 为内部运维接口。

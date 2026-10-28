@@ -26,7 +26,7 @@ otherwise the claim is dropped and the clause downgraded to 缺失.
 
 ```
 api/                    FastAPI app (PingAn http-server-template style)
-  base_fastapi.py       app, {code,status,data,msg} envelope, request_id, loguru
+  base_fastapi.py       app, {code,status,data,msg} envelope, request_id
   deps.py               auth + serializers        routes/{regulations,library,jobs}.py
 clause_splitter/
   rag/                  external RAG abstraction (RagService) + providers/ (the only retrieval dep)
@@ -40,7 +40,7 @@ clause_splitter/
   db.py                 MongoDB (motor) repositories, one class per collection
   storage.py            DATA_DIR layout helpers + artifact allowlist
   prompts/              ALL LLM prompts as editable .md files ({{slot}} render)
-common/                 loguru / mongo_async / cyberark (template shared code)
+common/                 mongo_async / cyberark (template shared code)
 config/                 config_app (service knobs) · config_env · config_mongo
 tests/                  pytest suite — repo / stages / runner / full-chain e2e (offline)
 serving.py              entry point (port 18998, PingAn deployment convention)
@@ -75,7 +75,7 @@ GET    /regulations/{id}/artifacts · GET /regulations/{id}/artifacts/{name}
 POST   /library/documents · GET /library/documents · DELETE /library/documents/{id}
 POST   /library/index {rebuild?} · GET /library/index
 POST   /regulations/push                 backend doc push (docContent or doclobsUrl; optType=manual
-                                           skips stage 1) → auto-runs the chain
+                                           skips stage 1; docType picks external vs internal chain)
 GET    /healthz
 ```
 
@@ -146,7 +146,31 @@ Create a `.env` (gitignored) with service knobs only; LLM credentials live in
 `ZEUS_INDEX`, `ZEUS_KB_LIMIT`, `ZEUS_MAX_K`, `ZEUS_RECALL_MIN_SCORE`,
 `ZEUS_RERANK_MIN_SCORE`, `ZEUS_MAX_CONCURRENCY`, `ZEUS_UPLOAD_TIMEOUT_S`,
 `ZEUS_CREATED_BY`, `ZEUS_LABEL_INTERNAL`, `ZEUS_LABEL_ATTACH`,
-`ZEUS_SEARCH_LABELS`, `PARSE_FALLBACK`, `LLM_PROVIDER`, `LLM_MODEL_NAME`.
+`ZEUS_SEARCH_LABELS`, `PARSE_FALLBACK`, `LLM_PROVIDER`, `LLM_MODEL_NAME`,
+`LOG_LEVEL`, `PUSH_DOCTYPE_EXTERNAL`, `PUSH_DOCTYPE_INTERNAL`,
+`PUSH_DOCTYPE_ATTACH`, `PUSH_INTERNAL_CALLBACK`.
+
+Logs go through one colored stdlib logger (`clause_splitter.utils.get_logger`)
+whose line location is an **absolute** `path:line`, so the VSCode terminal can
+follow it. Levels < ERROR go to stdout, ERROR/CRITICAL to stderr; third-party
+loggers (uvicorn, apscheduler) share the format via `configure_root`.
+`LOG_LEVEL` sets the level once at startup.
+
+Push `docType` picks the chain (`PUSH_DOCTYPE_*`):
+
+- `1` = 外规 — the four stages above, unchanged.
+- `2` = 内规, `3` = 附件 — the document is ingested into the corpus (Zeus parses,
+  chunks and embeds it; the label is `ZEUS_LABEL_INTERNAL` / `ZEUS_LABEL_ATTACH`)
+  **and** split locally for 章/节 granularity. Applicability, internalization and
+  analysis are marked `skipped`; `applicable` / `applicableReason` are empty in
+  the result payload and `data[]` holds the split articles. A failed ingest fails
+  the job (the split articles stay retrievable through `/regulations/{docId}/result`).
+  The push also creates an `internal_docs` mirror row (`kind` = `internal` /
+  `attach`), so it shows up under `/library/documents`.
+
+Both kinds call back unless `PUSH_INTERNAL_CALLBACK=0`, which limits callbacks to
+外规 and leaves 内规/附件 to the pull endpoint. An unknown or missing docType is
+treated as external with a WARNING.
 
 LLM selection: `LLM_MODEL_NAME` (default `qwen3.8-27b`) resolves
 `config/llm/<model>.yaml` and is sent as the request model. `LLM_PROVIDER` picks

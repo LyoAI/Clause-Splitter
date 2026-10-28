@@ -18,6 +18,17 @@ from clause_splitter.storage import regulation_dir
 #: Stage names, in execution order.
 STAGES = ("applicability", "split", "internalization", "analysis")
 
+#: Push ``docKind`` values that go to the corpus instead of the external chain:
+#: internal rules and attachments are ingested (Zeus parses/chunks/embeds them)
+#: and split locally, but never judged for applicability or internalized.
+INTERNAL_KINDS = ("internal", "attach")
+
+
+def is_internal(reg: dict[str, Any]) -> bool:
+    """Whether this regulation came from an internal/attachment push."""
+    return (reg.get("push_doc_kind") or "") in INTERNAL_KINDS
+
+
 #: Derived fields cleared when a stage is (re-)run or skipped — keeps
 #: regulations free of stale data from a previous generation.
 DERIVED_FIELDS: dict[str, dict[str, Any]] = {

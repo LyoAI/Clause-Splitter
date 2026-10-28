@@ -12,7 +12,7 @@ from pathlib import Path
 
 from api.base_fastapi import ApiError
 
-from clause_splitter.pipeline.contexts import DERIVED_FIELDS, DOWNSTREAM, STAGES
+from clause_splitter.pipeline.contexts import DERIVED_FIELDS, DOWNSTREAM, STAGES, is_internal
 from clause_splitter.storage import (
     regulation_dir,
     safe_filename,
@@ -74,11 +74,36 @@ async def delete_regulation(reg_id: str, *, repos=None) -> None:
     repos = repos or _repos()
     if await repos.jobs.has_active_for_regulation(reg_id):
         raise ApiError(409, "a job is active for this regulation; wait or let it finish first")
-    if await repos.regulations.get(reg_id) is None:
+    reg = await repos.regulations.get(reg_id)
+    if reg is None:
         raise ApiError(404, "regulation not found")
     await repos.clauses.delete_for_regulation(reg_id)
     await repos.regulations.delete(reg_id)
     shutil.rmtree(regulation_dir(reg_id), ignore_errors=True)
+    if is_internal(reg):
+        await _drop_internal_mirror(reg)
+
+
+async def _drop_internal_mirror(reg: dict) -> None:
+    """Remove the ``internal_docs`` mirror row a 内规/附件 push created.
+
+    Best-effort and synchronous on purpose: deleting a regulation must not fail
+    because the corpus out of sync. Only push-created rows are touched — a
+    ``kind="library"`` row is the ops upload and outlives the regulation.
+    """
+    from clause_splitter.services import library_service
+
+    sha = reg.get("file_sha256") or ""
+    if not sha:
+        return
+    try:
+        repos = _repos()
+        row = await repos.internal_docs.get_by_sha256(sha)
+        if row is None or (row.get("kind") or "library") == "library":
+            return
+        await library_service.delete_doc(row["_id"])
+    except Exception as exc:  # noqa: BLE001 — cleanup is best-effort
+        logger.warning("删除法规时清理入库镜像失败 (%s): %s", reg.get("_id"), exc)
 
 
 async def override_applicability(
@@ -157,10 +182,12 @@ def _check_precondition(reg: dict, job_type: str, force: bool) -> None:
     if job_type == "applicability":
         return
     if job_type == "split":
-        if state("applicability") != "done":
-            raise ApiError(409, "run the applicability stage first")
-        if reg.get("applicability_applicable") is not True and not force:
-            raise ApiError(409, "regulation not applicable (or needs review); pass {\"force\": true} to split anyway")
+        # 内规/附件 never run applicability, so it is not a precondition for them.
+        if not is_internal(reg):
+            if state("applicability") != "done":
+                raise ApiError(409, "run the applicability stage first")
+            if reg.get("applicability_applicable") is not True and not force:
+                raise ApiError(409, "regulation not applicable (or needs review); pass {\"force\": true} to split anyway")
     elif job_type == "internalization":
         if state("split") != "done":
             raise ApiError(409, "run the split stage first")

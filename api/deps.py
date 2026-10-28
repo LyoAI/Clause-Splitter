@@ -29,6 +29,7 @@ def reg_out(doc: dict[str, Any]) -> dict[str, Any]:
         "id": doc["_id"],
         "title": doc.get("title") or "",
         "source_filename": doc.get("source_filename") or "",
+        "doc_kind": doc.get("push_doc_kind") or "external",
         "article_count": doc.get("article_count"),
         "applicability": {
             "applicable": doc.get("applicability_applicable"),
@@ -90,10 +91,12 @@ def internal_doc_out(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": doc["_id"],
         "filename": doc.get("filename"),
+        "kind": doc.get("kind") or "library",
         "size_bytes": doc.get("size_bytes") or 0,
         "chunk_count": doc.get("chunk_count"),
         "remote_doc_id": doc.get("remote_doc_id") or "",
         "remote_state": doc.get("remote_state") or "",
+        "remote_error": doc.get("remote_error") or "",
         "indexed_at": _iso(doc.get("indexed_at")),
         "created_at": _iso(doc.get("created_at")),
     }

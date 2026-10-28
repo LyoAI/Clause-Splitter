@@ -50,6 +50,78 @@ async def test_upload_survives_an_unavailable_service(tmp_path, monkeypatch):
             doc, created = await library_service.upload(b"x", "制度.md")
             assert created and doc["remote_state"] == "pending"
             assert doc["chunk_count"] is None
+            assert doc["kind"] == "library"
+            assert "down" in doc["remote_error"]
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_push_kinds_carry_their_corpus_label(tmp_path, monkeypatch):
+    """Push reuses the library upload but lands in a different corpus."""
+    with data_dir(tmp_path):
+        repos, runner, service = await _init(tmp_path, monkeypatch)
+        try:
+            internal, _ = await library_service.upload(b"a", "内规.md", kind="internal")
+            attach, _ = await library_service.upload(b"b", "附件.md", kind="attach")
+            assert internal["kind"] == "internal" and attach["kind"] == "attach"
+            assert service.ingest_labels == [["internal-regulation"], ["attach-regulation"]]
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_strict_upload_raises_and_marks_the_row(tmp_path, monkeypatch):
+    with data_dir(tmp_path):
+        repos, runner, service = await _init(tmp_path, monkeypatch)
+        service.ingest_error = RagUnavailable("zeus down")
+        try:
+            with pytest.raises(RagUnavailable):
+                await library_service.upload(b"c", "内规.md", kind="internal", strict=True)
+            row = await repos.internal_docs.get_by_sha256(
+                library_service._sha256(b"c")
+            )
+            assert row["remote_state"] == "failed"
+            assert "zeus down" in row["remote_error"]
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_same_bytes_re_ingest_when_the_kind_changes(tmp_path, monkeypatch):
+    """A push of bytes already uploaded as a library doc must move corpora."""
+    with data_dir(tmp_path):
+        repos, runner, service = await _init(tmp_path, monkeypatch)
+        try:
+            first, created = await library_service.upload(b"same", "制度.md")
+            assert created and service.ingest_labels == [["internal-regulation"]]
+
+            attach, created = await library_service.upload(b"same", "附件.md", kind="attach")
+            assert created is False and attach["_id"] == first["_id"]
+            assert attach["kind"] == "attach"
+            assert service.ingest_labels == [
+                ["internal-regulation"], ["attach-regulation"],
+            ]
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_strict_upload_reingests_a_stale_row(tmp_path, monkeypatch):
+    """An existing non-indexed mirror row must not satisfy a push."""
+    with data_dir(tmp_path):
+        repos, runner, service = await _init(tmp_path, monkeypatch)
+        service.ingest_error = RagUnavailable("down")
+        try:
+            doc, _ = await library_service.upload(b"stale", "内规.md", kind="internal")
+            assert doc["remote_state"] == "pending"
+
+            service.ingest_error = None
+            again, created = await library_service.upload(
+                b"stale", "内规.md", kind="internal", strict=True,
+            )
+            assert created is False and again["remote_state"] == "indexed"
+            assert len(service.ingests) == 1
         finally:
             await runner.stop()
             services.reset()

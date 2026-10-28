@@ -163,6 +163,50 @@
 }
 ```
 
+**内规 / 附件(入库 + 拆条,无适用性判定)**
+
+推送 `docType=2`(内规)或 `3`(附件)时,文档先入库到检索语料,再在本地拆条;
+不跑适用性 / 内化 / 分析。因此 `applicable` / `applicableReason` 恒为空,
+`data[]` 只有拆条结果,条款级分析字段全为空串。
+
+```json
+{
+  "code": "1",
+  "msg": "成功",
+  "docId": "D002",
+  "docKeyword": "数据安全, 网络数据处理者",
+  "docType": "2",
+  "docAbstract": "……",
+  "taskId": "T002",
+  "applicable": null,
+  "applicableReason": "",
+  "data": [
+    {
+      "chapter": "第二章　一般规定",
+      "orderNum": "0",
+      "relationTerms": [],
+      "termContent": "……",
+      "termId": "D002-0",
+      "termKeyword": "数据安全",
+      "termName": "第十七条",
+      "internalize": "",
+      "internalizeReason": "",
+      "coverageStatus": "",
+      "analysis": "",
+      "differenceAnalysis": "",
+      "coreRequirements": "",
+      "remedySuggestion": ""
+    }
+  ]
+}
+```
+
+`code="0"` 时 `msg` 为失败原因;最常见的是入库失败(`内规入库失败: …`),此时
+`data[]` 仍返回完整的拆条结果。
+
+内规/附件的回调**可用 `PUSH_INTERNAL_CALLBACK=0` 关闭**,关闭后后端只能通过
+`GET /regulations/{docId}/result` 拉取(报文相同)。
+
 ## 4. 查询接口与错误
 
 - `GET /regulations/{docId}/result` 成功时**直接返回本规范的扁平报文,不再套统一信封**。

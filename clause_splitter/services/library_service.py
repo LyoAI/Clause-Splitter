@@ -5,6 +5,11 @@ The corpus lives in the external RAG service; this module keeps the local file
 chunk count, state). Uploads forward immediately; ``POST /library/index``
 re-runs ingestion for every row (idempotent upsert by doc id), which is also the
 recovery path when the service was down at upload time.
+
+Backend pushes of 内规/附件 (docType 2/3) reuse ``upload`` too, with
+``kind="internal"`` / ``"attach"`` and ``strict=True``: the mirror row and the
+corpus label must be right, so a failed ingest fails the push job instead of
+leaving a silent ``pending`` row.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from typing import Any
 
 from api.base_fastapi import ApiError
 
-from clause_splitter.config import ZEUS_LABEL_INTERNAL
+from clause_splitter.config import ZEUS_LABEL_ATTACH, ZEUS_LABEL_INTERNAL
 from clause_splitter.db import now
 from clause_splitter.rag import RagError, get_rag_service
 from clause_splitter.services.context import get_repos, get_runner
@@ -25,7 +30,19 @@ from clause_splitter.utils import get_logger
 
 logger = get_logger()
 
-LIBRARY_SUFFIXES = {".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".md", ".markdown"}
+#: ``.txt`` is here because push ``docContent`` payloads are materialized as
+#: text, and those pushes are ingested too.
+LIBRARY_SUFFIXES = {
+    ".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".md", ".markdown", ".txt",
+}
+
+#: Kind → corpus label. ``library`` is the ops upload; the other two come from
+#: backend pushes and only differ in which corpus they land in.
+KIND_LABELS = {
+    "library": ZEUS_LABEL_INTERNAL,
+    "internal": ZEUS_LABEL_INTERNAL,
+    "attach": ZEUS_LABEL_ATTACH,
+}
 
 
 def _sha256(data: bytes) -> str:
@@ -40,27 +57,40 @@ async def _sync_row(repos, service, row: dict) -> dict:
         await repos.internal_docs.update(row["_id"], {"remote_state": "missing_file"})
         return row
 
+    kind = row.get("kind") or "library"
+    label = KIND_LABELS.get(kind, ZEUS_LABEL_INTERNAL)
     info = await asyncio.to_thread(
         service.ingest, path, row.get("filename") or path.name,
         row.get("remote_doc_id") or row["_id"],
-        labels=[ZEUS_LABEL_INTERNAL],
+        labels=[label],
     )
     fields = {
         "remote_doc_id": info.doc_id or row.get("remote_doc_id") or row["_id"],
         "chunk_count": info.chunk_count,
         "remote_state": info.state,
+        "remote_error": "",
         "indexed_at": now(),
     }
     await repos.internal_docs.update(row["_id"], fields)
     logger.success(
-        "internal doc synced: %s (remote=%s, state=%s, chunks=%s)",
-        row.get("filename"), fields["remote_doc_id"], fields["remote_state"], fields["chunk_count"],
+        "internal doc synced: %s (kind=%s, label=%s, remote=%s, state=%s, chunks=%s)",
+        row.get("filename"), kind, label,
+        fields["remote_doc_id"], fields["remote_state"], fields["chunk_count"],
     )
     return {**row, **fields}
 
 
-async def upload(data: bytes, filename: str) -> tuple[dict, bool]:
-    """Store one internal document; sha256 dedupe returns the existing row."""
+async def upload(
+    data: bytes, filename: str, *, kind: str = "library", strict: bool = False,
+) -> tuple[dict, bool]:
+    """Store one internal document; sha256 dedupe returns the existing row.
+
+    ``kind`` picks the corpus label (``library`` / ``internal`` / ``attach``).
+    Re-uploading the same bytes under a different kind re-ingests them, so a
+    document can move corpora instead of silently keeping the old label.
+    ``strict=True`` (backend push) re-raises an ingest failure after recording
+    it on the row — a pushed 内规/附件 must not look indexed when it is not.
+    """
     repos = get_repos()
     suffix = Path(filename).suffix.lower()
     if suffix not in LIBRARY_SUFFIXES:
@@ -69,19 +99,39 @@ async def upload(data: bytes, filename: str) -> tuple[dict, bool]:
     sha = _sha256(data)
     existing = await repos.internal_docs.get_by_sha256(sha)
     if existing is not None:
+        moved = (existing.get("kind") or "library") != kind
         logger.info(
-            "internal doc dedupe hit: %s → %s", filename, existing.get("_id"),
+            "internal doc dedupe hit: %s → %s%s",
+            filename, existing.get("_id"),
+            f" (kind {existing.get('kind') or 'library'} → {kind})" if moved else "",
         )
-        return existing, False
+        if moved:
+            # Same bytes, different corpus: the row follows the new kind and is
+            # re-ingested (the old label stays on the remote copy until it is
+            # re-submitted, which the sync below does).
+            await repos.internal_docs.update(existing["_id"], {"kind": kind})
+            existing = await repos.internal_docs.get(existing["_id"]) or existing
+        # A push must not accept a stale mirror row as "already ingested".
+        stale = strict and (existing.get("remote_state") or "") != "indexed"
+        if not moved and not stale:
+            return existing, False
+        service = get_rag_service()
+        try:
+            return await _sync_row(repos, service, existing), False
+        except RagError as exc:
+            await _record_failure(repos, existing["_id"], exc, strict=strict, filename=filename)
+            return await repos.internal_docs.get(existing["_id"]), False
 
     doc = await repos.internal_docs.create({
         "filename": filename,
         "path": "",
         "sha256": sha,
         "size_bytes": len(data),
+        "kind": kind,
         "chunk_count": None,
         "remote_doc_id": "",
         "remote_state": "pending",
+        "remote_error": "",
         "indexed_at": None,
     })
     path = internal_docs_dir() / safe_filename(filename)
@@ -89,15 +139,28 @@ async def upload(data: bytes, filename: str) -> tuple[dict, bool]:
     path.write_bytes(data)
     await repos.internal_docs.update(doc["_id"], {"path": str(path)})
     doc["path"] = str(path)
-    logger.info("internal doc uploaded: %s (%d bytes) → %s", filename, len(data), doc["_id"])
+    logger.info(
+        "internal doc uploaded: %s (%d bytes, kind=%s) → %s",
+        filename, len(data), kind, doc["_id"],
+    )
 
     # Keep the upload even when the service is down — a later index build syncs.
+    # A backend push is stricter: the ingest is the point of the push.
     service = get_rag_service()
     try:
         doc = await _sync_row(repos, service, doc)
     except RagError as exc:
-        logger.warning("remote ingest deferred for %s: %s", filename, exc)
+        await _record_failure(repos, doc["_id"], exc, strict=strict, filename=filename)
     return await repos.internal_docs.get(doc["_id"]), True
+
+
+async def _record_failure(repos, doc_id: str, exc: RagError, *, strict: bool, filename: str) -> None:
+    """Log the failed ingest; a strict (push) caller also fails and marks the row."""
+    await repos.internal_docs.update(doc_id, {"remote_error": str(exc)})
+    if strict:
+        await repos.internal_docs.update(doc_id, {"remote_state": "failed"})
+        raise exc
+    logger.warning("remote ingest deferred for %s: %s", filename, exc)
 
 
 async def delete_doc(doc_id: str) -> None:

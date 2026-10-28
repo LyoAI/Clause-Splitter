@@ -16,6 +16,12 @@ import requests
 
 from api.base_fastapi import ApiError
 
+from clause_splitter.config import (
+    PUSH_DOCTYPE_ATTACH,
+    PUSH_DOCTYPE_EXTERNAL,
+    PUSH_DOCTYPE_INTERNAL,
+)
+from clause_splitter.pipeline.contexts import INTERNAL_KINDS, is_internal
 from clause_splitter.services import regulation_service
 from clause_splitter.services.context import get_repos
 from clause_splitter.services.dispatcher import dispatch_mode
@@ -31,9 +37,12 @@ DOWNLOAD_TIMEOUT_S = 60
 
 
 def _title_from_url(url: str) -> str:
-    """Pull the human title out of an IOBS ``attname`` query parameter."""
-    attname = (parse_qs(urlparse(url).query).get("attname") or [""])[0]
-    return unquote(attname).strip()
+    """Human title of a pushed document: IOBS ``attname``, else a local file stem."""
+    if urlparse(url).scheme in ("http", "https"):
+        attname = (parse_qs(urlparse(url).query).get("attname") or [""])[0]
+        return unquote(attname).strip()
+    # Local path (api_lab --path, ops re-runs): the filename is right there.
+    return Path(url).stem
 
 
 def _fetch(url: str) -> bytes:
@@ -100,6 +109,27 @@ def _read_opt_type(args: dict[str, Any]) -> Any:
     return None
 
 
+def _read_doc_type(args: dict[str, Any]) -> str:
+    """Read ``docType`` case-insensitively; "" when the backend omitted it."""
+    for key, value in args.items():
+        if key.lower() == "doctype":
+            return str(value).strip() if value is not None else ""
+    return ""
+
+
+#: docType → (kind, 中文名). Everything not listed is treated as external.
+_DOC_TYPE_KINDS = {
+    PUSH_DOCTYPE_EXTERNAL: ("external", "外规"),
+    PUSH_DOCTYPE_INTERNAL: ("internal", "内规"),
+    PUSH_DOCTYPE_ATTACH: ("attach", "附件"),
+}
+
+
+def classify_doc_type(doc_type: str) -> tuple[str, str]:
+    """(kind, label) — unknown / missing docType falls back to external."""
+    return _DOC_TYPE_KINDS.get(doc_type, ("external", f"外规(docType={doc_type or '缺失'})"))
+
+
 async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
     """One backend push → one regulation + one chain job (manual skips stage 1).
 
@@ -125,20 +155,51 @@ async def handle_push(body: dict[str, Any]) -> dict[str, Any]:
 
     opt_type = _read_opt_type(args)
     manual = opt_type == OPT_MANUAL
+    doc_type = _read_doc_type(args)
+    kind, kind_label = classify_doc_type(doc_type)
+    internal = kind in INTERNAL_KINDS
+    if internal:
+        logger.info(
+            "push %s《%s》: docType=%s → %s, optType=%s (%s), 入库+拆条分流"
+            "(跳过适用性/内化/分析)",
+            args.get("docId"), filename, doc_type, kind_label,
+            opt_type, "manual" if manual else "auto",
+        )
+    else:
+        logger.info(
+            "push %s《%s》: docType=%s → %s, optType=%s (%s), 外规四阶段"
+            "(适用性→拆条→内化→分析)",
+            args.get("docId"), filename, doc_type or "(缺失)", kind_label,
+            opt_type, "manual" if manual else "auto",
+        )
+        if not doc_type:
+            logger.warning(
+                "push %s《%s》 未带 docType —— 按外规处理；如后端约定有变请配置 "
+                "PUSH_DOCTYPE_EXTERNAL / INTERNAL / ATTACH",
+                args.get("docId"), filename,
+            )
     await repos.regulations.update(reg["_id"], {
         "push_doc_id": str(args.get("docId") or ""),
         "push_task_id": str(args.get("taskId") or ""),
         "push_uid": str(args.get("uid") or ""),
-        "push_doc_type": str(args.get("docType") or ""),
+        "push_doc_type": doc_type,
+        "push_doc_kind": kind,
         "push_opt_type": opt_type,
         "push_extra_params": extra_params,
     })
     mode = dispatch_mode(manual)
     job = await regulation_service.start_stage(
         reg["_id"], "chain",
-        payload={"skip_applicability": True} if manual else None,
+        # Manual means applicable-by-definition — meaningless for 内规/附件,
+        # whose applicability stage is skipped entirely.
+        payload={"skip_applicability": True} if manual and not internal else None,
         defer=mode == "scheduled",
         replace_scheduled=True,
+    )
+    logger.info(
+        "push %s 已入队: regulation=%s job=%s dispatch=%s%s",
+        args.get("docId"), reg["_id"], job["_id"], mode,
+        " (重复推送,复用已有法规)" if not created else "",
     )
     return {
         "regulation_id": reg["_id"],
@@ -189,6 +250,8 @@ def _message(code: str, reg: dict[str, Any], job: dict[str, Any] | None) -> str:
         return "处理中"
     if code == "0":
         return str((job or {}).get("error") or "处理失败")
+    if is_internal(reg):
+        return "成功"  # 内规/附件不判定适用性
     applicable = reg.get("applicability_applicable")
     if applicable is False:
         return "法规不适用于本公司,未执行拆条与内化分析"
@@ -298,6 +361,7 @@ async def _build_payload(
     doc_id = reg.get("push_doc_id") or reg["_id"]
     code = _code(job)
     abstract, keyword = await _profile_fields(reg, rows, code)
+    internal = is_internal(reg)
     return {
         "code": code,
         "msg": _message(code, reg, job),
@@ -306,8 +370,9 @@ async def _build_payload(
         "docType": reg.get("push_doc_type") or "",
         "docAbstract": abstract,
         "taskId": reg.get("push_task_id") or "",
-        "applicable": reg.get("applicability_applicable"),
-        "applicableReason": reg.get("applicability_reason") or "",
+        # 内规/附件没有适用性判定:字段保留(报文形状固定),值为空。
+        "applicable": None if internal else reg.get("applicability_applicable"),
+        "applicableReason": "" if internal else (reg.get("applicability_reason") or ""),
         "data": [_clause_item(row, doc_id) for row in rows],
     }
 
@@ -332,6 +397,8 @@ def register(runner) -> None:
 async def _on_job_done(job: dict[str, Any]) -> None:
     from config.config_app import CONFIG_APP
 
+    from clause_splitter import config as cs_config
+
     if job.get("job_type") != "chain" or not job.get("regulation_id"):
         return
     if get_esg_client() is None and not CONFIG_APP.backend_callback_url:
@@ -340,6 +407,12 @@ async def _on_job_done(job: dict[str, Any]) -> None:
     fresh = await repos.jobs.get(job["_id"])
     reg = await repos.regulations.get(job["regulation_id"])
     if reg is None or not reg.get("push_task_id"):
+        return
+    if is_internal(reg) and not cs_config.PUSH_INTERNAL_CALLBACK:
+        logger.info(
+            "内规/附件回调已关闭(PUSH_INTERNAL_CALLBACK=0), %s 的结果请后端主动拉取",
+            reg.get("push_doc_id") or reg["_id"],
+        )
         return
     payload = await _build_payload(reg, fresh or job)
     try:

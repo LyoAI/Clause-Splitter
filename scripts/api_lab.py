@@ -253,6 +253,8 @@ def cmd_lib_status(client: Client, args) -> None:
 
 def cmd_push(client: Client, args) -> None:
     payload = {"docId": args.doc_id, "optType": args.opt_type, "taskId": args.task_id}
+    if args.doc_type is not None:
+        payload["docType"] = args.doc_type
     if args.path:
         payload["doclobsUrl"] = str(Path(args.path).resolve())
     elif args.url:
@@ -263,6 +265,13 @@ def cmd_push(client: Client, args) -> None:
         raise SystemExit("push needs one of --path / --url / --content")
     data = client.data("POST", "/regulations/push", json=payload)
     print(f"\njob_id = {data.get('job_id')} dispatch={data.get('dispatch')} manual={data.get('manual')}")
+    # The push response is a fixed backend contract; read the routing back from
+    # the regulation instead of expecting extra fields in it.
+    if data.get("regulation_id"):
+        reg = client.data("GET", f"/regulations/{data['regulation_id']}", quiet=True)
+        kind = reg.get("doc_kind") or "external"
+        chain = "内规/附件(入库+拆条)" if kind in ("internal", "attach") else "外规(四阶段)"
+        print(f"docType={args.doc_type or '(缺失)'} → kind={kind} 链路={chain}")
     if args.wait_result:
         wait_result(client, args.doc_id, args.timeout, args.interval)
 
@@ -419,6 +428,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--url", help="http(s) URL, sent as doclobsUrl")
     p.add_argument("--content", help="plain text, sent as docContent")
     p.add_argument("--opt-type", type=int, default=0, choices=(0, 1))
+    p.add_argument("--doc-type", default=None,
+                   help="backend docType: 1=外规 2=内规 3=附件 (omit to test the missing case)")
     p.add_argument("--task-id", default="task-local")
     p.add_argument("--wait-result", action="store_true")
     p.add_argument("--timeout", type=float, default=1800)
