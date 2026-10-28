@@ -24,6 +24,7 @@ from clause_splitter.config import (
     ZEUS_MAX_K,
     ZEUS_RECALL_MIN_SCORE,
     ZEUS_RERANK_MIN_SCORE,
+    ZEUS_SEARCH_LABELS,
     ZEUS_UPLOAD_TIMEOUT_S,
 )
 
@@ -63,6 +64,8 @@ _PROVIDERS = {
         rerank_min_score=ZEUS_RERANK_MIN_SCORE,
         max_concurrency=ZEUS_MAX_CONCURRENCY,
         created_by=ZEUS_CREATED_BY,
+        # Empty (unset / all) = text_labels=[], the whole knowledge base.
+        search_labels=ZEUS_SEARCH_LABELS,
     ),
 }
 

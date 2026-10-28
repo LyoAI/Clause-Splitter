@@ -209,6 +209,39 @@ def test_ingest_uploads_then_submits(tmp_path):
     }]
 
 
+def test_ingest_writes_corpus_labels_before_name_label(tmp_path):
+    src = tmp_path / "数据安全管理办法.docx"
+    src.write_bytes(b"docx-bytes")
+
+    def handler(method, url, headers, kwargs):
+        if url.endswith("/text_data_process/app/file"):
+            return _upload_ok()
+        return _ok("remote-9")
+
+    session = _Session(handler)
+    _provider(session).ingest(
+        src, "数据安全管理办法.docx", "doc-7", labels=["internal-regulation"]
+    )
+    assert session.calls[1]["json"][0]["text_labels"] == [
+        "internal-regulation", "doc:数据安全管理办法",
+    ]
+
+
+def test_search_filters_on_configured_labels():
+    session = _Session(lambda *a: _ok([]))
+    _provider(session, search_labels=["internal-regulation", "attach-regulation"]).search("q", 3)
+    assert session.calls[0]["json"]["kb"][0]["filter"]["text_labels"] == [
+        "internal-regulation", "attach-regulation",
+    ]
+
+
+def test_search_without_labels_sends_an_empty_list():
+    """Unset / `all` → text_labels=[] → the whole knowledge base."""
+    session = _Session(lambda *a: _ok([]))
+    _provider(session).search("q", 3)
+    assert session.calls[0]["json"]["kb"][0]["filter"]["text_labels"] == []
+
+
 def test_ingest_generates_org_id_when_missing(tmp_path):
     src = tmp_path / "制度.pdf"
     src.write_bytes(b"pdf")

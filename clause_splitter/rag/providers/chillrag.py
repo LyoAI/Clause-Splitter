@@ -98,7 +98,10 @@ class ChillRagProvider(RagService):
             raise RagResponseError(f"ChillRAG 解析结果为空: {path.name}")
         return ParsedDoc(doc_id=doc_id, text=text, meta={"provider": self.name, "file_id": file_id})
 
-    def ingest(self, path: Path, name: str, doc_id: str = "") -> DocInfo:
+    def ingest(
+        self, path: Path, name: str, doc_id: str = "", *, labels: list[str] | None = None
+    ) -> DocInfo:
+        # Corpora are folders here, not labels — ``labels`` is not needed.
         path = Path(path)
         source_id, _ = self._upload(self.corpus, path, path.name)
         chunks = self._wait_ingest(source_id, path.name, doc_id=doc_id)

@@ -31,6 +31,7 @@ async def test_upload_forwards_to_the_service_and_mirrors(tmp_path, monkeypatch)
             assert doc["chunk_count"] == 1
             assert doc["indexed_at"]
             assert service.ingests[0][0] == "制度.md"
+            assert service.ingest_labels[0] == ["internal-regulation"]
             assert (tmp_path / "internal" / "docs" / "制度.md").exists()
 
             again, created2 = await library_service.upload(b"# rules", "制度.md")

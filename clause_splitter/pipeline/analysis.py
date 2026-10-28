@@ -78,8 +78,15 @@ async def run(ctx: StageContext) -> dict[str, Any]:
     ]
 
     # episodes — one per clause; 无需内化 rows skip inside run_compare.
+    tick = max(len(rows) // 10, 1)
+
     def hook(clauses_done: int, total: int) -> None:
         ctx.progress(0.9 * clauses_done / max(total, 1), f"条款比对 {clauses_done}/{total}")
+        if clauses_done == total or clauses_done % tick == 0:
+            logger.info(
+                "analysis progress: %d/%d 条款 (%.0f%%)",
+                clauses_done, total, 100.0 * clauses_done / max(total, 1),
+            )
 
     result: CompareResult = await run_compare(
         clauses, service, ctx.llm,

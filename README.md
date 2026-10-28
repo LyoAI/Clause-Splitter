@@ -112,7 +112,10 @@ knowledge base) and owns every wire detail. ChillRAG uses
   doc id, chunk count, state). `POST /library/index` re-ingests every stored
   file — also the recovery path after a service outage. Zeus indexes in the
   background and exposes no status endpoint, so the mirror stores an optimistic
-  `indexed` state and `chunk_count=0` (unknown).
+  `indexed` state and `chunk_count=0` (unknown). Zeus indexes only documents
+  that carry `text_labels`, so ingestion tags the corpus
+  (`internal-regulation`) plus `doc:<stem>`; search filters on the corpus
+  labels (`ZEUS_SEARCH_LABELS`).
 - The agent picks per turn from `knowledge_search`, `calculate` and — when the
   provider supports them — `get_context` / `get_materials` (Zeus has no
   per-document chunk or listing endpoints, so both are hidden). Grounding
@@ -142,7 +145,8 @@ Create a `.env` (gitignored) with service knobs only; LLM credentials live in
 `RAG_TIMEOUT_S`, `RAG_PARSE_TIMEOUT_S`, `ZEUS_APP_ID`, `ZEUS_APP_SECRET`,
 `ZEUS_INDEX`, `ZEUS_KB_LIMIT`, `ZEUS_MAX_K`, `ZEUS_RECALL_MIN_SCORE`,
 `ZEUS_RERANK_MIN_SCORE`, `ZEUS_MAX_CONCURRENCY`, `ZEUS_UPLOAD_TIMEOUT_S`,
-`PARSE_FALLBACK`, `LLM_PROVIDER`, `LLM_MODEL_NAME`.
+`ZEUS_CREATED_BY`, `ZEUS_LABEL_INTERNAL`, `ZEUS_LABEL_ATTACH`,
+`ZEUS_SEARCH_LABELS`, `PARSE_FALLBACK`, `LLM_PROVIDER`, `LLM_MODEL_NAME`.
 
 LLM selection: `LLM_MODEL_NAME` (default `qwen3.8-27b`) resolves
 `config/llm/<model>.yaml` and is sent as the request model. `LLM_PROVIDER` picks

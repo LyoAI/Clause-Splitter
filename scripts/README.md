@@ -240,6 +240,10 @@ push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖�
    ZEUS_APP_ID=...
    ZEUS_APP_SECRET=...
    ZEUS_INDEX=...
+   ZEUS_CREATED_BY=<UM 号>
+   ZEUS_LABEL_INTERNAL=internal-regulation
+   ZEUS_LABEL_ATTACH=attach-regulation
+   ZEUS_SEARCH_LABELS=            # 空/all = 整个知识库;internal-regulation,attach-regulation = 两类
    ```
 
    注意：`RAG_*` / `ZEUS_*` 只在进程启动时读取；改完必须重启，不能热更。
@@ -266,6 +270,10 @@ push 接口按文件魔数识别 `PDF / DOCX / DOC / UTF-8 文本`，不依赖�
    重复 `lib-index` 时 version 不变（语料未变），新增文件后 version 变化。
    `zeus` 例外：没有状态/统计接口，`remote_state` 是乐观值、`chunk_count=0`（未知）、
    `rag.version` 为空；提交后要等 Zeus 后台解析/分块/embedding 完成才能检索到。
+
+   `zeus` 的内规必须带 `internal-regulation` 标签才检索得到：入库自动打，
+   但如果库里有改造前入库的旧文档，需要重新 `lib-index` 一次。附件用
+   `attach-regulation`，检索默认两类都覆盖。
 
 4. 外规解析（确认真的走远端）：
 

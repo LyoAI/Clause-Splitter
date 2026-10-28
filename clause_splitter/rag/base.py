@@ -42,8 +42,14 @@ class RagService(ABC):
         """Parse one external document into plain text."""
 
     @abstractmethod
-    def ingest(self, path: Path, name: str, doc_id: str = "") -> DocInfo:
-        """Parse, chunk and index one internal document."""
+    def ingest(
+        self, path: Path, name: str, doc_id: str = "", *, labels: list[str] | None = None
+    ) -> DocInfo:
+        """Parse, chunk and index one internal document.
+
+        ``labels`` names the corpus the document belongs to; providers that
+        isolate corpora some other way (chillrag: one folder) ignore it.
+        """
 
     @abstractmethod
     def search(self, query: str, k: int) -> list[Hit]:

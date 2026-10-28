@@ -10,14 +10,16 @@ status. ``parse`` therefore reports unsupported (external regulations fall back
 to local extraction), the listing/count methods degrade to empty, and
 ``ingest`` returns as soon as the document is accepted.
 
-Search hits carry no file name, so ``ingest`` tags each document with a
-``doc:<stem>`` label in ``text_labels`` and ``search`` reads it back for
-provenance (review page and ESG callback).
+Labels are what separate corpora in one index: Zeus indexes only documents that
+carry ``text_labels``, and ``x-app-id`` / ``x-index`` scope the whole knowledge
+base. ``ingest`` therefore writes the caller's corpus label(s) plus a
+``doc:<stem>`` label, which ``search`` reads back as the document name (hits
+carry no file name). ``search`` filters on ``search_labels``; an empty list is
+sent as ``text_labels=[]``, which searches the whole knowledge base.
 """
 
 from __future__ import annotations
 
-import logging
 import threading
 import uuid
 from pathlib import Path
@@ -25,6 +27,8 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+
+from clause_splitter.utils import get_logger
 
 from ..base import RagService
 from ..errors import (
@@ -36,7 +40,7 @@ from ..errors import (
 )
 from ..types import Chunk, CorpusStats, DocInfo, Hit, ParsedDoc
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 _UPLOAD = "/api/v1/uns/text_data_process/app/file"
 _DOC = "/api/v1/uns/text_data_process/app/doc/{index}"
@@ -71,6 +75,7 @@ class ZeusProvider(RagService):
         rerank_min_score: float = 0.0,
         max_concurrency: int = 2,
         created_by: str = "clause_splitter",
+        search_labels: list[str] | None = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.app_id = app_id
@@ -84,11 +89,18 @@ class ZeusProvider(RagService):
         self.rerank_min_score = rerank_min_score
         self.max_concurrency = max(1, max_concurrency)
         self.created_by = created_by
+        # Empty = text_labels=[], i.e. no label filter (whole knowledge base).
+        self.search_labels = list(search_labels or [])
         self._session = requests.Session()
         self._sem = threading.BoundedSemaphore(self.max_concurrency)
         # In-process org_data_id -> name fallback (labels are the durable source).
         self._names: dict[str, str] = {}
         self._names_lock = threading.Lock()
+        logger.info(
+            "zeus provider ready: base=%s index=%s concurrency=%d search_labels=%s available=%s",
+            self.base_url or "-", self.index or "-", self.max_concurrency,
+            ",".join(self.search_labels) or "(none)", self.available,
+        )
 
     @property
     def available(self) -> bool:
@@ -100,7 +112,9 @@ class ZeusProvider(RagService):
         """Zeus parses on ingest but never returns the text — use local extraction."""
         raise RagResponseError("Zeus 不返回解析文本，外规解析走本地抽取")
 
-    def ingest(self, path: Path, name: str, doc_id: str = "") -> DocInfo:
+    def ingest(
+        self, path: Path, name: str, doc_id: str = "", *, labels: list[str] | None = None
+    ) -> DocInfo:
         """Upload the file, submit it for indexing, return without waiting.
 
         Zeus processes the document asynchronously (parse → chunk → embed →
@@ -118,15 +132,24 @@ class ZeusProvider(RagService):
             "file_type": file_type,
             "file_size": path.stat().st_size,
             "url": url,
-            # Search rows carry labels, not file names: this is the only
+            # Corpus label(s) first, then the name label: search rows carry
+            # labels rather than file names, so "doc:<stem>" is the only
             # portable way to show the document name on the review page.
-            "text_labels": [_LABEL_PREFIX + stem],
+            "text_labels": [*(labels or []), _LABEL_PREFIX + stem],
             "created_by": self.created_by,
         }]
+        logger.info(
+            "zeus ingest: 已上传 %s (%d bytes)，提交入库 org_data_id=%s",
+            name, payload[0]["file_size"], org_id,
+        )
         data = self._request(
             "POST", _DOC.format(index=quote(self.index, safe="")), json=payload
         )
         remote_id = str(data or org_id)
+        logger.success(
+            "zeus ingest: %s 已受理 (org_data_id=%s)，后台解析/分块/索引中",
+            name, remote_id,
+        )
         with self._names_lock:
             self._names[remote_id] = stem
             self._names.setdefault(org_id, stem)
@@ -142,7 +165,7 @@ class ZeusProvider(RagService):
                 "alias": self.index,
                 "filter": {
                     "data_type": ["doc"],
-                    "text_labels": [],
+                    "text_labels": list(self.search_labels),
                     "min_score": self.recall_min_score,
                 },
                 "limit": max(k, self.kb_limit),
@@ -162,8 +185,9 @@ class ZeusProvider(RagService):
                 "Zeus 检索未配置(404) —— 请联系 RAG 团队为该应用开通检索"
             ) from exc
 
+        raw = rows if isinstance(rows, list) else []
         best: dict[str, tuple[float | None, dict[str, Any]]] = {}
-        for row in rows if isinstance(rows, list) else []:
+        for row in raw:
             if not isinstance(row, dict):
                 continue
             kind = row.get("data_type")
@@ -197,6 +221,14 @@ class ZeusProvider(RagService):
                     "text_labels": _labels(row.get("text_labels")),
                 },
             ))
+        brief = " ".join(query.split())[:40]
+        if hits:
+            logger.info("zeus search: %d 条 (原始 %d) —— %s", len(hits), len(raw), brief)
+        else:
+            logger.warning(
+                "zeus search: 0 条 —— %s（文档可能仍在后台解析/索引，或命中被 min_score / data_type 过滤）",
+                brief,
+            )
         return hits
 
     def fetch_chunks(self, doc_id: str) -> list[Chunk]:
@@ -219,6 +251,7 @@ class ZeusProvider(RagService):
             )
         except RagNotFound:
             return True  # already gone
+        logger.info("zeus delete: %s 已删除", doc_id)
         return True
 
     # ── transport ───────────────────────────────────────────────────────
@@ -268,6 +301,7 @@ class ZeusProvider(RagService):
             raise RagUnavailable(f"Zeus 不可达({url}): {exc}") from exc
         finally:
             self._sem.release()
+        logger.debug("zeus %s %s → %s", method, path, resp.status_code)
         _raise_status(resp, method, path)
         return _unwrap(resp)
 

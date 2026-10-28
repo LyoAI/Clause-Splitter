@@ -16,6 +16,7 @@ from typing import Any
 
 from api.base_fastapi import ApiError
 
+from clause_splitter.config import ZEUS_LABEL_INTERNAL
 from clause_splitter.db import now
 from clause_splitter.rag import RagError, get_rag_service
 from clause_splitter.services.context import get_repos, get_runner
@@ -40,7 +41,9 @@ async def _sync_row(repos, service, row: dict) -> dict:
         return row
 
     info = await asyncio.to_thread(
-        service.ingest, path, row.get("filename") or path.name, row.get("remote_doc_id") or row["_id"]
+        service.ingest, path, row.get("filename") or path.name,
+        row.get("remote_doc_id") or row["_id"],
+        labels=[ZEUS_LABEL_INTERNAL],
     )
     fields = {
         "remote_doc_id": info.doc_id or row.get("remote_doc_id") or row["_id"],
@@ -49,6 +52,10 @@ async def _sync_row(repos, service, row: dict) -> dict:
         "indexed_at": now(),
     }
     await repos.internal_docs.update(row["_id"], fields)
+    logger.success(
+        "internal doc synced: %s (remote=%s, state=%s, chunks=%s)",
+        row.get("filename"), fields["remote_doc_id"], fields["remote_state"], fields["chunk_count"],
+    )
     return {**row, **fields}
 
 
@@ -62,6 +69,9 @@ async def upload(data: bytes, filename: str) -> tuple[dict, bool]:
     sha = _sha256(data)
     existing = await repos.internal_docs.get_by_sha256(sha)
     if existing is not None:
+        logger.info(
+            "internal doc dedupe hit: %s → %s", filename, existing.get("_id"),
+        )
         return existing, False
 
     doc = await repos.internal_docs.create({
@@ -79,6 +89,7 @@ async def upload(data: bytes, filename: str) -> tuple[dict, bool]:
     path.write_bytes(data)
     await repos.internal_docs.update(doc["_id"], {"path": str(path)})
     doc["path"] = str(path)
+    logger.info("internal doc uploaded: %s (%d bytes) → %s", filename, len(data), doc["_id"])
 
     # Keep the upload even when the service is down — a later index build syncs.
     service = get_rag_service()
@@ -131,6 +142,7 @@ def register_index_job(runner) -> None:
         if not service.available:
             raise ApiError(409, "RAG 服务未配置（RAG_API_BASE / provider 凭据），无法入库")
 
+        logger.info("index build start: %d doc(s) → %s", len(rows), service.name)
         failed: list[str] = []
         for i, row in enumerate(rows):
             try:
@@ -145,9 +157,9 @@ def register_index_job(runner) -> None:
             raise ApiError(
                 502, f"{len(failed)} / {len(rows)} 份文档入库失败: {', '.join(failed[:5])}"
             )
-        logger.info(
+        logger.success(
             "index build done: %d docs / %d chunks (version=%s)",
-            stats.doc_count, stats.chunk_count, stats.version,
+            stats.doc_count, stats.chunk_count, stats.version or "-",
         )
         return {
             "doc_count": stats.doc_count,

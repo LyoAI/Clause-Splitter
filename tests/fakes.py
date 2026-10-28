@@ -208,6 +208,7 @@ class FakeRagService:
         self.parse_error: Exception | None = RagUnavailable("fake remote parse disabled")
         self.ingest_error: Exception | None = None
         self.ingests: list[tuple[str, str, str]] = []
+        self.ingest_labels: list[list[str]] = []
         self.deletes: list[str] = []
         self.chunks: list[Chunk] = []
         for doc_id, clauses in LIBRARY_DOCS:
@@ -228,11 +229,14 @@ class FakeRagService:
 
     # ── corpus ────────────────────────────────────────────────────────
 
-    def ingest(self, path: Path, name: str, doc_id: str = "") -> DocInfo:
+    def ingest(
+        self, path: Path, name: str, doc_id: str = "", *, labels: list[str] | None = None
+    ) -> DocInfo:
         assert path.exists(), path
         if self.ingest_error is not None:
             raise self.ingest_error
         self.ingests.append((name, doc_id, str(path)))
+        self.ingest_labels.append(list(labels or []))
         doc_id = doc_id or path.stem
         return DocInfo(doc_id=doc_id, name=name, chunk_count=1, state="indexed")
 

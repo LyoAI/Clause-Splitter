@@ -10,6 +10,7 @@ single-stage jobs. Startup recovery marks orphaned queued/running jobs failed.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Awaitable, Callable
 
 from clause_splitter.utils import get_logger
@@ -176,6 +177,11 @@ class JobRunner:
             rag=get_rag_service(),
         )
 
+        logger.info(
+            "job %s (%s) start —— %s《%s》",
+            job["_id"], job_type, ctx.reg_id or "-", regulation.get("title") or "-",
+        )
+        started = time.monotonic()
         try:
             # An analysis-only job has nothing to do without retrieval; chains
             # check after stage 1 (a not-applicable regulation still completes).
@@ -185,7 +191,10 @@ class JobRunner:
             # (including a standalone analysis run) updates its stage here.
             await self._execute(job, handler, ctx, single_stage=job_type != "chain")
         except Exception as e:  # noqa: BLE001 — job-level failure
-            logger.error("job %s (%s) failed: %s", job["_id"], job_type, e)
+            logger.error(
+                "job %s (%s) failed (%.1fs): %s",
+                job["_id"], job_type, time.monotonic() - started, e,
+            )
             await self.repos.jobs.update(
                 job["_id"], {"state": "failed", "error": str(e) or type(e).__name__}
             )
@@ -200,6 +209,7 @@ class JobRunner:
         *,
         single_stage: bool,
     ) -> None:
+        started = time.monotonic()
         await self.repos.jobs.update(job["_id"], {"state": "running", "step": "started"})
         last = {"progress": -1.0, "step": ""}
         progress_task: asyncio.Task | None = None
@@ -236,4 +246,6 @@ class JobRunner:
         if single_stage:
             await self.repos.regulations.update(ctx.reg_id, {stage_field: "done", **out})
         await self.repos.jobs.update(job["_id"], {"state": "done", "progress": 1.0, "step": "done"})
-        logger.info("job %s (%s) done", job["_id"], job["job_type"])
+        logger.success(
+            "job %s (%s) done in %.1fs", job["_id"], job["job_type"], time.monotonic() - started,
+        )

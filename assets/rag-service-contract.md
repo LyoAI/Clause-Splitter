@@ -114,10 +114,17 @@ RAG_PARSE_TIMEOUT_S=1800          # 上传 + 入库轮询总时限
 
 注意:
 
-- **制度名来自标签**:检索结果不带文件名。`ingest` 给每份文档打
-  `text_labels=["doc:<文件名 stem>"]`,`search` 从标签还原 `doc_id`(回退进程内
-  `org_data_id → 文件名` 映射,再回退 `org_data_id`)。语料若由其他系统入库(无 `doc:`
-  标签),复核页与 ESG 回调中的内规制度名会退化为 `org_data_id`。
+- **语料靠标签隔离**:`x-app-id` / `x-index` 圈定的是整个知识库,库内可能同时有内规和
+  附件,只有 `text_labels` 能区分。实测**提交时不打标签的文档检索不到**,所以标签是必需项。
+  - 入库(内规):`text_labels=["internal-regulation", "doc:<文件名 stem>"]`
+  - 入库(附件):`text_labels=["attach-regulation", "doc:<文件名 stem>"]`
+  - 检索:默认 `filter.text_labels=["internal-regulation", "attach-regulation"]`;
+    `ZEUS_SEARCH_LABELS` 不写或写 `all` → `text_labels=[]`(不过滤,整个知识库);
+    写 `x,y` 时只在这些标签下检索。
+  - 多值 filter 是 OR 还是 AND 尚未确认,联调时需验证。
+- **制度名来自标签**:检索结果不带文件名,`search` 从 `doc:` 标签还原 `doc_id`(回退
+  进程内 `org_data_id → 文件名` 映射,再回退 `org_data_id`)。语料若由其他系统入库
+  (无 `doc:` 标签),复核页与 ESG 回调中的内规制度名会退化为 `org_data_id`。
 - **入库异步**:提交成功只代表受理,后台解析/分块/embedding 完成后才可检索;Zeus 没有
   状态接口,`state` / `chunk_count` 只是乐观值。刚入库就检索可能为空,需等 Zeus 处理完。
 - **检索 404 = 能力未开通**:文档说明搜索端点 404 表示该应用未配置检索,provider 转成
@@ -140,7 +147,10 @@ ZEUS_RECALL_MIN_SCORE=0.1     # 召回过滤阈值
 ZEUS_RERANK_MIN_SCORE=0.0     # 0 = 不发送顶层 min_score
 ZEUS_MAX_CONCURRENCY=2        # 网关并发上限
 ZEUS_UPLOAD_TIMEOUT_S=300     # 上传单次超时
-ZEUS_CREATED_BY=clause_splitter
+ZEUS_CREATED_BY=<UM 号>       # 提交时的上传人
+ZEUS_LABEL_INTERNAL=internal-regulation
+ZEUS_LABEL_ATTACH=attach-regulation
+ZEUS_SEARCH_LABELS=           # 空/all = text_labels=[](整个知识库);x,y = 指定标签
 ```
 
 ## 4. 接入新内网 provider

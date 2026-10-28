@@ -83,7 +83,24 @@ ZEUS_RERANK_MIN_SCORE = float(os.getenv("ZEUS_RERANK_MIN_SCORE", "0.0"))
 ZEUS_MAX_CONCURRENCY = int(os.getenv("ZEUS_MAX_CONCURRENCY", "2"))
 # Upload is one long request; the normal RAG timeout is too short for big files.
 ZEUS_UPLOAD_TIMEOUT_S = float(os.getenv("ZEUS_UPLOAD_TIMEOUT_S", "300"))
-ZEUS_CREATED_BY = os.getenv("ZEUS_CREATED_BY", "clause_splitter")
+# ── Zeus corpus labels ─────────────────────────────────────────────────
+# Zeus indexes only documents that carry text_labels; x-app-id / x-index scope
+# the whole knowledge base, so labels are what separate the corpora. Every
+# ingested document gets a corpus label plus "doc:<stem>", which search reads
+# back as the document name (Zeus hits carry no file name).
+ZEUS_LABEL_INTERNAL = os.getenv("ZEUS_LABEL_INTERNAL", "internal-regulation")
+ZEUS_LABEL_ATTACH = os.getenv("ZEUS_LABEL_ATTACH", "attach-regulation")
+# Labels sent in the search filter (comma-separated).
+#   unset / all → empty list → text_labels=[] → the whole knowledge base
+#   x,y         → only documents carrying one of these labels
+_ZEUS_SEARCH_LABELS_RAW = os.getenv("ZEUS_SEARCH_LABELS", "").strip()
+ZEUS_SEARCH_LABELS: list[str] = (
+    []
+    if _ZEUS_SEARCH_LABELS_RAW.lower() in ("", "all")
+    else [s.strip() for s in _ZEUS_SEARCH_LABELS_RAW.split(",") if s.strip()]
+)
+# Uploader recorded on ingest submissions (UM id).
+ZEUS_CREATED_BY = os.getenv("ZEUS_CREATED_BY", "LIUKAINAN960")
 
 # ── Retrieval / agent budget ───────────────────────────────────────────
 # Top-k internal clauses per search call.
