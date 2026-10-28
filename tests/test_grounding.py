@@ -327,3 +327,43 @@ def test_ground_episode_tolerates_non_str_diff_analysis():
     )
     assert r2.clause_type == ""
     assert r2.internalization_decision == ""
+
+
+# ── retrieval precheck (a 5xx must not become an all-missing report) ──
+
+import pytest  # noqa: E402
+
+from clause_splitter.compare.aggregate import run_compare  # noqa: E402
+from clause_splitter.rag import RagAuthError, RagUnavailable  # noqa: E402
+from tests.fakes import FakeRagService, PipelineFakeLLM  # noqa: E402
+
+
+class _SearchFails(FakeRagService):
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self.exc = exc
+        self.calls = 0
+
+    def search(self, query: str, k: int):
+        self.calls += 1
+        raise self.exc
+
+
+async def test_unavailable_retrieval_aborts_the_analysis_stage():
+    """One probe failure, no episode: retrieval-down ≠ "every clause missing"."""
+    service = _SearchFails(RagUnavailable("Zeus 暂不可用(500)"))
+    clauses = [ExternalClause(
+        document_name="外规", clause_number="第一条", full_text="应当开展数据安全风险评估。",
+    )]
+    with pytest.raises(RagUnavailable):
+        await run_compare(clauses, service, PipelineFakeLLM())
+    assert service.calls == 1
+
+
+async def test_auth_failure_aborts_the_analysis_stage():
+    service = _SearchFails(RagAuthError("bad secret", status_code=401))
+    clauses = [ExternalClause(
+        document_name="外规", clause_number="第一条", full_text="应当开展数据安全风险评估。",
+    )]
+    with pytest.raises(RagAuthError):
+        await run_compare(clauses, service, PipelineFakeLLM())

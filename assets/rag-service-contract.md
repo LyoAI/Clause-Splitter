@@ -51,10 +51,14 @@ clause_splitter/rag/providers/<x>.py ← wire 细节(登录、字段、端点映
 
 错误语义(`clause_splitter/rag/errors.py`):
 
+分析阶段开始前会先做一次检索预检(`compare.aggregate._probe_retrieval`)。单条
+episode 内的 5xx 会降级成"需人工复核",但检索整体不可用时会在跑任何 episode 前
+直接失败 —— 否则整篇会变成"全部缺失"的假报告。
+
 | 情况 | 异常 | 业务处理 |
 |---|---|---|
 | 未配置地址 | `RagNotConfigured` | 分析失败(可读提示);拆条走本地回退 |
-| 连接失败 / 超时 / 5xx / 409 | `RagUnavailable` | 拆条回退;检索候选为空 |
+| 连接失败 / 超时 / 5xx / 409 | `RagUnavailable` | 拆条回退;单条候选为空,但分析阶段的检索预检会让整阶段失败 |
 | 鉴权失败 | `RagAuthError` | 任务失败,提示检查凭据 |
 | 资源不存在 | `RagNotFound` | 删除视为已完成;其他场景失败 |
 | 其他 4xx / 响应不符 | `RagResponseError` | 任务失败,记录响应摘要 |

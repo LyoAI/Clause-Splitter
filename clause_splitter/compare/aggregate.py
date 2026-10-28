@@ -17,6 +17,7 @@ from clause_splitter.rag import (
     RagError,
     RagNotConfigured,
     RagService,
+    RagUnavailable,
 )
 from clause_splitter.utils import get_logger, segment_label
 
@@ -92,6 +93,29 @@ def _corpus_view(service: RagService) -> tuple[list[str], int]:
     return docs, chunks
 
 
+async def _probe_retrieval(service: RagService) -> None:
+    """Fail the stage when retrieval is unreachable, before any episode runs.
+
+    A transient 5xx deep inside an episode is deliberately degraded to a
+    per-clause "需人工复核"; that is fine for one clause and wrong for the whole
+    run. This probe distinguishes "retrieval is down" from "nothing matched":
+    only availability errors abort, an empty result or a slow single query does
+    not.
+    """
+    try:
+        await asyncio.to_thread(service.search, "数据安全", 1)
+    except RagUnavailable as exc:
+        raise RagUnavailable(
+            f"内规检索不可用，分析阶段中止（{exc}）—— 请检查 RAG 服务状态后重跑"
+        ) from exc
+    except RagError as exc:
+        # Bad credentials, missing configuration or a contract mismatch: also a
+        # deployment problem, never "no hits".
+        logger.error("retrieval probe failed: %s", exc)
+        raise
+    logger.info("retrieval probe ok: %s", service.name)
+
+
 async def run_compare(
     external_clauses: list[ExternalClause],
     service: RagService,
@@ -118,6 +142,11 @@ async def run_compare(
             total_external_obligations=0,
             total_internal_obligations=internal_chunks,
         )
+
+    # Probe retrieval once before spending LLM calls per clause. A 5xx here
+    # would otherwise turn into "需人工复核" on every clause and still report a
+    # successful stage — a fake all-missing report.
+    await _probe_retrieval(service)
 
     to_judge = [c for c in external_clauses if not (c.internalization_decision or "").strip()]
     pre_sem = asyncio.Semaphore(concurrency)

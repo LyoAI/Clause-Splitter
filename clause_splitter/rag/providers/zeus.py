@@ -33,6 +33,7 @@ from clause_splitter.utils import get_logger
 from ..base import RagService
 from ..errors import (
     RagAuthError,
+    RagError,
     RagNotConfigured,
     RagNotFound,
     RagResponseError,
@@ -126,6 +127,7 @@ class ZeusProvider(RagService):
         stem = Path(name).stem or path.stem
         org_id = doc_id or uuid.uuid4().hex
         file_type = (Path(name).suffix or path.suffix).lstrip(".").lower()
+        labels = [*(labels or []), _LABEL_PREFIX + stem]
         payload = [{
             "org_data_id": org_id,
             "file_name": name,
@@ -135,20 +137,21 @@ class ZeusProvider(RagService):
             # Corpus label(s) first, then the name label: search rows carry
             # labels rather than file names, so "doc:<stem>" is the only
             # portable way to show the document name on the review page.
-            "text_labels": [*(labels or []), _LABEL_PREFIX + stem],
+            "text_labels": labels,
             "created_by": self.created_by,
         }]
         logger.info(
-            "zeus ingest: 已上传 %s (%d bytes)，提交入库 org_data_id=%s",
-            name, payload[0]["file_size"], org_id,
+            "zeus ingest: 提交入库 %s (org_data_id=%s, %d bytes, labels=%s)",
+            name, org_id, payload[0]["file_size"], ",".join(labels),
         )
         data = self._request(
             "POST", _DOC.format(index=quote(self.index, safe="")), json=payload
         )
         remote_id = str(data or org_id)
         logger.success(
-            "zeus ingest: %s 已受理 (org_data_id=%s)，后台解析/分块/索引中",
-            name, remote_id,
+            "zeus ingest: %s 入库已受理 (org_data_id=%s, labels=%s)，"
+            "Zeus 后台解析/分块/embedding 中，完成后才可检索",
+            name, remote_id, ",".join(labels),
         )
         with self._names_lock:
             self._names[remote_id] = stem
@@ -226,8 +229,9 @@ class ZeusProvider(RagService):
             logger.info("zeus search: %d 条 (原始 %d) —— %s", len(hits), len(raw), brief)
         else:
             logger.warning(
-                "zeus search: 0 条 —— %s（文档可能仍在后台解析/索引，或命中被 min_score / data_type 过滤）",
-                brief,
+                "zeus search: 0 条 —— %s（labels=%s；文档可能仍在后台解析/索引，"
+                "或命中被 min_score=%s / data_type 过滤）",
+                brief, ",".join(self.search_labels) or "(全部)", self.recall_min_score,
             )
         return hits
 
@@ -257,15 +261,22 @@ class ZeusProvider(RagService):
     # ── transport ───────────────────────────────────────────────────────
 
     def _upload(self, path: Path) -> str:
-        with path.open("rb") as fh:
-            data = self._request(
-                "POST",
-                _UPLOAD,
-                files={"file": (path.name, fh, "application/octet-stream")},
-                timeout=self.upload_timeout_s,
-            )
+        logger.info("zeus upload: 上传文件中 %s (%.1f KB)", path.name, path.stat().st_size / 1024)
+        try:
+            with path.open("rb") as fh:
+                data = self._request(
+                    "POST",
+                    _UPLOAD,
+                    files={"file": (path.name, fh, "application/octet-stream")},
+                    timeout=self.upload_timeout_s,
+                )
+        except RagError as exc:
+            logger.error("zeus upload: 上传失败 %s —— %s", path.name, exc)
+            raise
         if not isinstance(data, str) or not data.strip():
+            logger.error("zeus upload: %s 上传成功但未返回文件 URL", path.name)
             raise RagResponseError(f"Zeus 上传未返回文件 URL: {path.name}")
+        logger.info("zeus upload: %s 上传成功 → %s", path.name, data.strip())
         return data.strip()
 
     def _request(
@@ -282,11 +293,12 @@ class ZeusProvider(RagService):
                 "ZEUS_APP_SECRET / ZEUS_INDEX"
             )
         url = self.base_url + path
+        request_id = str(uuid.uuid4())
         headers = {
             "x-app-id": self.app_id,
             "x-app-secret": self.app_secret,
             "x-index": self.index,
-            "x-request-id": str(uuid.uuid4()),
+            "x-request-id": request_id,
         }
         if not self._sem.acquire(timeout=_QUEUE_TIMEOUT_S):
             raise RagUnavailable(
@@ -298,11 +310,20 @@ class ZeusProvider(RagService):
                 timeout=timeout or self.timeout_s, **kwargs,
             )
         except requests.RequestException as exc:
+            logger.error("zeus %s %s 请求失败 (request-id=%s): %s",
+                         method, path, request_id, exc)
             raise RagUnavailable(f"Zeus 不可达({url}): {exc}") from exc
         finally:
             self._sem.release()
         logger.debug("zeus %s %s → %s", method, path, resp.status_code)
-        _raise_status(resp, method, path)
+        try:
+            _raise_status(resp, method, path, request_id=request_id)
+        except RagError as exc:
+            # Logged here so the failure is visible even when a per-clause
+            # caller degrades it into "需人工复核".
+            logger.error("zeus %s %s 失败 (request-id=%s): %s",
+                         method, path, request_id, exc)
+            raise
         return _unwrap(resp)
 
     def _doc_name(self, row: dict[str, Any]) -> str:
@@ -321,17 +342,24 @@ class ZeusProvider(RagService):
 # ── response mapping ────────────────────────────────────────────────────
 
 
-def _raise_status(resp: requests.Response, method: str, path: str) -> None:
+def _raise_status(
+    resp: requests.Response, method: str, path: str, *, request_id: str = ""
+) -> None:
     code = resp.status_code
+    rid = f" request-id={request_id}" if request_id else ""
     if code in (401, 403):
         raise RagAuthError(
-            f"Zeus 鉴权失败({code}): 检查 ZEUS_APP_ID / ZEUS_APP_SECRET",
+            f"Zeus 鉴权失败({code}){rid}: 检查 ZEUS_APP_ID / ZEUS_APP_SECRET",
             status_code=code,
         )
     if code == 404:
-        raise RagNotFound(f"Zeus 未找到: {method} {path}", status_code=404)
+        raise RagNotFound(f"Zeus 未找到({code}){rid}: {method} {path}", status_code=404)
     if code in (408, 409, 429) or code >= 500:
-        raise RagUnavailable(f"Zeus 暂不可用({code}): {method} {path}")
+        detail = resp.text[:300].replace("\n", " ").strip()
+        raise RagUnavailable(
+            f"Zeus 暂不可用({code}){rid}: {method} {path}"
+            + (f" — {detail}" if detail else "")
+        )
     if code >= 400:
         detail = resp.text[:200].replace("\n", " ")
         raise RagResponseError(
