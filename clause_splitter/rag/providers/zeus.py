@@ -129,7 +129,7 @@ class ZeusProvider(RagService):
         org_id = doc_id or uuid.uuid4().hex
         file_type = (Path(name).suffix or path.suffix).lstrip(".").lower()
         labels = [*(labels or []), _LABEL_PREFIX + stem]
-        payload = [{
+        payload = {
             "org_data_id": org_id,
             "file_name": name,
             "file_type": file_type,
@@ -140,11 +140,13 @@ class ZeusProvider(RagService):
             # portable way to show the document name on the review page.
             "text_labels": labels,
             "created_by": self.created_by,
-        }]
+        }
         logger.info(
             "zeus ingest: 提交入库 %s (org_data_id=%s, %d bytes, labels=%s)",
-            name, org_id, payload[0]["file_size"], ",".join(labels),
+            name, org_id, payload["file_size"], ",".join(labels),
         )
+        # A single object, not a one-element array: Zeus answers 500
+        # `readObjectStart: expect { or n, but found [` otherwise.
         data = self._request(
             "POST", _DOC.format(index=quote(self.index, safe="")), json=payload
         )

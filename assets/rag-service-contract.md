@@ -109,7 +109,7 @@ RAG_PARSE_TIMEOUT_S=1800          # 上传 + 入库轮询总时限
 | RagService | Zeus |
 |---|---|
 | `available` | `RAG_API_BASE` 与 `ZEUS_APP_ID` / `ZEUS_APP_SECRET` / `ZEUS_INDEX` 全部非空 |
-| `ingest` | ① `POST /api/v1/uns/text_data_process/app/file`(multipart 字段 `file`)→ 文件 URL;② `POST /api/v1/uns/text_data_process/app/doc/{x-index}`,body 为单元素列表:`org_data_id` / `file_name` / `file_type` / `file_size` / `url` / `text_labels` / `created_by`。提交成功即受理,返回 `DocInfo(doc_id=org_data_id, chunk_count=0, state="indexed")` |
+| `ingest` | ① `POST /api/v1/uns/text_data_process/app/file`(multipart 字段 `file`)→ 文件 URL;② `POST /api/v1/uns/text_data_process/app/doc/{x-index}`,body 为**单个对象**(不是数组,发数组会 500 `readObjectStart: expect { or n, but found [`):`org_data_id` / `file_name` / `file_type` / `file_size` / `url` / `text_labels` / `created_by`。提交成功即受理,返回 `DocInfo(doc_id=org_data_id, chunk_count=0, state="indexed")` |
 | `search` | `POST /api/v1/uns/zeus-search/{x-app-id}/server/standard_search`;`kb[0].alias = x-index`,`filter.data_type=["doc"]`,`kb[0].limit = max(k, ZEUS_KB_LIMIT)` 为召回条数,顶层 `limit = min(k, ZEUS_MAX_K)` 为最终条数;行映射 `id → chunk_id`、`text`(空则 `data`)`→ text`、`score`(空则 `recall_score`)`→ score` |
 | `parse` | 无文本返回 → `supports_parse=False`,外规拆分走本地抽取 |
 | `fetch_chunks` | 无按文档列切片端点 → `supports_document_chunks=False`,`get_context` 工具不提供 |

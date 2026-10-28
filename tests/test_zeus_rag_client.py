@@ -198,7 +198,7 @@ def test_ingest_uploads_then_submits(tmp_path):
     assert upload["method"] == "POST"
     assert upload["files"]["file"][0] == "数据安全管理办法.docx"
     assert upload["timeout"] == 5
-    assert submit["json"] == [{
+    assert submit["json"] == {
         "org_data_id": "doc-7",
         "file_name": "数据安全管理办法.docx",
         "file_type": "docx",
@@ -206,7 +206,27 @@ def test_ingest_uploads_then_submits(tmp_path):
         "url": "http://iobs/file.docx",
         "text_labels": ["doc:数据安全管理办法"],
         "created_by": "clause_splitter",
-    }]
+    }
+
+
+def test_ingest_submits_a_single_object_not_an_array(tmp_path):
+    """The submit body is one object — an array is rejected with HTTP 500.
+
+    Zeus (fastjson) answers `readObjectStart: expect { or n, but found [` when
+    the body starts with `[`, even though the doc shows a one-element array.
+    """
+    src = tmp_path / "制度.docx"
+    src.write_bytes(b"docx-bytes")
+
+    def handler(method, url, headers, kwargs):
+        if url.endswith("/text_data_process/app/file"):
+            return _upload_ok()
+        return _ok("remote-9")
+
+    session = _Session(handler)
+    _provider(session).ingest(src, "制度.docx", "doc-1")
+
+    assert isinstance(session.calls[1]["json"], dict)
 
 
 @pytest.mark.parametrize("filename,expected", [
@@ -265,7 +285,7 @@ def test_ingest_writes_corpus_labels_before_name_label(tmp_path):
     _provider(session).ingest(
         src, "数据安全管理办法.docx", "doc-7", labels=["internal-regulation"]
     )
-    assert session.calls[1]["json"][0]["text_labels"] == [
+    assert session.calls[1]["json"]["text_labels"] == [
         "internal-regulation", "doc:数据安全管理办法",
     ]
 
@@ -298,7 +318,7 @@ def test_ingest_generates_org_id_when_missing(tmp_path):
     info = _provider(session).ingest(src, "制度.pdf")
 
     uuid.UUID(info.doc_id)
-    assert session.calls[1]["json"][0]["org_data_id"] == info.doc_id
+    assert session.calls[1]["json"]["org_data_id"] == info.doc_id
 
 
 def test_ingest_name_falls_back_to_in_process_map(tmp_path):
