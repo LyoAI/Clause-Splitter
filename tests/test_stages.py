@@ -123,6 +123,25 @@ async def test_internalize_updates_rows(tmp_path):
     by_num = {r["clause_number"]: r for r in rows}
     assert by_num["第一条"]["internalization_decision"] == "需要内化"
     assert by_num["第五条"]["internalization_decision"] == "无需内化"
+    assert by_num["第一条"]["require_type"] == "义务性要求"
+    assert by_num["第五条"]["require_type"] == "鼓励性要求"
+
+
+async def test_internalize_require_type_off_contract_degrades_empty(tmp_path):
+    """LLM 输出非法 requireType → 空串落库(fail-open),不抛异常。"""
+    from clause_splitter.compare.internalize import judge_internalization
+    from clause_splitter.compare.episode import ExternalClause
+
+    class _BadLLM:
+        async def ainvoke(self, messages, **kwargs):
+            class _R:
+                content = '<answer>{"clause_type":"义务性条款","requireType":"强制性","internalization_decision":"需要内化","internalization_reason":"x"}</answer>'
+            return _R()
+
+    clause = ExternalClause(document_name="外规", clause_number="第一条", full_text="应当建立制度。")
+    await judge_internalization(_BadLLM(), clause, timeout_s=5)
+    assert clause.require_type == ""
+    assert clause.internalization_decision == "需要内化"
 
 
 async def test_internalize_requires_clauses(tmp_path):

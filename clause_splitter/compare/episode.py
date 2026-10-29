@@ -11,9 +11,10 @@ from clause_splitter.agent import AgentResult
 class ExternalClause:
     """One external clause — the input unit of one comparison.
 
-    ``clause_type`` / ``internalization_decision`` / ``internalization_reason``
-    are filled before retrieval; empty means not yet judged (conservatively
-    treated as needing internalization and counted in coverage).
+    ``clause_type`` / ``require_type`` / ``internalization_decision`` /
+    ``internalization_reason`` are filled before retrieval; empty means not yet
+    judged (conservatively treated as needing internalization and counted in
+    coverage).
     """
 
     document_name: str = ""
@@ -21,6 +22,7 @@ class ExternalClause:
     section: str = ""
     full_text: str = ""
     clause_type: str = ""
+    require_type: str = ""
     internalization_decision: str = ""
     internalization_reason: str = ""
 

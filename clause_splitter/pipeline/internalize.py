@@ -44,6 +44,7 @@ async def run(ctx: StageContext) -> dict[str, Any]:
             counts["need"] += 1
         await ctx.repos.clauses.update(row["_id"], {
             "clause_type": clause.clause_type,
+            "require_type": clause.require_type,
             "internalization_decision": decision,
             "internalization_reason": clause.internalization_reason,
         })

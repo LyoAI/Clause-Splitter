@@ -313,6 +313,7 @@ def _clause_item(row: dict[str, Any], doc_id: str) -> dict[str, Any]:
         "termId": f"{doc_id}-{order}",
         "termKeyword": row.get("term_keyword") or term_keywords(content),
         "termName": (row.get("clause_number") or "").strip(),
+        "requireType": row.get("require_type") or "",
         "internalize": row.get("internalization_decision") or "",
         "internalizeReason": row.get("internalization_reason") or "",
         "coverageStatus": row.get("status") or "",

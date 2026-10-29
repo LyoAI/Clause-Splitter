@@ -112,6 +112,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
             assert "金融机构应当建立数据分类分级制度" in first["termContent"]
             assert first["termKeyword"]
             assert "chapter" in first
+            assert first["requireType"] == "义务性要求"
             assert first["internalize"] == "需要内化"
             assert first["internalizeReason"]
             assert first["coverageStatus"] == "完全覆盖"

@@ -20,6 +20,15 @@ from .ground import parse_answer_json
 
 logger = get_logger()
 
+#: requireType 契约值 —— 义务性要求 / 鼓励性要求(两值制,非法输出回空串)。
+_REQUIRE_TYPES = ("义务性要求", "鼓励性要求")
+
+
+def _norm_require_type(value: str) -> str:
+    """Normalize the LLM's requireType; anything off-contract degrades to ''."""
+    text = norm_str(value)
+    return text if text in _REQUIRE_TYPES else ""
+
 
 def build_judge_prompt(clause: ExternalClause) -> str:
     """User message judging one external clause (no retrieval)."""
@@ -33,7 +42,7 @@ def build_judge_prompt(clause: ExternalClause) -> str:
 
 
 async def judge_internalization(llm: Any, clause: ExternalClause, timeout_s: float) -> None:
-    """Judge one clause in place (clause_type / decision / reason written back)."""
+    """Judge one clause in place (clause_type / require_type / decision / reason)."""
     try:
         resp = await asyncio.wait_for(
             llm.ainvoke([
@@ -45,6 +54,9 @@ async def judge_internalization(llm: Any, clause: ExternalClause, timeout_s: flo
         content = resp.content if hasattr(resp, "content") else str(resp)
         parsed = parse_answer_json(content)
         clause.clause_type = norm_str(parsed.get("clause_type") if parsed else "")
+        clause.require_type = _norm_require_type(
+            parsed.get("requireType") if parsed else ""
+        )
         # 预防性内化 → 需要内化(写入点归一,下游一致)。
         clause.internalization_decision = normalize_internalization_decision(
             norm_str(parsed.get("internalization_decision") if parsed else "")
