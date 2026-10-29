@@ -32,19 +32,48 @@ _NOT_COVERED_ANALYSIS = "内规库中未检索到承接该外规义务的条款�
 _NOT_COVERED_REMEDY = "建议新增或修订内规条款，承接该外规义务。"
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+#: One-value decoder — ``raw_decode`` ignores content after the object, so
+#: trailing prose never costs the verdict.
+_JSON_DECODER = json.JSONDecoder()
 
 
 def parse_answer_json(raw_answer: str) -> dict[str, Any] | None:
-    """Extract the JSON from the final message's ``<answer>…</answer>`` block."""
+    """Extract the JSON object from the final answer's ``<answer>…</answer>``.
+
+    Contract deviations are tolerated before giving up: a missing closing
+    tag (some models stop right after the JSON — the verdict would otherwise
+    silently degrade to 缺失), prose around the block, trailing text. Only a
+    genuinely unparseable answer returns None, and that is logged: every
+    caller degrades None the same quiet way, so this is the one visible seam.
+    """
     m = _ANSWER_RE.search(raw_answer)
     body = m.group(1).strip() if m else raw_answer.strip()
     if not body:
         return None
+    parsed = _first_json_object(body)
+    if parsed is not None:
+        return parsed
+    logger.warning(
+        "answer JSON unparseable (%d chars, head=%r) — fields degrade to defaults",
+        len(body), body[:60],
+    )
+    return None
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    """Parse ``text`` as one JSON object, else salvage the first object in it.
+
+    Scanning from the first ``{`` skips an unclosed ``<answer>`` prefix and
+    any prose; ``raw_decode`` then stops at the object's end.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
     try:
-        parsed = json.loads(body)
-        return parsed if isinstance(parsed, dict) else None
+        obj, _end = _JSON_DECODER.raw_decode(text, start)
     except json.JSONDecodeError:
         return None
+    return obj if isinstance(obj, dict) else None
 
 
 def collect_seen_chunk_ids(trajectory: list) -> set[str]:

@@ -13,7 +13,7 @@ import json
 
 from clause_splitter.agent import AgentResult, AgentTurn
 from clause_splitter.compare.episode import ExternalClause
-from clause_splitter.compare.ground import ground_episode
+from clause_splitter.compare.ground import ground_episode, parse_answer_json
 from clause_splitter.models import CoverageStatus
 from clause_splitter.rag import Chunk
 from clause_splitter.utils import segment_label
@@ -122,6 +122,57 @@ def test_missing_status_passes_through():
     r = ground_episode(_mk_result("缺失", [], {}, [REAL_ID]), store, EXT)
     assert r.status == CoverageStatus.NOT_COVERED
     assert r.matched_internal_id is None
+
+
+# ── parse_answer_json 契约容错 ─────────────────────────────────────────
+# 2026-10-28 实测:模型(deepseek-v4-flash,12 条中 4 条)输出完整 JSON 后
+# 直接停笔、缺 </answer> —— 旧实现对含 <answer> 前缀的整串 json.loads 必败,
+# 判定被静默降级为缺失,表现即"没有部分覆盖、全部缺失"。
+
+
+def _verdict(answer: str) -> str | None:
+    parsed = parse_answer_json(answer)
+    return parsed.get("status") if parsed else None
+
+
+def test_parse_plain_tagged_answer():
+    assert _verdict('<answer>{"status":"缺失"}</answer>') == "缺失"
+
+
+def test_parse_missing_closing_tag_keeps_verdict():
+    """缺 </answer> 但 JSON 完整 → 判定保留(事故主形态)。"""
+    assert _verdict('<answer>{"status":"部分覆盖"}') == "部分覆盖"
+
+
+def test_parse_prose_before_unclosed_answer():
+    raw = "根据检索结果,判断如下:\n<answer>{\"status\":\"完全覆盖\"}"
+    assert _verdict(raw) == "完全覆盖"
+
+
+def test_parse_trailing_text_after_object():
+    raw = '<answer>{"status":"缺失"}</answer>以上为最终判定。'
+    assert _verdict(raw) == "缺失"
+
+
+def test_parse_truncated_json_returns_none():
+    """真截断(输出顶满 token 上限)→ None,交由调用方降级,不抛异常。"""
+    assert parse_answer_json('<answer>{"status":"部分覆盖","analysis":"1)') is None
+
+
+def test_parse_without_any_json_returns_none():
+    assert parse_answer_json("无法判定") is None
+    assert parse_answer_json("") is None
+
+
+def test_ground_episode_keeps_verdict_on_unclosed_answer():
+    """端到端回归:缺闭合标签的"部分覆盖"答案 + 可落地 claim → 不再降级。"""
+    store = _mini_store()
+    result = _mk_result("部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID])
+    result.answer = result.answer.removesuffix("</answer>")  # 模拟停笔
+
+    r = ground_episode(result, store, EXT)
+    assert r.status == CoverageStatus.PARTIALLY_COVERED
+    assert r.matched_internal_id == REAL_ID
 
 
 def test_not_covered_empty_analysis_falls_back():
