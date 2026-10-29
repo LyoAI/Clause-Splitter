@@ -70,6 +70,7 @@ async def run(ctx: StageContext) -> dict[str, Any]:
             clause_number=r["clause_number"],
             section=r.get("section") or "",
             full_text=r["clause_text"],
+            obligations=r.get("obligations") or [],
             clause_type=r.get("clause_type") or "",
             internalization_decision=r.get("internalization_decision") or "",
             internalization_reason=r.get("internalization_reason") or "",

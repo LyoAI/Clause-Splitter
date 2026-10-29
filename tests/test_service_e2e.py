@@ -143,11 +143,17 @@ async def test_full_chain_e2e(tmp_path, monkeypatch):
             episodes = list((reg_dir / "episodes").glob("*.json"))
             # One trajectory per internalized clause (4).
             assert len(episodes) == 4
+            # Split-time obligations reach the comparison prompt (no model-side
+            # decomposition, which used to truncate the answer JSON).
+            for path in episodes:
+                episode = json.loads(path.read_text(encoding="utf-8"))
+                assert "【该条款拆分出的义务要素】" in episode["question"]
             assert (reg_dir / "split" / "structure.json").exists()
 
             # ── stage calls observed on the fake LLM ──────────────────
             assert "applicability" in llm.calls
             assert "doc_profile" in llm.calls
+            assert "obligations" in llm.calls
             assert "internalization" in llm.calls
         finally:
             await runner.stop()

@@ -8,6 +8,7 @@ code has no fake backend; only tests inject one through ``rag._service``.
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -384,7 +385,7 @@ def spec_by_clause_text(text: str) -> dict:
 
 
 class PipelineFakeLLM:
-    """Dispatches by system prompt: applicability / doc_profile / internalization / episode.
+    """Dispatches by system prompt: applicability / doc_profile / obligations / internalization / episode.
 
     ``invoke`` raises so split's LLM fallback degrades to the builtin path.
     """
@@ -396,6 +397,22 @@ class PipelineFakeLLM:
     async def ainvoke(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
         system = messages[0]["content"]
         user = next(m["content"] for m in messages if m["role"] == "user")
+        if "合规义务五元组" in system:
+            self.calls.append("obligations")
+            numbers = re.findall(r"^【(.+?)】$", user, re.MULTILINE)
+            return LLMResponse(
+                content=json.dumps({"clauses": [
+                    {"clause_number": n, "obligations": [{
+                        "obligation_rule": "应当",
+                        "subject": "公司",
+                        "action_verb": "建立",
+                        "action_target": "数据安全制度",
+                        "trigger_condition": "/",
+                    }]}
+                    for n in numbers
+                ]}, ensure_ascii=False),
+                finish_reason="stop",
+            )
         if "是否适用于平安科技" in system:
             self.calls.append("applicability")
             if self.applicable is None:

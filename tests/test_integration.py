@@ -131,7 +131,7 @@ async def test_manual_push_runs_chain_and_calls_back(tmp_path, monkeypatch):
             raw = json.dumps(payload, ensure_ascii=False)
             for gone in (
                 '"metadata"', '"stages"', '"relationClauses"',
-                '"extraParams"', '"clauseType"',
+                '"extraParams"', '"clauseType"', '"obligations"',
             ):
                 assert gone not in raw
         finally:

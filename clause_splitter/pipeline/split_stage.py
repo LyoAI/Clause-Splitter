@@ -17,10 +17,11 @@ from clause_splitter.compare.loader import clauses_from_blocks
 from clause_splitter.parsing.router import parse_document
 from clause_splitter.rag import RagService
 from clause_splitter.split import scheme
+from clause_splitter.split.obligations import decompose_obligations
 from clause_splitter.split.structure import analyze_structure
 from clause_splitter.utils import get_logger
 from . import doc_profile
-from .contexts import StageContext, StageError
+from .contexts import StageContext, StageError, is_internal
 
 logger = get_logger()
 
@@ -82,7 +83,8 @@ def _write_structure(
     out = reg_dir / "split" / "structure.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     articles = [
-        {"article_id": c.clause_number, "parent_section": c.section, "full_text": c.full_text}
+        {"article_id": c.clause_number, "parent_section": c.section,
+         "full_text": c.full_text, "obligations": c.obligations}
         for c in clauses
     ]
     out.write_text(
@@ -126,6 +128,12 @@ async def run(ctx: StageContext) -> dict[str, Any]:
         if not clauses:
             raise StageError("拆条失败:未识别出任何条款。")
 
+    # External regulations only: the comparison prompt consumes these tuples.
+    # 内规/附件 are analysed by nobody, so they must not pay for the calls.
+    if not is_internal(ctx.regulation):
+        ctx.progress(0.6, "拆分义务要素")
+        await decompose_obligations(clauses, ctx.llm, document=title)
+
     _write_structure(
         ctx.reg_dir, title, clauses, layer=layer, scheme_json=scheme_json,
         parse_source=parse_source,
@@ -139,6 +147,7 @@ async def run(ctx: StageContext) -> dict[str, Any]:
             "section": c.section or "",
             "clause_text": c.full_text,
             "term_keyword": keywords[i],
+            "obligations": c.obligations,
         }
         for i, c in enumerate(clauses)
     ])

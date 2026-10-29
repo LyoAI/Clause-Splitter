@@ -93,6 +93,36 @@ async def test_split_llm_fallback_creates_rows(tmp_path):
         assert len(json.loads(structure.read_text(encoding="utf-8"))["articles"]) == 5
 
 
+async def test_split_extracts_obligations_for_external_regulations(tmp_path):
+    """Obligations are computed once at split time and stored on the rows."""
+    with data_dir(tmp_path):
+        repos = fake_repos()
+        reg = await _mk_regulation(repos, tmp_path)
+        llm = PipelineFakeLLM()
+        await split_stage.run(_ctx(reg, llm, repos))
+        assert "obligations" in llm.calls
+        rows, _ = await repos.clauses.list_for_regulation(reg["_id"])
+        assert all(r["obligations"][0]["action_verb"] == "建立" for r in rows)
+        structure = tmp_path / "regulations" / reg["_id"] / "split" / "structure.json"
+        articles = json.loads(structure.read_text(encoding="utf-8"))["articles"]
+        assert all(a["obligations"] for a in articles)
+
+
+async def test_split_skips_obligations_for_internal_pushes(tmp_path):
+    """内规/附件 never run the comparison, so they must not pay for the calls."""
+    with data_dir(tmp_path):
+        repos = fake_repos()
+        reg = await _mk_regulation(repos, tmp_path)
+        await repos.regulations.update(reg["_id"], {"push_doc_kind": "internal"})
+        reg = await repos.regulations.get(reg["_id"])
+        llm = PipelineFakeLLM()
+        out = await split_stage.run(_ctx(reg, llm, repos))
+        assert out["article_count"] == 5
+        assert "obligations" not in llm.calls
+        rows, _ = await repos.clauses.list_for_regulation(reg["_id"])
+        assert all(r["obligations"] == [] for r in rows)
+
+
 async def test_split_missing_source_file_reports_it(tmp_path):
     """A wiped data dir must read as a missing source, not as empty text."""
     repos = fake_repos()
