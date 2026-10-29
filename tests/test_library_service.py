@@ -42,6 +42,42 @@ async def test_upload_forwards_to_the_service_and_mirrors(tmp_path, monkeypatch)
             services.reset()
 
 
+async def test_upload_restores_a_deleted_local_copy(tmp_path, monkeypatch):
+    """A wiped data dir must not leave the row permanently unusable."""
+    with data_dir(tmp_path):
+        repos, runner, service = await _init(tmp_path, monkeypatch)
+        try:
+            doc, _ = await library_service.upload(b"# rules", "制度.md")
+            local = tmp_path / "internal" / "docs" / "制度.md"
+            local.unlink()
+
+            again, created = await library_service.upload(b"# rules", "制度.md")
+            assert not created and again["_id"] == doc["_id"]
+            assert local.exists() and local.read_bytes() == b"# rules"
+            assert len(service.ingests) == 1  # already indexed remotely
+        finally:
+            await runner.stop()
+            services.reset()
+
+
+async def test_upload_revives_a_missing_file_row(tmp_path, monkeypatch):
+    """A row that died on its missing copy must be re-ingested after healing."""
+    with data_dir(tmp_path):
+        repos, runner, service = await _init(tmp_path, monkeypatch)
+        try:
+            doc, _ = await library_service.upload(b"# rules", "制度.md")
+            (tmp_path / "internal" / "docs" / "制度.md").unlink()
+            await repos.internal_docs.update(doc["_id"], {"remote_state": "missing_file"})
+
+            again, created = await library_service.upload(b"# rules", "制度.md")
+            assert not created and again["_id"] == doc["_id"]
+            assert len(service.ingests) == 2
+            assert again["remote_state"] == "indexed"
+        finally:
+            await runner.stop()
+            services.reset()
+
+
 async def test_upload_survives_an_unavailable_service(tmp_path, monkeypatch):
     with data_dir(tmp_path):
         repos, runner, service = await _init(tmp_path, monkeypatch)

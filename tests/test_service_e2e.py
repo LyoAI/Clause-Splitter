@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -37,6 +38,25 @@ async def _wait(repos, job_id: str, timeout_s: float = 60.0) -> dict:
             return job
         await asyncio.sleep(0.1)
     raise AssertionError("chain job did not finish in time")
+
+
+async def test_upload_restores_a_deleted_source_copy(tmp_path):
+    """Re-uploading after a data-dir wipe must heal the deduplicated row."""
+    with data_dir(tmp_path):
+        repos = fake_repos()
+        data = "第一条 测试。".encode("utf-8")
+        reg, created = await regulation_service.upload(
+            data, "制度.txt", "制度", repos=repos
+        )
+        assert created
+        Path(reg["source_path"]).unlink()
+
+        again, created2 = await regulation_service.upload(
+            data, "制度.txt", "", repos=repos
+        )
+        assert not created2 and again["_id"] == reg["_id"]
+        assert Path(again["source_path"]).exists()
+        assert Path(again["source_path"]).read_bytes() == data
 
 
 async def test_full_chain_e2e(tmp_path, monkeypatch):

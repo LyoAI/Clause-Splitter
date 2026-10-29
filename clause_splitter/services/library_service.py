@@ -49,6 +49,22 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+async def _restore_local_copy(repos, row: dict, data: bytes) -> bool:
+    """Rewrite a deleted local copy from this upload; True when rewritten."""
+    if Path(row.get("path") or "").exists():
+        return False
+    name = row.get("filename") or ""
+    if not name:
+        return False
+    path = internal_docs_dir() / safe_filename(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    row["path"] = str(path)
+    await repos.internal_docs.update(row["_id"], {"path": str(path)})
+    logger.warning("内规库本地副本缺失,已用本次上传的内容重建: %s → %s", row["_id"], path)
+    return True
+
+
 async def _sync_row(repos, service, row: dict) -> dict:
     """Ingest one local file into the corpus and refresh the Mongo mirror."""
     path = Path(row.get("path") or "")
@@ -111,9 +127,13 @@ async def upload(
             # re-submitted, which the sync below does).
             await repos.internal_docs.update(existing["_id"], {"kind": kind})
             existing = await repos.internal_docs.get(existing["_id"]) or existing
+        # A local copy wiped with the data dir can only heal by being rewritten;
+        # a row that already failed on it must then be re-ingested.
+        restored = await _restore_local_copy(repos, existing, data)
+        revived = restored and (existing.get("remote_state") or "") == "missing_file"
         # A push must not accept a stale mirror row as "already ingested".
         stale = strict and (existing.get("remote_state") or "") != "indexed"
-        if not moved and not stale:
+        if not moved and not stale and not revived:
             return existing, False
         service = get_rag_service()
         try:

@@ -45,7 +45,7 @@ async def upload(
     sha = _sha256(data)
     existing = await repos.regulations.get_by_sha256(sha)
     if existing is not None:
-        return existing, False
+        return await _restore_source_file(existing, data, filename, repos), False
 
     reg_id = (await repos.regulations.create({
         "title": "",
@@ -68,6 +68,28 @@ async def upload(
         **DERIVED_FIELDS["analysis"],
     })
     return await repos.regulations.get(reg_id), True
+
+
+async def _restore_source_file(reg: dict, data: bytes, filename: str, repos) -> dict:
+    """Re-write the source copy when it was deleted; returns the fresh row.
+
+    Dedupe keys on the content hash, so a re-upload after the data dir was
+    wiped would otherwise reuse a row whose ``source_path`` is gone, and every
+    stage reading that file would fail with "文档文本抽取为空".
+    """
+    stored = Path(reg.get("source_path") or "")
+    if stored.exists():
+        return reg
+    name = reg.get("source_filename") or filename
+    path = source_dir(reg["_id"]) / safe_filename(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    logger.warning("源文件缺失,已用本次上传的内容重建: %s → %s", reg["_id"], path)
+    await repos.regulations.update(reg["_id"], {
+        "source_path": str(path),
+        "source_filename": name,
+    })
+    return await repos.regulations.get(reg["_id"])
 
 
 async def delete_regulation(reg_id: str, *, repos=None) -> None:

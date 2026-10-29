@@ -57,6 +57,9 @@ REG=<上一步输出的 regulation_id>
 # 一步全链(等价 1→4)
 .venv/bin/python -I scripts/api_lab.py run "$REG"
 
+# 同内容强制重跑(命中 sha256 → 删旧记录 → 重新上传 → 全链;id 每次都是新的)
+.venv/bin/python -I scripts/api_lab.py rerun upload_materials/external/网络数据安全风险评估办法.docx
+
 # 结果检查
 .venv/bin/python -I scripts/api_lab.py get "$REG"        # 各阶段 state=done
 .venv/bin/python -I scripts/api_lab.py clauses "$REG" --include-candidates
@@ -67,8 +70,11 @@ REG=<上一步输出的 regulation_id>
 ```
 
 > 阶段前置 409 属正常(未跑上一阶段);重跑某阶段会自动重置下游。
+> 重跑会复用同一条记录(id 不变、结果覆盖);要全新记录用上面的 `rerun`。
 > 日志里出现 `answer JSON unparseable` = 有条款判定因截断降级缺失(已知形态),
 > 若大面积出现先查 LLM 通道。
+> 手动删过 `data/regulations/*` 也没关系:同内容再上传会自动补写源文件
+> (日志 `源文件缺失,已用本次上传的内容重建`),但旧结果仍要重跑才会更新。
 
 ## 4. 后端 push(docType 分流)——端到端主场景
 

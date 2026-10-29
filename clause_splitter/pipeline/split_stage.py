@@ -98,6 +98,11 @@ def _write_structure(
 
 async def run(ctx: StageContext) -> dict[str, Any]:
     src = Path(ctx.regulation["source_path"])
+    if not src.exists():
+        raise StageError(
+            f"源文件缺失:{src}。本地数据目录被清理后,需重新上传/推送该文档"
+            "(同内容会自动补写源文件)。"
+        )
     title = ctx.regulation.get("title") or src.stem
 
     clauses: list[ExternalClause] = []

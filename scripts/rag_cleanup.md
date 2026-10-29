@@ -108,6 +108,11 @@ rm -rf data/regulations/* data/internal/docs/*                   // 落盘产物
 > 直连 Mongo 清理后不需要重启服务;`/library/index` 会显示 0 文档。
 > 若保留了 ChillRAG 语料而只清镜像,记得重新 `POST /library/index` 对账。
 
+> **只删 `data/regulations/*` 而不清 Mongo 会留下孤儿登记行** —— 现在不再卡死:
+> 同内容再上传/push 会自动补写源文件(日志 `源文件缺失,已用本次上传的内容重建`),
+> 内规库镜像行同样会自愈。但旧的拆条/分析结果不会自动重跑,要重跑用
+> `api_lab.py run <reg_id>` 或 `api_lab.py rerun <file>`。想彻底干净就按本节一起清。
+
 ## 4. 清完自检
 
 ```bash

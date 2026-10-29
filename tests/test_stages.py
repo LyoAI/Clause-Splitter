@@ -93,6 +93,19 @@ async def test_split_llm_fallback_creates_rows(tmp_path):
         assert len(json.loads(structure.read_text(encoding="utf-8"))["articles"]) == 5
 
 
+async def test_split_missing_source_file_reports_it(tmp_path):
+    """A wiped data dir must read as a missing source, not as empty text."""
+    repos = fake_repos()
+    reg = await repos.regulations.create({
+        "title": "已删副本", "source_filename": "gone.txt",
+        "source_path": str(tmp_path / "gone.txt"),
+    })
+    from clause_splitter.pipeline.contexts import StageError
+
+    with pytest.raises(StageError, match="源文件缺失"):
+        await split_stage.run(_ctx(reg, None, repos))
+
+
 async def test_split_empty_text_raises(tmp_path):
     repos = fake_repos()
     src = tmp_path / "empty.txt"

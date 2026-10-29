@@ -124,15 +124,46 @@ def cmd_health(client: Client, args) -> None:
     print(f"GET {root}/healthz -> HTTP {resp.status_code} {resp.text}")
 
 
-def cmd_upload(client: Client, args) -> None:
-    path = Path(args.file)
+def _upload(client: Client, path: Path, title: str | None, *, quiet: bool = False) -> dict:
     with path.open("rb") as fh:
-        data = client.data(
+        return client.data(
             "POST", "/regulations",
             files={"file": (path.name, fh, "application/octet-stream")},
-            data={"title": args.title} if args.title else None,
+            data={"title": title} if title else None,
+            quiet=quiet,
         )
+
+
+def cmd_upload(client: Client, args) -> None:
+    data = _upload(client, Path(args.file), args.title)
     print(f"\nregulation_id = {data.get('id')}")
+
+
+def cmd_rerun(client: Client, args) -> None:
+    """Upload, replace any row holding the same bytes, then run the chain.
+
+    Deduping is by content hash, so an already-processed document would come
+    back as the same row with its old results. Deleting it first guarantees a
+    fresh regulation id and a full re-run every time.
+    """
+    path = Path(args.file)
+    reg = _upload(client, path, args.title, quiet=True)
+    if reg.get("duplicate"):
+        print(f"  same bytes as {reg['id']}《{reg.get('title') or '?'}》 → replacing")
+        client.call("DELETE", f"/regulations/{reg['id']}", quiet=True)
+        reg = _upload(client, path, args.title, quiet=True)
+        if reg.get("duplicate"):
+            raise SystemExit(f"still duplicate after delete: {reg['id']}")
+    reg_id = reg["id"]
+    print(f"\nregulation_id = {reg_id}")
+
+    job = client.data("POST", f"/regulations/{reg_id}/run", quiet=True)
+    job_id = job["id"]
+    print(f"job_id = {job_id}")
+    finished = wait_job(client, job_id, args.timeout, args.interval)
+    client.call("GET", f"/regulations/{reg_id}")
+    if finished.get("state") == "done":
+        client.call("GET", f"/regulations/{reg_id}/artifacts")
 
 
 def cmd_list(client: Client, args) -> None:
@@ -356,6 +387,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=1800, help="poll deadline (s)")
     p.add_argument("--interval", type=float, default=3, help="poll interval (s)")
     p.set_defaults(func=lambda c, a: cmd_stage(c, a, "run"))
+
+    p = sub.add_parser(
+        "rerun", help="upload (replacing same bytes) + run the whole chain"
+    )
+    p.add_argument("file")
+    p.add_argument("--title")
+    p.add_argument("--timeout", type=float, default=1800, help="poll deadline (s)")
+    p.add_argument("--interval", type=float, default=3, help="poll interval (s)")
+    p.set_defaults(func=cmd_rerun)
 
     p = sub.add_parser("patch-applicability", help="PATCH /regulations/{id}/applicability")
     p.add_argument("reg_id")
