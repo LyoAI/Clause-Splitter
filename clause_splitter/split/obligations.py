@@ -5,7 +5,7 @@ has to retrieve and judge. Asking the episode model to decompose inline invites
 narration, which eats the answer budget and truncates the JSON — so the split
 stage pays for it once, batched, instead of every episode paying for it again.
 
-Cost: one LLM call per batch (~4000 chars of clause text, ≤12 clauses), run
+Cost: one LLM call per batch (~2500 chars of clause text, ≤6 clauses), run
 two at a time. Internal/attachment documents skip this entirely.
 """
 
@@ -17,16 +17,20 @@ import re
 from typing import Any
 
 from clause_splitter.compare.episode import ExternalClause
+from clause_splitter.config import OBLIGATION_MAX_TOKENS
 from clause_splitter.prompts import render
 from clause_splitter.utils import get_logger
 
 logger = get_logger()
 
 #: Batch budgets — one call carries at most this much clause text / clauses.
-MAX_BATCH_CHARS = 4000
-MAX_BATCH_CLAUSES = 12
+#: Kept small because the gateway truncates long JSON answers mid-object.
+MAX_BATCH_CHARS = 2500
+MAX_BATCH_CLAUSES = 6
 #: Concurrent batches (matches the 2-slot intranet LLM channel).
 CONCURRENCY = 2
+#: Unparsed batch of N>1 clauses is retried as halves, at most this many levels.
+MAX_SPLIT_RETRIES = 2
 #: Per-clause cap: the episode prompt only shows 12 lines anyway.
 MAX_PER_CLAUSE = 12
 
@@ -55,22 +59,25 @@ def build_batches(
     return batches
 
 
-def _json_payload(text: str) -> dict[str, Any]:
-    """First JSON object in the model output (fence-tolerant, tolerant of prose)."""
+def _json_payload(text: str) -> tuple[dict[str, Any], str]:
+    """First JSON object in the model output → ``(payload, failure_reason)``.
+
+    Fence-tolerant and tolerant of leading prose; ``failure_reason`` is ``""``
+    on success, ``"missing"`` when no ``{`` appears, ``"unparseable"`` when the
+    object is cut off or malformed.
+    """
     body = text.strip()
     fence = _FENCE_RE.search(body)
     if fence:
         body = fence.group(1)
     start = body.find("{")
     if start < 0:
-        logger.warning("obligation JSON missing (head=%r)", body[:160])
-        return {}
+        return {}, "missing"
     try:
         parsed, _ = json.JSONDecoder().raw_decode(body[start:])
     except json.JSONDecodeError:
-        logger.warning("obligation JSON unparseable (head=%r)", body[:160])
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+        return {}, "unparseable"
+    return (parsed, "") if isinstance(parsed, dict) else ({}, "unparseable")
 
 
 def _clean_obligations(raw: Any) -> list[dict[str, str]]:
@@ -90,9 +97,8 @@ def _clean_obligations(raw: Any) -> list[dict[str, str]]:
     return out
 
 
-def parse_obligations(text: str) -> dict[str, list[dict[str, str]]]:
-    """Model output → ``{clause_number: [obligation, ...]}`` (best effort)."""
-    data = _json_payload(text)
+def _rows_to_mapping(data: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    """``{"clauses": [...]}`` → ``{clause_number: [obligation, ...]}``."""
     rows = data.get("clauses")
     if not isinstance(rows, list):
         return {}
@@ -107,6 +113,11 @@ def parse_obligations(text: str) -> dict[str, list[dict[str, str]]]:
     return out
 
 
+def parse_obligations(text: str) -> dict[str, list[dict[str, str]]]:
+    """Model output → ``{clause_number: [obligation, ...]}`` (best effort)."""
+    return _rows_to_mapping(_json_payload(text)[0])
+
+
 def _render_batch(batch: list[ExternalClause]) -> str:
     return "\n\n".join(
         f"【{c.clause_number or '全文'}】\n{c.full_text}" for c in batch
@@ -114,18 +125,47 @@ def _render_batch(batch: list[ExternalClause]) -> str:
 
 
 async def _decompose_batch(
-    batch: list[ExternalClause], llm: Any, document: str
+    batch: list[ExternalClause],
+    llm: Any,
+    document: str,
+    sem: asyncio.Semaphore,
+    depth: int = 0,
 ) -> dict[str, list[dict[str, str]]]:
+    """Extract one batch; an unparsed multi-clause answer is retried as halves."""
     system = render("obligations", document_name=document or "未命名外规")
     try:
-        resp = await llm.ainvoke([
-            {"role": "system", "content": system},
-            {"role": "user", "content": _render_batch(batch)},
-        ])
+        async with sem:
+            resp = await llm.ainvoke(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": _render_batch(batch)},
+                ],
+                max_completion_tokens=OBLIGATION_MAX_TOKENS,
+            )
     except Exception as exc:  # noqa: BLE001 — best effort, never fails the stage
         logger.warning("obligation split failed (%d clauses): %s", len(batch), exc)
         return {}
-    return parse_obligations(getattr(resp, "content", "") or "")
+
+    content = getattr(resp, "content", "") or ""
+    data, reason = _json_payload(content)
+    if not reason:
+        return _rows_to_mapping(data)
+
+    usage = getattr(resp, "usage", {}) or {}
+    logger.warning(
+        "obligation JSON %s (%d clauses, finish_reason=%s, completion_tokens=%s)"
+        " head=%r tail=%r",
+        reason, len(batch), getattr(resp, "finish_reason", ""),
+        usage.get("completion_tokens"), content[:120], content[-120:],
+    )
+    if len(batch) <= 1 or depth >= MAX_SPLIT_RETRIES:
+        return {}
+    mid = len(batch) // 2
+    left, right = await asyncio.gather(
+        _decompose_batch(batch[:mid], llm, document, sem, depth + 1),
+        _decompose_batch(batch[mid:], llm, document, sem, depth + 1),
+    )
+    return {**left, **right}
 
 
 async def decompose_obligations(
@@ -140,12 +180,10 @@ async def decompose_obligations(
         return 0
     batches = build_batches(clauses)
     sem = asyncio.Semaphore(CONCURRENCY)
-
-    async def one(batch: list[ExternalClause]) -> dict[str, list[dict[str, str]]]:
-        async with sem:
-            return await _decompose_batch(batch, llm, document)
-
-    results = await asyncio.gather(*(one(b) for b in batches), return_exceptions=True)
+    results = await asyncio.gather(
+        *(_decompose_batch(b, llm, document, sem) for b in batches),
+        return_exceptions=True,
+    )
     total = 0
     for batch, result in zip(batches, results):
         mapping = result if isinstance(result, dict) else {}

@@ -31,6 +31,9 @@ LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
 # Document profile call — shorter, so it cannot stall the chain.
 DOC_PROFILE_TIMEOUT_S = float(os.getenv("DOC_PROFILE_TIMEOUT_S", "90"))
 EPISODE_TIMEOUT_S = float(os.getenv("EPISODE_TIMEOUT_S", "600"))
+# Output budget for the split-time obligation JSON (verbose; 4096 truncated
+# multi-clause batches on the intranet gateway).
+OBLIGATION_MAX_TOKENS = int(os.getenv("OBLIGATION_MAX_TOKENS", "8192"))
 # Agent prompt language: "zh" | "en".
 PROMPT_LANG = os.getenv("PROMPT_LANG", "zh")
 
