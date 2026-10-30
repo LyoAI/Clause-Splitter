@@ -59,51 +59,60 @@ cd "$CHILLRAG" && .venv/bin/python -m uvicorn app.main:create_app --factory \
 
 ## 2. Zeus:有删除接口,按 org_data_id 批量清
 
-```bash
-# 单个删(凭入库时返回的 org_data_id)
-python3 scripts/zeus_probe.py delete --org-id <org_data_id>
-```
-
-测试期批量清理——镜像表 `internal_docs` 里存着每个已入库文档的
-`remote_doc_id`(即 Zeus 的 org_data_id),取出来逐个删:
+远端删除由本服务代发,**不需要 mongosh,也不用手工记 org_data_id**:
 
 ```bash
-# ① 列出待删项(内网按实际 Mongo 地址/库名替换)
-mongosh --quiet 127.0.0.1:27017/clause_splitter --eval \
-  'db.internal_docs.find({},{filename:1,remote_doc_id:1}).forEach(
-     d => print(d.remote_doc_id, d.filename))'
+# ① 列出已入库文档(id / filename / kind / remote_doc_id / remote_state)
+.venv/bin/python -I scripts/api_lab.py lib-list
 
-# ② 一键全部删除(先确认 ① 的列表都是测试文档再跑)
-mongosh --quiet 127.0.0.1:27017/clause_splitter --eval \
-  'db.internal_docs.find({},{remote_doc_id:1,_id:0}).forEach(
-     d => print(d.remote_doc_id))' | grep -v '^$' | \
-  while read -r rid; do
-    echo "== delete $rid"
-    python3 scripts/zeus_probe.py delete --org-id "$rid"
-  done
+# ② 单个删(远端文档 + 镜像行一起清)
+.venv/bin/python -I scripts/api_lab.py lib-delete <doc_id>
+
+# ③ 一键清空(先确认 ① 里都是测试文档)
+.venv/bin/python - <<'PY'
+import os, sys
+sys.path.insert(0, "scripts")
+from api_lab import Client, DEFAULT_BASE, _env_value
+c = Client(os.environ.get("BASE_URL", DEFAULT_BASE), _env_value("API_KEY"))
+for doc in c.data("GET", "/library/documents")["items"]:
+    print("delete", doc["id"], doc["filename"], doc["remote_doc_id"])
+    c.call("DELETE", f"/library/documents/{doc['id']}", quiet=True)
+PY
 ```
 
 > Zeus 删除是即时接口,但索引后台异步;删完立刻搜仍可能命中,属正常。
 > 注意只删测试标签(`internal-regulation`/`attach-regulation`)下的文档,
-> 共享知识库里他人的文档不要动。没有 mongosh 时查列表可用:
-> `.venv/bin/python -c "from pymongo import MongoClient; [print(r.get('remote_doc_id'), r.get('filename')) for r in MongoClient('127.0.0.1:27017').clause_splitter.internal_docs.find()]"`
+> 共享知识库里他人的文档不要动——`lib-list` 的 `kind` 列标明来源
+> (`library` 直传 / `internal` 内规 / `attach` 附件),按它挑。
+> 远端删除失败(接口不支持/404)时只清镜像行,日志会写明。
 
 ## 3. 本服务侧:镜像行 + 测试法规(不影响 RAG)
 
 ```bash
-# 逐个删法规(会连带条款/任务/落盘文件;内规/附件同时清掉 internal_docs 镜像行)
-.venv/bin/python -I scripts/api_lab.py list --limit 50          # 找测试法规 id
+# 找测试法规 id(doc_kind 列:external / internal / attach)
+.venv/bin/python -I scripts/api_lab.py list --limit 50
+
+# 逐个删(连带条款/任务/落盘文件;内规/附件同时删远端文档与镜像行)
 .venv/bin/python -I scripts/api_lab.py delete <regulation_id>
 
-# 一把清掉所有测试残留(慎用;mongosh 直连,MONGO_DBNAME 默认 clause_splitter)
-mongosh --quiet 127.0.0.1:27017/clause_splitter --eval '
-  db.internal_docs.deleteMany({});       // 语料镜像
-  db.clauses.deleteMany({});             // 拆条/分析结果
-  db.jobs.deleteMany({});                // 任务记录
-  db.regulations.deleteMany({});         // 法规(含 push 记录)
-'
-rm -rf data/regulations/* data/internal/docs/*                   // 落盘产物
+# 一把清掉所有法规(慎用;逐条走 DELETE,行为同单删)
+.venv/bin/python - <<'PY'
+import os, sys
+sys.path.insert(0, "scripts")
+from api_lab import Client, DEFAULT_BASE, _env_value
+c = Client(os.environ.get("BASE_URL", DEFAULT_BASE), _env_value("API_KEY"))
+for reg in c.data("GET", "/regulations?limit=200")["items"]:
+    print("delete", reg["id"], reg["doc_kind"], reg["title"])
+    c.call("DELETE", f"/regulations/{reg['id']}", quiet=True)
+PY
+
+rm -rf data/regulations/* data/internal/docs/*                # 落盘产物
 ```
+
+> 镜像行随 `lib-delete` 一并清,无需直连 Mongo。排查时确需直连的话:内网默认
+> `ng4t5e57-dds.dbstg.paic.com.cn:14444`、库 `temple_saas`,密码走 CyberArk;
+> 脚本里先 `load_dotenv(".env")` 再读 `config_mongo`,否则会按内网地址连而本地
+> 没有凭据(表现为 SSL 报错)。
 
 > 直连 Mongo 清理后不需要重启服务;`/library/index` 会显示 0 文档。
 > 若保留了 ChillRAG 语料而只清镜像,记得重新 `POST /library/index` 对账。
