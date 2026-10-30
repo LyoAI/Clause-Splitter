@@ -33,6 +33,9 @@ print("routes ok:", len(paths), "paths")'
 F=upload_materials/internal/网络数据安全管理条例.docx
 # 上传(重复上传同文件会命中 sha256,提示 duplicate)
 .venv/bin/python -I scripts/api_lab.py lib-upload "$F"    # 预期: state=indexed, chunks>0
+# 批量:多文件 / 整个目录(默认不下钻,加 --recursive);失败继续用 --continue-on-error
+.venv/bin/python -I scripts/api_lab.py --timeout 600 lib-upload a.docx b.docx
+.venv/bin/python -I scripts/api_lab.py --timeout 600 lib-upload upload_materials/internal/ --continue-on-error
 .venv/bin/python -I scripts/api_lab.py lib-list           # 预期: 列表含该文档
 .venv/bin/python -I scripts/api_lab.py lib-index --wait   # 重建索引,预期 job done
 .venv/bin/python -I scripts/api_lab.py lib-status         # 预期: doc/chunk 计数>0, rag.available=true

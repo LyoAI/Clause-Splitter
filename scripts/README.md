@@ -52,6 +52,7 @@ B=http://127.0.0.1:18998/api/v1/clause_splitter
 
 uv run python scripts/api_lab.py --base "$B" health
 uv run python scripts/api_lab.py --base "$B" lib-upload upload_materials/internal/某制度.docx
+uv run python scripts/api_lab.py --base "$B" --timeout 600 lib-upload upload_materials/internal/ --continue-on-error
 uv run python scripts/api_lab.py --base "$B" lib-index --wait
 uv run python scripts/api_lab.py --base "$B" lib-status
 uv run python scripts/api_lab.py --base "$B" upload upload_materials/external/某办法.docx
@@ -205,7 +206,7 @@ curl -sS "$BASE/jobs?state=scheduled" | python3 -m json.tool
 | `clauses` / `clause` | `GET /regulations/{id}/clauses[/{clause_id}]` |
 | `jobs` / `job` / `wait` | `GET /jobs[/{id}]`、`GET /regulations/{id}/jobs` |
 | `artifacts` / `artifact` | 产物列表与下载（含 `episodes/xxx.json`） |
-| `lib-upload` / `lib-list` / `lib-delete` | `POST|GET|DELETE /library/documents` |
+| `lib-upload` / `lib-list` / `lib-delete` | `POST|GET|DELETE /library/documents`;`lib-upload` 支持多文件/目录 + 汇总表 |
 | `lib-index` / `lib-status` | `GET|POST /library/index` |
 | `push` / `result` | 后端契约的两个入口 |
 

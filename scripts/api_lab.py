@@ -11,6 +11,7 @@ Examples:
     python scripts/api_lab.py wait <job_id> --timeout 1800
     python scripts/api_lab.py clauses <reg_id> --status 缺失
     python scripts/api_lab.py chain upload_materials/external/办法.docx
+    python scripts/api_lab.py --timeout 600 lib-upload upload_materials/internal/ --continue-on-error
 
 Intranet / remote service:
     python scripts/api_lab.py --base http://10.0.0.8:18998/api/v1/clause_splitter health
@@ -26,6 +27,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from urllib.parse import quote
 
@@ -251,14 +253,124 @@ def cmd_artifact(client: Client, args) -> None:
     print(f"saved {target} ({len(resp.content)} bytes)")
 
 
-def cmd_lib_upload(client: Client, args) -> None:
-    path = Path(args.file)
+#: Suffixes picked up when ``lib-upload`` is given a directory.
+_UPLOAD_SUFFIXES = {".docx", ".doc", ".pdf", ".txt", ".md", ".xlsx", ".xls", ".html", ".htm"}
+
+
+def _expand_upload_paths(inputs: list[str], recursive: bool) -> list[Path]:
+    """Files + directories → one ordered, de-duplicated upload list."""
+    out: list[Path] = []
+    for raw in inputs:
+        path = Path(raw)
+        if path.is_dir():
+            found = path.rglob("*") if recursive else path.glob("*")
+            out.extend(sorted(
+                f for f in found
+                if f.is_file() and not f.name.startswith(".")
+                and f.suffix.lower() in _UPLOAD_SUFFIXES
+            ))
+        elif path.is_file():
+            out.append(path)
+        else:
+            raise SystemExit(f"not a file or directory: {path}")
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for f in out:
+        key = str(f.resolve())
+        if key not in seen:
+            seen.add(key)
+            unique.append(f)
+    return unique
+
+
+def _disp_width(text: str) -> int:
+    """Terminal column width — CJK glyphs take two cells."""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def _upload_one(client: Client, path: Path) -> dict:
+    """POST one file; raises RuntimeError with the server message on failure."""
     with path.open("rb") as fh:
-        data = client.data(
-            "POST", "/library/documents",
+        resp = client.session.request(
+            "POST", f"{client.base}/library/documents",
             files={"file": (path.name, fh, "application/octet-stream")},
+            timeout=client.timeout,
         )
-    print(f"\ndoc_id = {data.get('id')} state={data.get('remote_state')} chunks={data.get('chunk_count')}")
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {}
+    if resp.status_code >= 400:
+        detail = (body or {}).get("msg") or resp.text[:200] or f"HTTP {resp.status_code}"
+        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+    return body if isinstance(body, dict) else {}
+
+
+def cmd_lib_upload(client: Client, args) -> None:
+    """Upload one file, several files, or whole directories; print a summary."""
+    files = _expand_upload_paths(args.file, args.recursive)
+    if not files:
+        raise SystemExit("no uploadable files found")
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    errors: list[tuple[str, str]] = []
+    for i, path in enumerate(files, 1):
+        print(f"[{i}/{len(files)}] {path.name}", flush=True)
+        try:
+            body = _upload_one(client, path)
+        except (RuntimeError, OSError) as exc:
+            errors.append((path.name, str(exc)))
+            rows.append((path.name, "-", "-", "-", "失败"))
+            if not args.continue_on_error:
+                break
+            continue
+        data = body.get("data") or {}
+        rows.append((
+            path.name,
+            str(data.get("id") or ""),
+            str(data.get("remote_state") or ""),
+            str(data.get("chunk_count") if data.get("chunk_count") is not None else "-"),
+            "重复" if str(body.get("msg") or "") == "duplicate" else "新建",
+        ))
+
+    _print_upload_summary(rows, errors, total=len(files))
+    if errors:
+        raise SystemExit(1)
+
+
+def _print_upload_summary(
+    rows: list[tuple[str, str, str, str, str]],
+    errors: list[tuple[str, str]],
+    total: int,
+) -> None:
+    headers = ("文件", "doc_id", "状态", "片段", "结果")
+    widths = [
+        max(_disp_width(headers[i]), max((_disp_width(r[i]) for r in rows), default=0))
+        for i in range(len(headers))
+    ]
+
+    def line(cells: tuple[str, ...]) -> str:
+        return "  ".join(c + " " * (w - _disp_width(c)) for c, w in zip(cells, widths)).rstrip()
+
+    print()
+    print(line(headers))
+    print("  ".join("-" * w for w in widths))
+    for row in rows:
+        print(line(row))
+
+    created = sum(1 for r in rows if r[4] == "新建")
+    duplicate = sum(1 for r in rows if r[4] == "重复")
+    failed = sum(1 for r in rows if r[4] == "失败")
+    skipped = total - len(rows)
+    print(f"\n共 {total} 个文件:新建 {created} / 重复 {duplicate} / 失败 {failed}"
+          + (f" / 未执行 {skipped}" if skipped else ""))
+    if errors:
+        print("失败明细:")
+        for name, detail in errors:
+            print(f"  - {name}: {detail}")
+        if skipped:
+            print("  (未加 --continue-on-error,出错后停止)")
+
 
 
 def cmd_lib_list(client: Client, args) -> None:
@@ -444,8 +556,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default=".")
     p.set_defaults(func=cmd_artifact)
 
-    p = sub.add_parser("lib-upload", help="POST /library/documents")
-    p.add_argument("file")
+    p = sub.add_parser("lib-upload", help="POST /library/documents (one file, many files, or dirs)")
+    p.add_argument("file", nargs="+", help="file(s) or dir(s)")
+    p.add_argument("--recursive", action="store_true", help="descend into directories")
+    p.add_argument("--continue-on-error", action="store_true",
+                   help="keep going after a failure (default: stop, still print the summary)")
     p.set_defaults(func=cmd_lib_upload)
 
     p = sub.add_parser("lib-list", help="GET /library/documents")
