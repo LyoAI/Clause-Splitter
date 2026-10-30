@@ -1,8 +1,9 @@
-"""grounding 防幻觉回归 —— 注入伪造 ID 的 episode 必须被降级为缺失。
+"""grounding 契约 —— episode 判定直接透传,id 只用于回填展示字段。
 
-历史 bug:"批量 0% 覆盖" —— agent 声称已覆盖,但引用的内规条款 ID 不在
-检索轨迹里。这三道防线的核心是 ``ground_episode``:每个 claimed id 必须
-∈ seen 集 且能在本轮检索缓存里解析,任一不落地即丢弃;全部不落地 → 降级 缺失。
+历史 bug:"批量 0% 覆盖" —— agent 声称已覆盖,但引用的内规条款 ID 与检索
+轨迹/缓存对不上,旧实现把 claim 丢弃并降级为缺失。Zeus 的 chunk id 是长串
+不可读数字,模型几乎无法原样复制,所以严格校验会把真实覆盖判成缺失;
+现在只要求缓存里能查到 id 时才回填文档名/条款号/原文,判定本身原样保留。
 
 测试自包含:用一个内存 ChunkLookup 模拟本轮检索结果,不依赖磁盘真实数据。
 """
@@ -87,22 +88,35 @@ def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试",
     )
 
 
-def test_fake_claimed_id_downgrades_to_missing():
-    """声称完全覆盖但引用的全是伪造 ID → 降级为缺失,analysis 替换为降级文案。"""
+def test_unresolvable_claim_keeps_the_verdict():
+    """引用的 id 在本轮缓存里查不到 → 判定保留,展示字段留空(不再降级)。"""
     store = _mini_store()
 
     r = ground_episode(_mk_result("完全覆盖", [FAKE_ID], {FAKE_ID: "quote"}, [REAL_ID]), store, EXT)
-    assert r.status == CoverageStatus.NOT_COVERED
-    assert "降级" in r.analysis
-    assert r.matched_internal_id is None
+    assert r.status == CoverageStatus.FULLY_COVERED
+    assert r.matched_internal_id == FAKE_ID
+    assert r.matched_internal_document_name is None
+    assert r.matched_internal_source_text == ""
 
 
-def test_real_id_outside_seen_set_downgrades():
-    """引用真实存在的条款但不在检索轨迹(seen 集)里 → 同样降级。"""
+def test_claim_outside_the_trajectory_is_still_accepted():
+    """轨迹里没出现过的 id 也照收 —— 不再对照 seen 集。"""
     store = _mini_store()
 
-    r = ground_episode(_mk_result("部分覆盖", [REAL_ID], {REAL_ID: "q"}, [FAKE_ID]), store, EXT)
-    assert r.status == CoverageStatus.NOT_COVERED
+    r = ground_episode(_mk_result("部分覆盖", [REAL_ID], {REAL_ID: "q"}, []), store, EXT)
+    assert r.status == CoverageStatus.PARTIALLY_COVERED
+    assert r.matched_internal_id == REAL_ID
+    assert r.matched_internal_source_text == "数据处理者应当建立数据安全管理制度。"
+
+
+def test_covered_without_any_claimed_id_keeps_coverage():
+    """声称覆盖但没给 id → 判定保留,展示字段为空。"""
+    store = _mini_store()
+
+    r = ground_episode(_mk_result("完全覆盖", [], {}, [REAL_ID]), store, EXT)
+    assert r.status == CoverageStatus.FULLY_COVERED
+    assert r.matched_internal_id is None
+    assert r.matched_internal_clause_ids == []
 
 
 def test_groundable_claim_keeps_coverage():

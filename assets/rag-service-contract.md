@@ -44,8 +44,9 @@ clause_splitter/rag/providers/<x>.py ← wire 细节(登录、字段、端点映
 内部类型(`clause_splitter/rag/types.py`):
 
 - `Chunk(chunk_id, doc_id, order, text, meta)` — `chunk_id` 在一次运行内必须稳定,
-  grounding 依赖它;`doc_id` 是制度名,`order` 是文档内阅读顺序。
-- `Hit(chunk_id, text, score, doc_id, section)` — `text` 必须是切片全文(给模型截断,grounding 用原文)。
+  结果回填与回调依赖它;`doc_id` 是制度名,`order` 是文档内阅读顺序。
+- `Hit(chunk_id, text, score, doc_id, section)` — `text` 必须是切片全文(给模型看原文,
+  也是复核页展示的承接条款正文)。
 - `DocInfo(doc_id, name, chunk_count, state)` — `state`: `indexed` / `indexing` / `failed`。
 - `CorpusStats(doc_count, chunk_count, version)` — `version` 变化代表语料变化,写进 `analysis_index_signature`。
 

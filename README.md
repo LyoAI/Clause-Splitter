@@ -18,9 +18,11 @@ stages in the product flow):
    evidence-grounded internal-clause matches and top-k retrieval candidates;
    a self-contained HTML review page is then rendered.
 
-Answer grounding is strict: a claimed internal chunk id must appear in the
-episode's retrieval trace *and* be resolvable from that run's retrieval cache,
-otherwise the claim is dropped and the clause downgraded to 缺失.
+The episode's coverage verdict is taken at face value: claimed internal clause
+ids are not checked against the retrieval trace, because Zeus chunk ids are long
+opaque strings the model rarely copies exactly. Ids are resolved from that run's
+retrieval cache only to fill the display fields (doc name / clause number /
+source text); an unresolvable id leaves them empty and never flips the status.
 
 ## Layout
 

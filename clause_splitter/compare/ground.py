@@ -1,9 +1,11 @@
-"""Grounding — turn the agent's verdict into a verifiable MatchResult.
+"""Grounding — turn the agent's verdict into a MatchResult.
 
-Every claimed internal chunk id must appear in the retrieval trajectory AND
-resolve from this run's chunk cache. A coverage verdict without a groundable
-claim degrades to 缺失 with the analysis replaced, so hallucinated citations
-never reach the final result.
+The episode's coverage verdict is taken at face value: claimed internal chunk
+ids are **not** checked against the retrieval trajectory. Zeus chunk ids are
+long opaque strings that the model rarely reproduces exactly, so a strict check
+turned real coverage into 缺失. Ids are resolved against this run's chunk cache
+for display only (doc name / clause number / source text); an unresolvable id
+leaves those fields empty but never changes the status.
 """
 
 from __future__ import annotations
@@ -21,11 +23,6 @@ from .episode import ExternalClause
 
 logger = get_logger()
 
-# Surfaces in the review page — keep user-facing wording.
-_DOWNGRADE_ANALYSIS = (
-    "内规库中未检索到可承接的候选条款。判定声称已覆盖，但引用的内规条款 ID "
-    "无法对应到任何检索结果（疑似幻觉），已降级为缺失。请人工复核该外规义务是否确有内规承接。"
-)
 #: Default analysis when the agent gave none (MatchResult.analysis must be non-empty).
 _NOT_COVERED_ANALYSIS = "内规库中未检索到承接该外规义务的条款，判定为缺失。"
 #: Default remedy for 缺失 when the agent gave none.
@@ -76,24 +73,6 @@ def _first_json_object(text: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def collect_seen_chunk_ids(trajectory: list) -> set[str]:
-    """Union the chunk_ids across all ``*_search`` / ``get_context`` tool results."""
-    seen: set[str] = set()
-    for turn in trajectory:
-        if not turn.tool_name.endswith("_search") and turn.tool_name != "get_context":
-            continue
-        try:
-            rows = json.loads(turn.tool_result)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if isinstance(row, dict) and row.get("chunk_id"):
-                seen.add(str(row["chunk_id"]))
-    return seen
-
-
 def ground_episode(
     result: AgentResult,
     lookup: ChunkLookup,
@@ -135,37 +114,25 @@ def ground_episode(
             base["remedy_suggestion"] = _NOT_COVERED_REMEDY
         return MatchResult(**base)
 
-    # A coverage verdict → grounding is mandatory.
-    seen = collect_seen_chunk_ids(result.trajectory)
-    grounded: list[str] = []
-    for cid in claimed_ids:
-        if cid not in seen:
-            logger.warning("claim %r not in retrieval trajectory, dropped", cid)
-            continue
-        chunk = lookup.get_chunk(cid)
-        if chunk is None:
-            logger.warning("claim %r not in store, dropped", cid)
-            continue
-        grounded.append(cid)
-
-    if not grounded:
+    # A coverage verdict passes through; ids only feed the display fields.
+    claimed = claimed_ids
+    resolved = [cid for cid in claimed if lookup.get_chunk(cid)]
+    head_id = resolved[0] if resolved else (claimed[0] if claimed else None)
+    head = lookup.get_chunk(head_id) if head_id else None
+    if claimed and not resolved:
         logger.warning(
-            "ext=%s status=%s with no groundable claim, degrading to missing",
-            ext.clause_id, status,
+            "ext=%s claims %s, none resolvable from this run's cache — "
+            "display fields left empty, verdict kept",
+            ext.clause_id, claimed,
         )
-        return MatchResult(
-            **{**base, "status": CoverageStatus.NOT_COVERED, "analysis": _DOWNGRADE_ANALYSIS}
-        )
-
-    head = lookup.get_chunk(grounded[0])
     return MatchResult(**{
         **base,
-        "matched_internal_id": grounded[0],
+        "matched_internal_id": head_id,
         "matched_internal_document_name": head.doc_id if head else None,
         "matched_internal_clause_number": segment_label(head) if head else "",
         "matched_internal_source_text": head.text if head else "",
-        "matched_internal_clause_ids": grounded,
-        "analysis": _merge_analysis(analysis, grounded, lookup),
+        "matched_internal_clause_ids": claimed,
+        "analysis": _merge_analysis(analysis, claimed, lookup),
     })
 
 

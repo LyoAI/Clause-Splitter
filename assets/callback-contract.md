@@ -63,7 +63,7 @@
 |---|---|
 | `chapter` | 所属章节路径(末级为条款号时已剔除),无章节为空串 |
 | `orderNum` | 条款顺序,**字符串**,从 `"0"` 开始 |
-| `relationTerms` | grounding **采纳**的内规条款数组,无则为 `[]`;结构见下 |
+| `relationTerms` | episode 引用(采纳)的内规条款数组,无则为 `[]`;结构见下 |
 | `termContent` | 条款正文 |
 | `termId` | `{docId}-{orderNum}`,如 `D001-0` |
 | `termKeyword` | 条款关键词,本地 jieba 提取 |
@@ -87,7 +87,8 @@
 }
 ```
 
-- 只包含 grounding 采纳的内规条款;批量预召回但未采纳的不下发。
+- 只包含 episode 引用的内规条款;批量预召回但未采纳的不下发。
+- id 在本轮检索缓存里查不到时仍保留 id,`docName`/`clauseName`/`clauseContent` 为空串。
 - 外规条款没有关联内规时为 `[]`。
 - 条款类型(`clause_type`:义务性/指导性/宣示性)仍在库内保留,本次不下发。
 
