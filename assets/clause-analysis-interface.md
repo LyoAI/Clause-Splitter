@@ -20,7 +20,7 @@ for clause in clauses:                           # 工程的 for 循环
 
 - `analyze` 是唯一对外方法;无状态,每次调用独立。
 - 并发由调用方控制。内网 LLM 只有 2 个并发槽,并行度请 ≤ 2。
-- 离线冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果。
+- 单条冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果。
 
 ## 2. 输入 `ClauseInput`
 
@@ -31,51 +31,94 @@ for clause in clauses:                           # 工程的 for 循环
 | `clause_number` | str | 否 | 条款号,如 `第一条` / `Article 1` |
 | `section` | str | 否 | 所属章节路径,无则 `""` |
 
-输入只需条款原文与元信息;不需要、也不接受五元组等预拆分字段。
+输入只需条款原文与元信息;不接受五元组等预拆分字段。
 
-## 3. 输出 `ClauseResult` → `to_esg()`
+## 3. 输出:`to_esg()`
 
-`to_esg()` 返回 ESG 回调 `data[]` 的一个元素中**算法侧**的字段(字段名与 `assets/callback-contract.md` 一致):
-
-| 字段 | 说明 |
-|---|---|
-| `termName` | 条款号 |
-| `internalize` | `需要内化` / `无需内化` |
-| `internalizeReason` | 内化判定依据 |
-| `coverageStatus` | `完全覆盖` / `部分覆盖` / `缺失`;**无需内化时为空串**(未执行分析) |
-| `analysis` | 覆盖分析;无需内化时为空串 |
-| `differenceAnalysis` | 差异说明(仅部分覆盖) |
-| `coreRequirements` | 核心监管要求 |
-| `remedySuggestion` | 整改建议 |
-| `relationTerms` | 采纳的内规条款数组,无则 `[]` |
-
-`relationTerms` 元素:
+返回 ESG 回调 `data[]` 的一个元素中**算法侧**的字段:
 
 ```json
 {
-  "internalClauseId": "数据安全管理办法#2",
-  "docName": "数据安全管理办法",
-  "clauseName": "第二条",
-  "clauseContent": "……"
+  "termName": "第十二条",
+  "internalize": "1",
+  "internalizeReason": "……",
+  "requireType": "1",
+  "coverageStatus": "1",
+  "analysis": "……",
+  "differenceAnalysis": "……",
+  "coreRequirements": "1）……",
+  "remedySuggestion": "1）……",
+  "relationTerms": [
+    {
+      "aiRelationBasis": "原文关键句",
+      "relationDocId": "内规文档ID",
+      "termContent": "关联条款原文",
+      "termId": "关联条款ID",
+      "termKeyword": "",
+      "termName": "第二条"
+    }
+  ]
 }
 ```
 
-- `internalClauseId` 始终保留;`docName` / `clauseName` / `clauseContent` 仅在本次检索缓存中能查到时回填,否则为空串。
-- 覆盖结论按模型原样输出,引用 id 不影响 `coverageStatus`。
+### 3.1 字段说明
 
-工程侧需补齐的字段(本模块不产出):`chapter`、`orderNum`、`termId`、`termContent`、`termKeyword`,以及文档级字段。
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `termName` | str | 条款名称(条款号) |
+| `internalize` | str | 内化判定,枚举见 3.2 |
+| `internalizeReason` | str | 内化判定依据 |
+| `requireType` | str | 要求类型,枚举见 3.2;判定无有效值时为 `""` |
+| `coverageStatus` | str | 覆盖状态,枚举见 3.2;**无需内化时为 `""`**(未执行分析) |
+| `analysis` | str | 覆盖分析;无需内化时为 `""` |
+| `differenceAnalysis` | str | 差异说明(仅部分覆盖) |
+| `coreRequirements` | str | 核心监管要求 |
+| `remedySuggestion` | str | 整改建议 |
+| `relationTerms` | array | 采纳的内规条款,无则 `[]` |
+
+`relationTerms` 元素:
+
+| 字段 | 说明 |
+|---|---|
+| `aiRelationBasis` | AI 关联依据:模型引用的支撑原文关键句;取不到时为 `""` |
+| `relationDocId` | 关联内规文档 ID,即后端 `docId`(内规入库时作为 Zeus `org_data_id` 写入);取不到时为 `""` |
+| `termContent` | 关联条款原文 |
+| `termId` | 关联条款 ID(检索返回的 chunk id) |
+| `termKeyword` | 关联条款关键字;**由工程侧补充,本模块输出 `""`** |
+| `termName` | 关联条款名称(条款号) |
+
+关联条款的 `relationDocId` / `termContent` / `termName` 仅在本次检索缓存中能查到时回填;查不到时 `termId` 仍保留,其余为 `""`。覆盖结论不因引用 id 无法回查而改变。
+
+### 3.2 枚举取值
+
+全部枚举值以**数字字符串**输出。
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `internalize` | `"0"` | 无需内化(宣示性/程序性条款,如立法目的、适用范围、定义、附则) |
+| | `"1"` | 需要内化(义务性或指导性条款;含预防性内化) |
+| `requireType` | `"1"` | 义务性要求(以"应当/须"等设定积极义务) |
+| | `"2"` | 禁止性要求(以"不得/禁止/严禁"等设定不作为要求) |
+| | `"3"` | 鼓励性要求(以"鼓励/建议/支持"等倡导,或未设定具体义务) |
+| | `""` | 判定未给出有效值 |
+| `coverageStatus` | `"0"` | 缺失(未覆盖);检索异常等无法完成判定的情况也以此输出,并在 `analysis` 注明"需人工复核" |
+| | `"1"` | 部分覆盖 |
+| | `"2"` | 全部覆盖(完全覆盖) |
+| | `""` | 未执行分析(无需内化) |
+
+注:示例文件中的 `applicable`(0 不适用 / 1 适用 / 2 直接适用 / 3 间接适用)是**文档级**字段,由工程侧的适用性判断产出,不在本模块输出中。
 
 ## 4. 错误语义
 
 | 情况 | 行为 |
 |---|---|
-| 内化判定 LLM 超时/失败/输出无法解析 | 按**需要内化**处理,`internalizeReason` 注明原因,继续比对 |
-| 单条比对超时(`EPISODE_TIMEOUT_S`)或执行异常 | 返回 `coverageStatus=缺失`,`analysis` 注明"需人工复核",不抛出 |
+| 内化判定 LLM 超时/失败/输出无法解析 | 按需要内化(`"1"`)处理,`internalizeReason` 注明原因,继续比对 |
+| 单条比对超时(`EPISODE_TIMEOUT_S`)或执行异常 | `coverageStatus="0"`,`analysis` 注明"需人工复核",不抛出 |
+| Zeus 检索异常(不可达 / 5xx) | 失败的检索不中断比对;若最终判定为缺失且出现过检索失败,降级为 `"0"` + 需人工复核,不抛出 |
 | Zeus 未配置 | 抛出 `RagNotConfigured` |
 | Zeus 鉴权失败 | 抛出 `RagAuthError` |
-| Zeus 检索异常(不可达 / 5xx) | 失败的检索不中断比对;若最终判定为缺失且出现过检索失败,降级为 `缺失` + 需人工复核,不抛出 |
 
-抛出的两类是部署问题,调用方应中止整批。注意:单条降级时 `缺失` 与 `需人工复核` 仅靠 `analysis` 文案区分。
+抛出的两类是部署问题,调用方应中止整批。注意:`"0"` 同时代表真实缺失和降级的需人工复核,两者只能靠 `analysis` 文案区分。
 
 ## 5. 配置(环境变量,`clause_analysis/config.py`)
 

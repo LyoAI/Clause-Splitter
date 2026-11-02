@@ -68,20 +68,47 @@ def test_to_esg_maps_algorithm_fields_and_empty_when_not_analysed():
         clause_number="第一条",
         internalize="需要内化",
         internalize_reason="义务性条款",
+        require_type="禁止性要求",
         coverage_status=CoverageStatus.FULLY_COVERED,
         analysis="1) 已承接",
-        related_terms=[RelatedTerm(internal_clause_id="办法#2", doc_name="内规", clause_name="第二条", clause_content="…")],
+        related_terms=[RelatedTerm(
+            ai_relation_basis="关键句", relation_doc_id="doc-9", term_content="…",
+            term_id="办法#2", term_name="第二条",
+        )],
     ).to_esg()
     assert analysed["termName"] == "第一条"
-    assert analysed["coverageStatus"] == "完全覆盖"
+    assert analysed["internalize"] == "1"
+    assert analysed["requireType"] == "2"
+    assert analysed["coverageStatus"] == "2"
     assert analysed["relationTerms"] == [{
-        "internalClauseId": "办法#2", "docName": "内规", "clauseName": "第二条", "clauseContent": "…",
+        "aiRelationBasis": "关键句", "relationDocId": "doc-9", "termContent": "…",
+        "termId": "办法#2", "termKeyword": "", "termName": "第二条",
     }]
 
     skipped = ClauseResult(clause_number="第二条", internalize="无需内化", internalize_reason="宣示性").to_esg()
+    assert skipped["internalize"] == "0"
     assert skipped["coverageStatus"] == ""
+    assert skipped["requireType"] == ""
     assert skipped["analysis"] == ""
     assert skipped["relationTerms"] == []
+
+
+def test_coverage_and_require_type_digit_codes():
+    from clause_analysis.types import COVERAGE_CODE, REQUIRE_TYPE_CODE
+
+    assert COVERAGE_CODE[CoverageStatus.NOT_COVERED] == "0"
+    assert COVERAGE_CODE[CoverageStatus.PARTIALLY_COVERED] == "1"
+    assert COVERAGE_CODE[CoverageStatus.FULLY_COVERED] == "2"
+    assert REQUIRE_TYPE_CODE == {"义务性要求": "1", "禁止性要求": "2", "鼓励性要求": "3"}
+
+
+def test_evidence_is_parsed_per_chunk_id():
+    verdict = ground(_answer({
+        "status": "完全覆盖",
+        "matched_internal_clause_ids": ["办法#2"],
+        "evidence": {"办法#2": "第二条 原文关键句"},
+    }))
+    assert verdict.evidence == {"办法#2": "第二条 原文关键句"}
 
 
 def test_failed_search_is_counted_so_a_miss_is_not_trusted():

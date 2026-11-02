@@ -128,6 +128,7 @@ def _base(clause: ClauseInput, judgment: Judgment) -> ClauseResult:
         clause_number=clause.clause_number,
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
+        require_type=judgment.require_type,
     )
 
 
@@ -137,6 +138,7 @@ def _degraded(clause: ClauseInput, judgment: Judgment, note: str) -> ClauseResul
         clause_number=clause.clause_number,
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
+        require_type=judgment.require_type,
         coverage_status=CoverageStatus.NOT_COVERED,
         analysis=note,
     )
@@ -147,10 +149,12 @@ def _result(
 ) -> ClauseResult:
     related = [
         RelatedTerm(
-            internal_clause_id=cid,
-            doc_name=chunk.doc_id if chunk else "",
-            clause_name=segment_label(chunk) if chunk else "",
-            clause_content=chunk.text if chunk else "",
+            ai_relation_basis=verdict.evidence.get(cid, ""),
+            # Zeus org_data_id = the document id recorded at ingestion (the backend docId).
+            relation_doc_id=str(chunk.meta.get("org_data_id") or "") if chunk else "",
+            term_content=chunk.text if chunk else "",
+            term_id=cid,
+            term_name=segment_label(chunk) if chunk else "",
         )
         for cid, chunk in resolve_ids(verdict.claimed_ids, registry)
     ]
@@ -158,6 +162,7 @@ def _result(
         clause_number=clause.clause_number,
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
+        require_type=judgment.require_type,
         coverage_status=verdict.status,
         analysis=verdict.analysis,
         difference_analysis=verdict.difference_analysis,

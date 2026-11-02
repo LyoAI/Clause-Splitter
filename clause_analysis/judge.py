@@ -18,7 +18,7 @@ from .types import NEEDS_INTERNALIZATION, NO_INTERNALIZATION, ClauseInput
 
 logger = get_logger()
 
-_REQUIRE_TYPES = ("义务性要求", "鼓励性要求")
+_REQUIRE_TYPES = ("义务性要求", "禁止性要求", "鼓励性要求")
 
 
 @dataclass

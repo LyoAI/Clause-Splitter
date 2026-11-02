@@ -31,6 +31,8 @@ _JSON_DECODER = json.JSONDecoder()
 class Verdict:
     status: CoverageStatus
     claimed_ids: list[str] = field(default_factory=list)
+    #: chunk_id -> the key sentence the model cited as evidence.
+    evidence: dict[str, str] = field(default_factory=dict)
     analysis: str = ""
     difference_analysis: str = ""
     core_requirements: str = ""
@@ -69,6 +71,7 @@ def ground(raw_answer: str) -> Verdict:
     verdict = Verdict(
         status=status,
         claimed_ids=_norm_ids(parsed.get("matched_internal_clause_ids")),
+        evidence=_norm_evidence(parsed.get("evidence")),
         analysis=norm_str(parsed.get("analysis")),
         difference_analysis=norm_str(parsed.get("difference_analysis")),
         core_requirements=norm_str(parsed.get("core_regulatory_requirements")),
@@ -92,6 +95,12 @@ def _norm_status(value: Any) -> CoverageStatus:
             return status
     logger.warning("unknown coverage status %r, treating as missing", value)
     return CoverageStatus.NOT_COVERED
+
+
+def _norm_evidence(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(k).strip(): norm_str(v) for k, v in value.items() if str(k).strip()}
 
 
 def _norm_ids(value: Any) -> list[str]:

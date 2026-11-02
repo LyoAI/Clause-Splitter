@@ -1,9 +1,10 @@
 """Input and output models of the clause-analysis module.
 
 ``ClauseResult.to_esg()`` emits the algorithm-owned fields of one ``data[]``
-element of the backend payload (see ``assets/callback-contract.md``). Document
-and orchestration fields (chapter, orderNum, termId, termContent, ...) belong to
-the caller.
+element of the backend payload. Enumerations are emitted as digit strings
+(see the code tables below and ``assets/clause-analysis-interface.md``).
+Document and orchestration fields (chapter, orderNum, termId, termContent,
+termKeyword, ...) belong to the caller.
 """
 
 from __future__ import annotations
@@ -13,15 +14,28 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-#: Internalization decision — the only two values the contract allows.
+#: Internalization decision — the only two values the judgment can produce.
 NEEDS_INTERNALIZATION = "需要内化"
 NO_INTERNALIZATION = "无需内化"
+
+#: Wire codes (digit strings). Missing value / not analysed = "".
+INTERNALIZE_CODE = {NO_INTERNALIZATION: "0", NEEDS_INTERNALIZATION: "1"}
+REQUIRE_TYPE_CODE = {"义务性要求": "1", "禁止性要求": "2", "鼓励性要求": "3"}
 
 
 class CoverageStatus(str, Enum):
     FULLY_COVERED = "完全覆盖"
     PARTIALLY_COVERED = "部分覆盖"
     NOT_COVERED = "缺失"
+
+
+#: Wire codes for coverage. Keyed by the enum member, so renaming a label
+#: never silently changes a code.
+COVERAGE_CODE = {
+    CoverageStatus.NOT_COVERED: "0",
+    CoverageStatus.PARTIALLY_COVERED: "1",
+    CoverageStatus.FULLY_COVERED: "2",
+}
 
 
 class ClauseInput(BaseModel):
@@ -34,24 +48,28 @@ class ClauseInput(BaseModel):
 
 
 class RelatedTerm(BaseModel):
-    """An internal clause the episode adopted as evidence."""
+    """An internal clause the episode adopted as evidence (``relationTerms`` element)."""
 
-    internal_clause_id: str
-    doc_name: str = ""
-    clause_name: str = ""
-    clause_content: str = ""
+    ai_relation_basis: str = Field(default="", description="AI 关联依据:支撑判定的原文关键句")
+    relation_doc_id: str = Field(default="", description="关联内规文档 ID")
+    term_content: str = Field(default="", description="关联条款原文")
+    term_id: str = Field(default="", description="关联条款 ID(检索返回的 chunk_id)")
+    term_keyword: str = Field(default="", description="关联条款关键字;由工程侧补充,本模块为空串")
+    term_name: str = Field(default="", description="关联条款名称(条款号)")
 
 
 class ClauseResult(BaseModel):
     """Outcome for one clause.
 
     ``coverage_status`` is ``None`` when no analysis ran (the clause does not
-    need internalization); the ESG payload then carries an empty string.
+    need internalization); ``require_type`` is "" when the judgment did not
+    give a valid value. The ESG payload carries "" for both in those cases.
     """
 
     clause_number: str = ""
     internalize: str = Field(..., description="需要内化 / 无需内化")
     internalize_reason: str = ""
+    require_type: str = Field(default="", description="义务性要求 / 禁止性要求 / 鼓励性要求")
     coverage_status: CoverageStatus | None = None
     analysis: str = ""
     difference_analysis: str = ""
@@ -60,22 +78,25 @@ class ClauseResult(BaseModel):
     related_terms: list[RelatedTerm] = Field(default_factory=list)
 
     def to_esg(self) -> dict[str, Any]:
-        """Algorithm-owned fields of one ``data[]`` element."""
+        """Algorithm-owned fields of one ``data[]`` element (digit-string enums)."""
         return {
             "termName": self.clause_number,
-            "internalize": self.internalize,
+            "internalize": INTERNALIZE_CODE.get(self.internalize, ""),
             "internalizeReason": self.internalize_reason,
-            "coverageStatus": self.coverage_status.value if self.coverage_status else "",
+            "requireType": REQUIRE_TYPE_CODE.get(self.require_type, ""),
+            "coverageStatus": COVERAGE_CODE[self.coverage_status] if self.coverage_status else "",
             "analysis": self.analysis,
             "differenceAnalysis": self.difference_analysis,
             "coreRequirements": self.core_requirements,
             "remedySuggestion": self.remedy_suggestion,
             "relationTerms": [
                 {
-                    "internalClauseId": t.internal_clause_id,
-                    "docName": t.doc_name,
-                    "clauseName": t.clause_name,
-                    "clauseContent": t.clause_content,
+                    "aiRelationBasis": t.ai_relation_basis,
+                    "relationDocId": t.relation_doc_id,
+                    "termContent": t.term_content,
+                    "termId": t.term_id,
+                    "termKeyword": t.term_keyword,
+                    "termName": t.term_name,
                 }
                 for t in self.related_terms
             ],
