@@ -1,77 +1,59 @@
-"""LLM facade — provider selection from ``config/llm/<model>.yaml``."""
+"""LLM facade — provider selection from ``<config_dir>/<model>.yaml``."""
 
 from __future__ import annotations
 
 import pytest
 
-from clause_splitter.llm import llm_registry
-from clause_splitter.llm.llm_registry import get_llm
-from clause_splitter.llm.provider import OpenAICompatProvider
-from clause_splitter.llm.provider.pingan import PingAnLLMProvider
+from llm import get_llm
+from llm.provider import OpenAICompatProvider
+from llm.provider.pingan import PingAnLLMProvider
 
 OPENAI = """
 openai:
   api_key: test
   api_base: http://llm.local/v1
-  model_name: model-a
 """
 
-PINGAN = """
+PINGAN_NO_SCENE = """
 pingan:
-  api_key: unused
-  api_base: http://gateway.local/v1
-  model_name: qwen3.8-27b
-  appKey: ak
-  appSecret: as
-  rsaPrivateKey: "00"
-  openApiCredential: cred
-  sceneId: "42"
-  requestId: rid
+  api_key: test
+  api_base: http://llm.local/v1
+  appKey: k
 """
 
-
-def _use_config(tmp_path, monkeypatch, body: str) -> None:
-    (tmp_path / "m.yaml").write_text(body, encoding="utf-8")
-    monkeypatch.setattr(llm_registry, "LLM_CONFIG_DIR", tmp_path)
+PINGAN_OK = PINGAN_NO_SCENE + "  sceneId: 1\n"
 
 
-def test_openai_section_is_the_default(tmp_path, monkeypatch):
-    _use_config(tmp_path, monkeypatch, OPENAI)
-    llm = get_llm("m")
+def _cfg(tmp_path, name: str, body: str):
+    (tmp_path / f"{name}.yaml").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+def test_openai_section_builds_compat_provider(tmp_path):
+    cfg = _cfg(tmp_path, "m1", OPENAI)
+    llm = get_llm("m1", "openai", config_dir=cfg, timeout_s=5)
     assert isinstance(llm.provider, OpenAICompatProvider)
-    assert llm.model == "model-a"
 
 
-def test_pingan_section_builds_signed_provider(tmp_path, monkeypatch):
-    _use_config(tmp_path, monkeypatch, PINGAN)
-    llm = get_llm("m", "pingan")
+def test_pingan_section_builds_signed_provider(tmp_path):
+    cfg = _cfg(tmp_path, "m2", PINGAN_OK)
+    llm = get_llm("m2", "pingan", config_dir=cfg, timeout_s=5)
     assert isinstance(llm.provider, PingAnLLMProvider)
-    assert llm.model == "qwen3.8-27b"
-    assert llm.provider.scene_id == 42
 
 
-def test_pingan_requires_scene_id(tmp_path, monkeypatch):
-    _use_config(tmp_path, monkeypatch, "pingan:\n  api_base: http://gw/v1\n")
+def test_pingan_requires_scene_id(tmp_path):
+    cfg = _cfg(tmp_path, "m3", PINGAN_NO_SCENE)
     with pytest.raises(RuntimeError, match="sceneId"):
-        get_llm("m", "pingan")
+        get_llm("m3", "pingan", config_dir=cfg, timeout_s=5)
 
 
-def test_runner_uses_configured_provider(monkeypatch):
-    from clause_splitter import config
-    from clause_splitter.jobs import JobRunner
-
-    monkeypatch.setattr(config, "LLM_PROVIDER", "pingan")
-    monkeypatch.setattr(config.get_settings(), "default_model", "m")
-    seen: dict = {}
-    monkeypatch.setattr(
-        "clause_splitter.llm.get_llm",
-        lambda name, provider_type="openai": seen.update(name=name, provider_type=provider_type),
-    )
-    JobRunner._default_llm()
-    assert seen == {"name": "m", "provider_type": "pingan"}
+def test_missing_model_file_lists_available_models(tmp_path):
+    cfg = _cfg(tmp_path, "present", OPENAI)
+    with pytest.raises(FileNotFoundError, match="present"):
+        get_llm("absent", "openai", config_dir=cfg, timeout_s=5)
 
 
-def test_settings_model_comes_from_llm_model_name():
-    from clause_splitter.config import LLM_MODEL_NAME, Settings
-
-    assert Settings().default_model == LLM_MODEL_NAME
+def test_missing_provider_section_is_a_clear_error(tmp_path):
+    cfg = _cfg(tmp_path, "m4", OPENAI)
+    with pytest.raises(ValueError, match="pingan"):
+        get_llm("m4", "pingan", config_dir=cfg, timeout_s=5)

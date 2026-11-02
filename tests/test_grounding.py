@@ -1,434 +1,93 @@
-"""grounding 契约 —— episode 判定直接透传,id 只用于回填展示字段。
-
-历史 bug:"批量 0% 覆盖" —— agent 声称已覆盖,但引用的内规条款 ID 与检索
-轨迹/缓存对不上,旧实现把 claim 丢弃并降级为缺失。Zeus 的 chunk id 是长串
-不可读数字,模型几乎无法原样复制,所以严格校验会把真实覆盖判成缺失;
-现在只要求缓存里能查到 id 时才回填文档名/条款号/原文,判定本身原样保留。
-
-测试自包含:用一个内存 ChunkLookup 模拟本轮检索结果,不依赖磁盘真实数据。
-"""
+"""Verdict pass-through, answer parsing and the ESG element shape (pure logic)."""
 
 from __future__ import annotations
 
 import json
 
-from clause_splitter.agent import AgentResult, AgentTurn
-from clause_splitter.compare.episode import ExternalClause
-from clause_splitter.compare.ground import ground_episode, parse_answer_json
-from clause_splitter.models import CoverageStatus
-from clause_splitter.rag import Chunk
-from clause_splitter.utils import segment_label
+import pytest
 
-EXT = ExternalClause(document_name="外规", clause_number="第一条", full_text="测试条款")
-
-REAL_ID = "网络数据安全管理条例#第一条"
-FAKE_ID = "网络数据安全管理条例#不存在条款"
+from clause_analysis.episode import build_episode_prompt
+from clause_analysis.grounding import ground, parse_answer_json, resolve_ids
+from clause_analysis.types import ClauseInput, ClauseResult, CoverageStatus, RelatedTerm
+from agent import ToolRegistry
+from rag import Hit
+from rag.providers.zeus import ZeusProvider
 
 
-class _Lookup:
-    """Minimal ``ChunkLookup`` — what the registry cached during one run."""
-
-    def __init__(self, chunks: list[Chunk] | None = None) -> None:
-        self._chunks = {c.chunk_id: c for c in chunks or []}
-
-    def add(self, chunk: Chunk) -> None:
-        self._chunks[chunk.chunk_id] = chunk
-
-    def get_chunk(self, chunk_id: str) -> Chunk | None:
-        return self._chunks.get(chunk_id)
+def _answer(payload: dict) -> str:
+    return f"<answer>{json.dumps(payload, ensure_ascii=False)}</answer>"
 
 
-def _mini_store() -> _Lookup:
-    """内存小内规库,供 grounding 校验 claim 能否解析。"""
-    lookup = _Lookup()
-    lookup.add(Chunk(
-        chunk_id=REAL_ID, doc_id="网络数据安全管理条例", order=0,
-        text="数据处理者应当建立数据安全管理制度。",
-        meta={"doc": "网络数据安全管理条例", "clause_number": "第一条", "section": "第一章 总则"},
-    ))
-    lookup.add(Chunk(
-        chunk_id="网络数据安全管理条例#第二条", doc_id="网络数据安全管理条例", order=1,
-        text="禁止未经授权的数据访问和数据泄露。",
-        meta={"doc": "网络数据安全管理条例", "clause_number": "第二条", "section": "第一章 总则"},
-    ))
-    return lookup
+def test_parse_answer_tolerates_missing_close_tag_and_trailing_prose():
+    raw = '<answer>{"status":"完全覆盖"} 以上是结论'
+    assert parse_answer_json(raw) == {"status": "完全覆盖"}
 
 
-def _mk_result(status, claimed_ids, evidence, seen_chunk_ids, analysis="测试", remedy="测试",
-               extra: dict | None = None) -> AgentResult:
-    """构造一个 agent episode:轨迹只返回 seen_chunk_ids,答案声称 claimed_ids。
-
-    ``extra`` 可并入答案 JSON(覆盖/新增键),用于测试内化判定等新字段透传。
-    """
-    trajectory = [
-        AgentTurn(
-            step=i,
-            tool_name="knowledge_search",
-            tool_args={"query": "x"},
-            tool_result=json.dumps([{"chunk_id": cid, "score": 1.0}], ensure_ascii=False),
-            tool_time_s=0.1,
-        )
-        for i, cid in enumerate(seen_chunk_ids)
-    ]
-    answer_body = json.dumps(
-        {
-            "status": status,
-            "matched_internal_clause_ids": claimed_ids,
-            "evidence": {k: v for k, v in evidence.items()},
-            "analysis": analysis,
-            "remedy_suggestion": remedy,
-            **(extra or {}),
-        },
-        ensure_ascii=False,
-    )
-    raw = f"<answer>{answer_body}</answer>"
-    return AgentResult(
-        question="q", answer=raw, trajectory=trajectory,
-        num_tool_calls=len(trajectory), total_tokens=0, terminated="answer",
-    )
-
-
-def test_unresolvable_claim_keeps_the_verdict():
-    """引用的 id 在本轮缓存里查不到 → 判定保留,展示字段留空(不再降级)。"""
-    store = _mini_store()
-
-    r = ground_episode(_mk_result("完全覆盖", [FAKE_ID], {FAKE_ID: "quote"}, [REAL_ID]), store, EXT)
-    assert r.status == CoverageStatus.FULLY_COVERED
-    assert r.matched_internal_id == FAKE_ID
-    assert r.matched_internal_document_name is None
-    assert r.matched_internal_source_text == ""
-
-
-def test_claim_outside_the_trajectory_is_still_accepted():
-    """轨迹里没出现过的 id 也照收 —— 不再对照 seen 集。"""
-    store = _mini_store()
-
-    r = ground_episode(_mk_result("部分覆盖", [REAL_ID], {REAL_ID: "q"}, []), store, EXT)
-    assert r.status == CoverageStatus.PARTIALLY_COVERED
-    assert r.matched_internal_id == REAL_ID
-    assert r.matched_internal_source_text == "数据处理者应当建立数据安全管理制度。"
-
-
-def test_covered_without_any_claimed_id_keeps_coverage():
-    """声称覆盖但没给 id → 判定保留,展示字段为空。"""
-    store = _mini_store()
-
-    r = ground_episode(_mk_result("完全覆盖", [], {}, [REAL_ID]), store, EXT)
-    assert r.status == CoverageStatus.FULLY_COVERED
-    assert r.matched_internal_id is None
-    assert r.matched_internal_clause_ids == []
-
-
-def test_groundable_claim_keeps_coverage():
-    """真实条款同时在 seen 集与 store 中 → 保留覆盖判定,回填 store 原文。"""
-    store = _mini_store()
-
-    r = ground_episode(_mk_result("部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID]), store, EXT)
-    assert r.status == CoverageStatus.PARTIALLY_COVERED
-    assert r.matched_internal_id == REAL_ID
-    assert r.matched_internal_source_text == "数据处理者应当建立数据安全管理制度。"  # store 原文,非 agent 改写
-
-
-def test_missing_status_passes_through():
-    """status=缺失 不需 grounding,直接通过。"""
-    store = _mini_store()
-
-    r = ground_episode(_mk_result("缺失", [], {}, [REAL_ID]), store, EXT)
-    assert r.status == CoverageStatus.NOT_COVERED
-    assert r.matched_internal_id is None
-
-
-# ── parse_answer_json 契约容错 ─────────────────────────────────────────
-# 2026-10-28 实测:模型(deepseek-v4-flash,12 条中 4 条)输出完整 JSON 后
-# 直接停笔、缺 </answer> —— 旧实现对含 <answer> 前缀的整串 json.loads 必败,
-# 判定被静默降级为缺失,表现即"没有部分覆盖、全部缺失"。
-
-
-def _verdict(answer: str) -> str | None:
-    parsed = parse_answer_json(answer)
-    return parsed.get("status") if parsed else None
-
-
-def test_parse_plain_tagged_answer():
-    assert _verdict('<answer>{"status":"缺失"}</answer>') == "缺失"
-
-
-def test_parse_missing_closing_tag_keeps_verdict():
-    """缺 </answer> 但 JSON 完整 → 判定保留(事故主形态)。"""
-    assert _verdict('<answer>{"status":"部分覆盖"}') == "部分覆盖"
-
-
-def test_parse_prose_before_unclosed_answer():
-    raw = "根据检索结果,判断如下:\n<answer>{\"status\":\"完全覆盖\"}"
-    assert _verdict(raw) == "完全覆盖"
-
-
-def test_parse_trailing_text_after_object():
-    raw = '<answer>{"status":"缺失"}</answer>以上为最终判定。'
-    assert _verdict(raw) == "缺失"
-
-
-def test_parse_truncated_json_returns_none():
-    """真截断(输出顶满 token 上限)→ None,交由调用方降级,不抛异常。"""
-    assert parse_answer_json('<answer>{"status":"部分覆盖","analysis":"1)') is None
-
-
-def test_parse_without_any_json_returns_none():
-    assert parse_answer_json("无法判定") is None
+def test_parse_answer_returns_none_for_garbage():
+    assert parse_answer_json("<answer>not json</answer>") is None
     assert parse_answer_json("") is None
 
 
-def test_ground_episode_keeps_verdict_on_unclosed_answer():
-    """端到端回归:缺闭合标签的"部分覆盖"答案 + 可落地 claim → 不再降级。"""
-    store = _mini_store()
-    result = _mk_result("部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID])
-    result.answer = result.answer.removesuffix("</answer>")  # 模拟停笔
-
-    r = ground_episode(result, store, EXT)
-    assert r.status == CoverageStatus.PARTIALLY_COVERED
-    assert r.matched_internal_id == REAL_ID
-
-
-def test_not_covered_empty_analysis_falls_back():
-    """agent 判定缺失但 analysis 为空 → 回填缺省文案,MatchResult 校验不炸。
-
-    历史 bug:MatchResult.analysis 要求 min_length=1,空串直接 ValidationError,
-    且该异常发生在 aggregate 的 try/except 之外,拖垮整批比对。
-    """
-    store = _mini_store()
-
-    r = ground_episode(_mk_result("缺失", [], {}, [], analysis="", remedy=""), store, EXT)
-    assert r.status == CoverageStatus.NOT_COVERED
-    assert r.analysis.strip()  # 回填缺省文案,非空
-
-    assert r.analysis
+def test_verdict_passes_through_even_when_claimed_ids_are_unknown():
+    verdict = ground(_answer({
+        "status": "部分覆盖",
+        "matched_internal_clause_ids": ["never-seen#9"],
+        "analysis": "1) 遗漏子要求",
+        "difference_analysis": "1) 时限更松",
+    }))
+    assert verdict.status == CoverageStatus.PARTIALLY_COVERED
+    assert verdict.claimed_ids == ["never-seen#9"]
+    assert verdict.difference_analysis == "1) 时限更松"
 
 
-def test_grounded_empty_analysis_still_nonempty():
-    """真实承接但 analysis 为空 → 合并承接条款后非空,且不以换行开头。"""
-    store = _mini_store()
-
-    r = ground_episode(
-        _mk_result("完全覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID], analysis=""),
-        store, EXT,
-    )
-    assert r.analysis.strip()
-    assert r.analysis.startswith("承接内规条款:")
+def test_missing_status_degrades_to_not_covered_with_default_texts():
+    verdict = ground("no answer block at all")
+    assert verdict.status == CoverageStatus.NOT_COVERED
+    assert verdict.analysis and verdict.remedy_suggestion
 
 
-# ── _segment_label 编号修正回归 ─────────────────────────────────────────
+def test_resolve_ids_fills_display_fields_from_this_calls_cache():
+    registry = ToolRegistry(ZeusProvider())  # unconfigured; cache is all we use
+    registry.remember([Hit(chunk_id="数据安全办法#2", text="第二条 内容", doc_id="数据安全办法")])
+    resolved = dict(resolve_ids(["数据安全办法#2", "ghost#1"], registry))
+    assert resolved["数据安全办法#2"] is not None
+    assert resolved["数据安全办法#2"].text == "第二条 内容"
+    assert resolved["ghost#1"] is None
 
 
-def _chunk(chunk_id: str, text: str, section: str = "", meta: dict | None = None) -> Chunk:
-    m = {"section": section, **(meta or {})}
-    return Chunk(chunk_id=chunk_id, doc_id=chunk_id.split("#")[0], order=0, text=text, meta=m)
+def test_episode_prompt_carries_clause_text_only():
+    clause = ClauseInput(document_name="办法", clause_number="第一条", section="第一章", text="应当建立制度。")
+    prompt = build_episode_prompt(clause)
+    assert "应当建立制度。" in prompt
+    assert "第一章" in prompt
+    assert "义务要素" not in prompt
 
 
-def test_segment_label_excel_leaf_no_separator():
-    """Excel 内规库 section 直接是 "第一条"(无 ` > ` 分隔符) → 返回 "第一条",
-    而不是 0 起始的 chunk 序号(历史偏移 bug)。"""
-    assert segment_label(_chunk("网络数据安全管理条例#0", "第一条 数据安全…", section="第一条")) == "第一条"
-    assert segment_label(_chunk("网络数据安全管理条例#1", "第二条 数据出境…", section="第二条")) == "第二条"
+def test_to_esg_maps_algorithm_fields_and_empty_when_not_analysed():
+    analysed = ClauseResult(
+        clause_number="第一条",
+        internalize="需要内化",
+        internalize_reason="义务性条款",
+        coverage_status=CoverageStatus.FULLY_COVERED,
+        analysis="1) 已承接",
+        related_terms=[RelatedTerm(internal_clause_id="办法#2", doc_name="内规", clause_name="第二条", clause_content="…")],
+    ).to_esg()
+    assert analysed["termName"] == "第一条"
+    assert analysed["coverageStatus"] == "完全覆盖"
+    assert analysed["relationTerms"] == [{
+        "internalClauseId": "办法#2", "docName": "内规", "clauseName": "第二条", "clauseContent": "…",
+    }]
+
+    skipped = ClauseResult(clause_number="第二条", internalize="无需内化", internalize_reason="宣示性").to_esg()
+    assert skipped["coverageStatus"] == ""
+    assert skipped["analysis"] == ""
+    assert skipped["relationTerms"] == []
 
 
-def test_segment_label_path_takes_last_leaf():
-    """章节路径取末级标题。"""
-    assert segment_label(_chunk("doc#0", "第三条…", section="第一章 总则 > 第三条")) == "第三条"
+def test_failed_search_is_counted_so_a_miss_is_not_trusted():
+    from rag import RagNotConfigured
 
-
-def test_segment_label_no_section_extracts_article_from_text():
-    """无 section 时从原文开头提取 "第X条"。"""
-    assert segment_label(_chunk("doc#5", "第三条　处理者应当…", section="")) == "第三条"
-    assert segment_label(_chunk("doc#5", "第二十条　…", section="")) == "第二十条"
-
-
-def test_segment_label_fallback_is_1based():
-    """既无 section 也无条款号 → 回退 1 起始段落号(第N段),不再显示 0。"""
-    assert segment_label(_chunk("doc#0", "无编号的一段文字", section="")) == "第1段"
-    assert segment_label(_chunk("doc#8", "无编号的一段文字", section="")) == "第9段"
-
-
-# ── 内化判定(前置)/ 差异说明(episode) 透传 ─────────────────────────────
-
-
-def _ext_with_intl(**kw) -> ExternalClause:
-    """带前置内化判定的外规条款(模拟检索前已由 pre_internalize 填充字段)。"""
-    return ExternalClause(
-        document_name="外规", clause_number="第一条", full_text="测试条款",
-        clause_type=kw.get("clause_type", "义务性条款"),
-        internalization_decision=kw.get("internalization_decision", "需要内化"),
-        internalization_reason=kw.get("internalization_reason", "前置判定依据"),
-    )
-
-
-def test_ground_episode_passes_through_pre_classified_internalization():
-    """内化判定来自前置阶段(存于 ext),原样透传到 MatchResult;差异说明仍由 episode 产出。"""
-    store = _mini_store()
-    r = ground_episode(
-        _mk_result(
-            "部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID],
-            extra={
-                # episode 契约已移除内化字段:即使 agent 误输出,也不该被采纳。
-                "clause_type": "宣示性条款",
-                "internalization_decision": "无需内化",
-                "difference_analysis": "外规要求加密+访问控制;内规仅覆盖加密,遗漏访问控制。",
-            },
-        ),
-        store, _ext_with_intl(
-            clause_type="义务性条款", internalization_decision="需要内化",
-            internalization_reason="外规为义务性条款且涉及核心业务",
-        ),
-    )
-    # 前置判定优先级高于 episode 输出。
-    assert r.clause_type == "义务性条款"
-    assert r.internalization_decision == "需要内化"
-    assert r.internalization_reason == "外规为义务性条款且涉及核心业务"
-    # 差异说明仍来自 episode(部分覆盖必须写差异)。
-    assert r.difference_analysis.startswith("外规要求加密")
-    # 覆盖判定本身不受新字段影响
-    assert r.status == CoverageStatus.PARTIALLY_COVERED
-
-
-def test_ground_episode_missing_new_fields_defaults_empty():
-    """未做前置判定(ext 字段空)/旧答案 → 内化字段回空串,MatchResult 校验不炸。"""
-    store = _mini_store()
-    r = ground_episode(_mk_result("缺失", [], {}, [], analysis="缺失原因", remedy=""), store, EXT)
-    assert r.clause_type == ""
-    assert r.internalization_decision == ""
-    assert r.internalization_reason == ""
-    assert r.difference_analysis == ""
-    assert r.core_regulatory_requirements == ""
-    # status=缺失 且 agent 未给整改建议 → 缺省建议新建/修订内规条款(不落空)。
-    from clause_splitter.compare.ground import _NOT_COVERED_REMEDY
-    assert r.remedy_suggestion == _NOT_COVERED_REMEDY
-    assert r.clause_type == "" and r.internalization_decision == "" and r.difference_analysis == ""
-
-
-def test_ensure_adopted_in_candidates_injects_grounded_chunks():
-    """采用条款不在批量预召回 top-k 里时,强制补入候选(adopted=True,不重复)。"""
-    from clause_splitter.compare.aggregate import _ensure_adopted_in_candidates
-    from clause_splitter.models import RetrievedCandidate
-
-    store = _Lookup()
-    store.add(Chunk(
-        chunk_id="办法#0", doc_id="数据安全管理办法", order=0,
-        text="第一条　本制度适用于数据分类分级。",
-        meta={"section": "第一章 总则 > 第一条"},
-    ))
-    # 批量预召回只有一条无关候选;采用条款「办法#0」不在其中。
-    candidates = [
-        RetrievedCandidate(
-            chunk_id="办法#1", doc_name="数据安全管理办法", clause_label="第二条",
-            backend="remote", score=5.0, query="q",
-            snippet="第二条　重要数据加密。", full_text="第二条　重要数据加密。",
-        ),
-    ]
-    _ensure_adopted_in_candidates(candidates, {"办法#0"}, store, "q")
-    ids = [c.chunk_id for c in candidates]
-    assert "办法#0" in ids  # 强制补入
-    adopted = next(c for c in candidates if c.chunk_id == "办法#0")
-    assert adopted.adopted is True
-    assert adopted.backend == "episode"  # 来自比对检索而非批量预召回
-    assert adopted.score is None  # 无批量召回得分
-    assert adopted.doc_name == "数据安全管理办法"
-    assert adopted.clause_label == "第一条"  # 走 _segment_label 的 1 起始编号
-    # 已在候选列表里的采用条款不重复补入。
-    before = len(candidates)
-    _ensure_adopted_in_candidates(candidates, {"办法#0"}, store, "q")
-    assert len(candidates) == before
-
-
-def test_ground_episode_passes_through_core_regulatory_requirements():
-    """episode 产出的核心监管要求(编号逐条、换行分隔)原样透传;旧答案无此字段 → 空串。"""
-    store = _mini_store()
-    r = ground_episode(
-        _mk_result(
-            "完全覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID],
-            extra={"core_regulatory_requirements": "1）、建立数据分类分级制度\n2）、实施数据安全管理"},
-        ),
-        store, EXT,
-    )
-    assert r.core_regulatory_requirements == "1）、建立数据分类分级制度\n2）、实施数据安全管理"
-    assert r.status == CoverageStatus.FULLY_COVERED
-
-
-def test_ground_episode_passes_through_remedy_suggestion():
-    """episode 产出的整改建议(编号逐条、换行分隔)原样透传;部分覆盖不再落空。"""
-    store = _mini_store()
-    r = ground_episode(
-        _mk_result(
-            "部分覆盖", [REAL_ID], {REAL_ID: "原文"}, [REAL_ID],
-            extra={"remedy_suggestion": "1）、补充访问控制要求\n2）、加严数据存储标准"},
-        ),
-        store, EXT,
-    )
-    assert r.remedy_suggestion == "1）、补充访问控制要求\n2）、加严数据存储标准"
-    assert r.status == CoverageStatus.PARTIALLY_COVERED
-
-
-def test_ground_episode_normalizes_preventive_to_need():
-    """旧数据 ext 填了「预防性内化」→ 透传时两值化为「需要内化」。"""
-    store = _mini_store()
-    r = ground_episode(
-        _mk_result("缺失", [], {}, []),
-        store, _ext_with_intl(internalization_decision="预防性内化"),
-    )
-    assert r.internalization_decision == "需要内化"
-    assert r.clause_type == "义务性条款"  # 其余字段原样透传
-
-
-def test_ground_episode_tolerates_non_str_diff_analysis():
-    """episode 把 difference_analysis 输出成非字符串(如 None/数字) → 回空串,不抛异常。"""
-    store = _mini_store()
-    r = ground_episode(
-        _mk_result("缺失", [], {}, [], extra={"difference_analysis": 123}),
-        store, EXT,
-    )
-    assert r.difference_analysis == ""
-    # 前置判定字段即使 ext 填了非 str 也宽容回空串(防脏数据)。
-    r2 = ground_episode(
-        _mk_result("缺失", [], {}, []),
-        store, _ext_with_intl(clause_type=123, internalization_decision=None),
-    )
-    assert r2.clause_type == ""
-    assert r2.internalization_decision == ""
-
-
-# ── retrieval precheck (a 5xx must not become an all-missing report) ──
-
-import pytest  # noqa: E402
-
-from clause_splitter.compare.aggregate import run_compare  # noqa: E402
-from clause_splitter.rag import RagAuthError, RagUnavailable  # noqa: E402
-from tests.fakes import FakeRagService, PipelineFakeLLM  # noqa: E402
-
-
-class _SearchFails(FakeRagService):
-    def __init__(self, exc: Exception) -> None:
-        super().__init__()
-        self.exc = exc
-        self.calls = 0
-
-    def search(self, query: str, k: int):
-        self.calls += 1
-        raise self.exc
-
-
-async def test_unavailable_retrieval_aborts_the_analysis_stage():
-    """One probe failure, no episode: retrieval-down ≠ "every clause missing"."""
-    service = _SearchFails(RagUnavailable("Zeus 暂不可用(500)"))
-    clauses = [ExternalClause(
-        document_name="外规", clause_number="第一条", full_text="应当开展数据安全风险评估。",
-    )]
-    with pytest.raises(RagUnavailable):
-        await run_compare(clauses, service, PipelineFakeLLM())
-    assert service.calls == 1
-
-
-async def test_auth_failure_aborts_the_analysis_stage():
-    service = _SearchFails(RagAuthError("bad secret", status_code=401))
-    clauses = [ExternalClause(
-        document_name="外规", clause_number="第一条", full_text="应当开展数据安全风险评估。",
-    )]
-    with pytest.raises(RagAuthError):
-        await run_compare(clauses, service, PipelineFakeLLM())
+    registry = ToolRegistry(ZeusProvider())  # unconfigured -> every search raises
+    with pytest.raises(RagNotConfigured):
+        registry.search("数据安全")
+    assert registry.failed_searches == 1
