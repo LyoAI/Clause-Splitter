@@ -56,7 +56,7 @@ def test_resolve_ids_fills_display_fields_from_this_calls_cache():
 
 
 def test_episode_prompt_carries_clause_text_only():
-    clause = ClauseInput(document_name="办法", clause_number="第一条", section="第一章", text="应当建立制度。")
+    clause = ClauseInput(document_name="办法", term_name="第一条", section="第一章", term_content="应当建立制度。")
     prompt = build_episode_prompt(clause)
     assert "应当建立制度。" in prompt
     assert "第一章" in prompt
@@ -65,7 +65,7 @@ def test_episode_prompt_carries_clause_text_only():
 
 def test_to_esg_maps_algorithm_fields_and_empty_when_not_analysed():
     analysed = ClauseResult(
-        clause_number="第一条",
+        term_name="第一条", term_id="c-1", term_content="应当建立制度。", term_keyword="制度建设",
         internalize="需要内化",
         internalize_reason="义务性条款",
         require_type="禁止性要求",
@@ -76,6 +76,9 @@ def test_to_esg_maps_algorithm_fields_and_empty_when_not_analysed():
             term_id="办法#2", term_name="第二条",
         )],
     ).to_esg()
+    assert analysed["termId"] == "c-1"  # pass-through of the input term_id
+    assert analysed["termContent"] == "应当建立制度。"
+    assert analysed["termKeyword"] == "制度建设"
     assert analysed["termName"] == "第一条"
     assert analysed["internalize"] == "1"
     assert analysed["requireType"] == "2"
@@ -85,12 +88,32 @@ def test_to_esg_maps_algorithm_fields_and_empty_when_not_analysed():
         "termId": "办法#2", "termKeyword": "", "termName": "第二条",
     }]
 
-    skipped = ClauseResult(clause_number="第二条", internalize="无需内化", internalize_reason="宣示性").to_esg()
+    skipped = ClauseResult(term_name="第二条", term_content="本办法自发布之日起施行。", internalize="无需内化", internalize_reason="宣示性").to_esg()
+    assert skipped["termContent"] == "本办法自发布之日起施行。"
+    assert skipped["termKeyword"] == ""
     assert skipped["internalize"] == "0"
     assert skipped["coverageStatus"] == ""
     assert skipped["requireType"] == ""
     assert skipped["analysis"] == ""
     assert skipped["relationTerms"] == []
+
+
+def test_identity_only_result_keeps_analysis_fields_empty():
+    """内规/附件 path: identity + keywords filled, everything else empty."""
+    esg = ClauseResult(
+        term_name="第一条", term_id="c-1", term_content="应当建立制度。", term_keyword="制度建设",
+        internalize="",
+    ).to_esg()
+    assert esg["termId"] == "c-1"
+    assert esg["termContent"] == "应当建立制度。"
+    assert esg["termKeyword"] == "制度建设"
+    assert esg["termName"] == "第一条"
+    assert esg["internalize"] == ""
+    assert esg["internalizeReason"] == ""
+    assert esg["requireType"] == ""
+    assert esg["coverageStatus"] == ""
+    assert esg["analysis"] == ""
+    assert esg["relationTerms"] == []
 
 
 def test_coverage_and_require_type_digit_codes():

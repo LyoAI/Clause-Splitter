@@ -1,6 +1,7 @@
-"""Unified entry point: one external clause in, one ``ClauseResult`` out.
+"""Unified entry point: one clause in, one ``ClauseResult`` out.
 
 Flow per clause:
+    keywords (rules | llm) — always, 内规/附件 stop here when ``need_internalization=False``
     judge (text only) → 无需内化: return ·
                       → episode (ReAct over Zeus) → grounding → result
 
@@ -24,6 +25,7 @@ from . import config as cfg
 from .episode import build_episode_prompt
 from .grounding import Verdict, ground, resolve_ids
 from .judge import Judgment, judge
+from .keywords import extract_keywords
 from .prompts import load, render
 from .types import (
     NO_INTERNALIZATION,
@@ -77,9 +79,21 @@ class ClauseAnalyzer:
         return cls(llm, rag)
 
     async def analyze(
-        self, clause: ClauseInput, *, search_labels: list[str] | None = None
+        self,
+        clause: ClauseInput,
+        *,
+        need_internalization: bool = True,
+        keyword_mode: str = "rules",
+        search_labels: list[str] | None = None,
     ) -> ClauseResult:
-        """Judge, then (if needed) compare one clause against the internal corpus.
+        """Extract keywords, then (外规 only) judge and compare against the corpus.
+
+        Keywords are the前置 step and run for every clause — 内规/附件 need
+        them too. ``need_internalization=False`` (docType 2/3) skips judgment
+        and retrieval entirely: only identity fields + keywords are filled, and
+        Zeus stays untouched. ``keyword_mode`` picks the extraction:
+        ``"rules"`` (regex, default) or ``"llm"`` (falls back to rules on any
+        failure).
 
         ``search_labels`` optionally narrows retrieval to Zeus chunks carrying
         those labels; ``None`` / empty searches the whole index. Retrieval scope
@@ -88,13 +102,15 @@ class ClauseAnalyzer:
         Raises ``RagAuthError`` / ``RagNotConfigured`` for deployment problems so
         the caller can stop the batch. Every other failure degrades this clause only.
         """
+        keyword = await extract_keywords(self.llm, clause, mode=keyword_mode, timeout_s=self.timeout_s)
+        if not need_internalization:
+            return _identity(clause, keyword)
         if not self.rag.available:
             raise RagNotConfigured("Zeus 未配置 —— 请设置 RAG_API_BASE / ZEUS_APP_ID / ZEUS_APP_SECRET / ZEUS_INDEX")
 
         judgment = await judge(self.llm, clause, self.timeout_s)
         if judgment.decision == NO_INTERNALIZATION:
-            return _base(clause, judgment)
-
+            return _base(clause, judgment, keyword)
         registry = self._registry(search_labels)
         agent = ReActAgent(
             self.llm, registry,
@@ -110,18 +126,18 @@ class ClauseAnalyzer:
         except (RagAuthError, RagNotConfigured):
             raise
         except asyncio.TimeoutError:
-            logger.warning("episode timeout (%.0fs): %s", self.timeout_s, clause.clause_number)
-            return _degraded(clause, judgment, f"该条款比对超时(>{self.timeout_s:g}s),未完成承接判定,需人工复核。")
+            logger.warning("episode timeout (%.0fs): %s", self.timeout_s, clause.term_name)
+            return _degraded(clause, judgment, keyword, f"该条款比对超时(>{self.timeout_s:g}s),未完成承接判定,需人工复核。")
         except Exception as e:  # noqa: BLE001 — one clause's failure must not stop the batch
-            logger.error("episode failed %s: %s", clause.clause_number, e)
-            return _degraded(clause, judgment, "该条款比对执行失败,未完成承接判定,需人工复核。")
+            logger.error("episode failed %s: %s", clause.term_name, e)
+            return _degraded(clause, judgment, keyword, "该条款比对执行失败,未完成承接判定,需人工复核。")
 
         # "No match" is only trustworthy when retrieval actually answered.
         if verdict.status == CoverageStatus.NOT_COVERED and registry.failed_searches:
-            logger.warning("retrieval failed during %s; 缺失 is not trusted", clause.clause_number)
-            return _degraded(clause, judgment, "检索服务异常,未能完成承接判定,需人工复核。")
+            logger.warning("retrieval failed during %s; 缺失 is not trusted", clause.term_name)
+            return _degraded(clause, judgment, keyword, "检索服务异常,未能完成承接判定,需人工复核。")
 
-        return _result(clause, judgment, verdict, registry)
+        return _result(clause, judgment, keyword, verdict, registry)
 
     def _registry(self, search_labels: list[str] | None = None) -> ToolRegistry:
         return ToolRegistry(
@@ -132,20 +148,37 @@ class ClauseAnalyzer:
         )
 
 
-def _base(clause: ClauseInput, judgment: Judgment) -> ClauseResult:
+def _identity(clause: ClauseInput, keyword: str) -> ClauseResult:
+    """内规/附件: identity fields + keywords only, no internalization analysis."""
+    return ClauseResult(
+        term_name=clause.term_name,
+        term_id=clause.term_id,
+        term_content=clause.term_content,
+        term_keyword=keyword,
+        internalize="",
+    )
+
+
+def _base(clause: ClauseInput, judgment: Judgment, keyword: str) -> ClauseResult:
     """Judgment-only result (no analysis fields)."""
     return ClauseResult(
-        clause_number=clause.clause_number,
+        term_name=clause.term_name,
+        term_id=clause.term_id,
+        term_content=clause.term_content,
+        term_keyword=keyword,
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
         require_type=judgment.require_type,
     )
 
 
-def _degraded(clause: ClauseInput, judgment: Judgment, note: str) -> ClauseResult:
+def _degraded(clause: ClauseInput, judgment: Judgment, keyword: str, note: str) -> ClauseResult:
     """Failed episode: a 缺失 verdict whose analysis says it needs human review."""
     return ClauseResult(
-        clause_number=clause.clause_number,
+        term_name=clause.term_name,
+        term_id=clause.term_id,
+        term_content=clause.term_content,
+        term_keyword=keyword,
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
         require_type=judgment.require_type,
@@ -155,7 +188,8 @@ def _degraded(clause: ClauseInput, judgment: Judgment, note: str) -> ClauseResul
 
 
 def _result(
-    clause: ClauseInput, judgment: Judgment, verdict: Verdict, registry: ToolRegistry
+    clause: ClauseInput, judgment: Judgment, keyword: str,
+    verdict: Verdict, registry: ToolRegistry,
 ) -> ClauseResult:
     related = [
         RelatedTerm(
@@ -169,7 +203,10 @@ def _result(
         for cid, chunk in resolve_ids(verdict.claimed_ids, registry)
     ]
     return ClauseResult(
-        clause_number=clause.clause_number,
+        term_name=clause.term_name,
+        term_id=clause.term_id,
+        term_content=clause.term_content,
+        term_keyword=keyword,
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
         require_type=judgment.require_type,

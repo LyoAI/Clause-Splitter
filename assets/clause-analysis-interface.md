@@ -9,29 +9,37 @@ from clause_analysis import ClauseAnalyzer, ClauseInput
 
 analyzer = ClauseAnalyzer.from_config()          # 启动时构建一次,可复用
 for clause in clauses:                           # 工程的 for 循环
-    res = await analyzer.analyze(ClauseInput(
-        document_name="网络数据安全风险评估办法",
-        clause_number="第十二条",
-        section="第三章 风险评估内容",            # 无章节传 ""
-        text="网络运营者应当……",
-    ))
+    res = await analyzer.analyze(
+        ClauseInput(
+            term_name="第十二条",
+            term_content="网络运营者应当……",
+            term_id="",                               # 条款 ID,原样透传到出参 termId
+            document_name="网络数据安全风险评估办法",  # 可选
+            section="第三章 风险评估内容",             # 无章节传 ""
+        ),
+        need_internalization=True,   # 外规(docType=1);内规/附件(2/3)传 False
+        keyword_mode="rules",        # 关键词提取:rules(默认,正则) | llm(失败自动回退 rules)
+    )
     element = res.to_esg()                       # data[] 元素中的算法侧字段
 ```
 
 - `analyze` 是唯一对外方法;无状态,每次调用独立。可选参数 `search_labels`(list[str]):本次检索的标签范围,由调用方按条款主动传;**不传或为空 = 不加过滤,检索整个索引**。检索范围不在初始化时写死。
+- `need_internalization`:是否执行内化分析。**外规(docType=1)传 `True`(默认)**;**内规/附件(docType=2/3)传 `False`**——只提取关键词,不做内化判定、不检索 Zeus(该路径不要求配置 Zeus),分析字段全空。
+- `keyword_mode`:关键词提取方式,**内外规条款都要提取**。`rules`(默认)为毫秒级正则;`llm` 质量更好但每条多一次 LLM 调用,任何失败自动回退 `rules`。按耗时预算逐次选择。
 - 并发由调用方控制。内网 LLM 只有 2 个并发槽,并行度请 ≤ 2。
-- 单条冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果。
+- 单条冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果、`--keyword-mode llm` 换关键词提取方式、`--skip-internalization` 看内规/附件路径。
 
 ## 2. 输入 `ClauseInput`
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `text` | str | 是 | 条款原文,非空 |
+| `term_content` | str | 是 | 条款原文,非空 |
+| `term_name` | str | 是 | 条款名称(条款号),如 `第一条` / `Article 1` |
+| `term_id` | str | 否 | 条款 ID,原样透传到出参 `termId`;取不到传 `""` |
 | `document_name` | str | 否 | 外规名称(后端 docId 对应的法规名) |
-| `clause_number` | str | 否 | 条款号,如 `第一条` / `Article 1` |
 | `section` | str | 否 | 所属章节路径,无则 `""` |
 
-输入只需条款原文与元信息;不接受五元组等预拆分字段。
+必填只有 `term_content` 与 `term_name`,与出参的 `termContent` / `termName` 一一对应;输入只需条款原文与元信息,不接受五元组等预拆分字段。
 
 ## 3. 输出:`to_esg()`
 
@@ -39,6 +47,9 @@ for clause in clauses:                           # 工程的 for 循环
 
 ```json
 {
+  "termId": "条款 ID(入参 term_id 原样回传)",
+  "termContent": "条款原文(入参 term_content 原样回传)",
+  "termKeyword": "风险评估、报送义务、整改措施",
   "termName": "第十二条",
   "internalize": "1",
   "internalizeReason": "……",
@@ -63,9 +74,19 @@ for clause in clauses:                           # 工程的 for 循环
 
 ### 3.1 字段说明
 
+**条款身份字段**(描述传入的这条**外规条款**本身;注意与 `relationTerms` 内的同名字段区分——那里的字段描述的是**关联的内规条款**):
+
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `termName` | str | 条款名称(条款号) |
+| `termId` | str | 外规条款 ID,入参 `term_id` 原样回传 |
+| `termContent` | str | 外规条款原文,入参 `term_content` 原样回传 |
+| `termKeyword` | str | 外规条款核心合规关键词,由**前置关键词提取阶段**产出(`keyword_mode` 选 `rules` / `llm`,llm 失败自动回退 rules);两种方式均无命中时为 `""` |
+| `termName` | str | 外规条款名称(条款号),入参 `term_name` 原样回传 |
+
+**分析结果字段**:
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
 | `internalize` | str | 内化判定,枚举见 3.2 |
 | `internalizeReason` | str | 内化判定依据 |
 | `requireType` | str | 要求类型,枚举见 3.2;判定无有效值时为 `""` |
@@ -112,6 +133,7 @@ for clause in clauses:                           # 工程的 for 循环
 
 | 情况 | 行为 |
 |---|---|
+| 关键词提取 `llm` 模式失败/超时/输出无法解析 | 自动回退 `rules` 正则;均无命中时 `termKeyword=""`,不抛出 |
 | 内化判定 LLM 超时/失败/输出无法解析 | 按需要内化(`"1"`)处理,`internalizeReason` 注明原因,继续比对 |
 | 单条比对超时(`EPISODE_TIMEOUT_S`)或执行异常 | `coverageStatus="0"`,`analysis` 注明"需人工复核",不抛出 |
 | Zeus 检索异常(不可达 / 5xx) | 失败的检索不中断比对;若最终判定为缺失且出现过检索失败,降级为 `"0"` + 需人工复核,不抛出 |

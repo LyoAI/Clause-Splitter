@@ -41,7 +41,7 @@ async def judge(llm: Any, clause: ClauseInput, timeout_s: float) -> Judgment:
     try:
         resp = await asyncio.wait_for(llm.ainvoke(messages), timeout=timeout_s)
     except Exception as e:  # noqa: BLE001 — fail-open, one clause must not stop the batch
-        logger.warning("internalization judgment failed (%s): %s", clause.clause_number, e)
+        logger.warning("internalization judgment failed (%s): %s", clause.term_name, e)
         return _fallback("内化判定失败,按需要内化处理。")
 
     parsed = parse_answer_json(resp.content or "")
@@ -62,7 +62,7 @@ def _judge_prompt(clause: ClauseInput) -> str:
     return (
         "【外部规定条款】\n"
         f"制度名称: {clause.document_name}\n"
-        f"条款号: {clause.clause_number or '全文'}\n"
-        f"条款原文:\n{clause.text}\n\n"
+        f"条款名称: {clause.term_name or '全文'}\n"
+        f"条款原文:\n{clause.term_content}\n\n"
         "请按内化判定框架与输出契约,判定该条款是否需要内化。"
     )

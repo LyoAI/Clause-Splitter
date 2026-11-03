@@ -5,7 +5,7 @@ Usage::
     from clause_analysis import ClauseAnalyzer, ClauseInput
 
     analyzer = ClauseAnalyzer.from_config()
-    result = await analyzer.analyze(ClauseInput(text=..., clause_number="第一条", ...))
+    result = await analyzer.analyze(ClauseInput(term_content=..., term_name="第一条", ...))
     element = result.to_esg()          # one data[] element (algorithm fields)
 """
 

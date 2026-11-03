@@ -1,10 +1,13 @@
 """Input and output models of the clause-analysis module.
 
 ``ClauseResult.to_esg()`` emits the algorithm-owned fields of one ``data[]``
-element of the backend payload. Enumerations are emitted as digit strings
-(see the code tables below and ``assets/clause-analysis-interface.md``).
-Document and orchestration fields (chapter, orderNum, termId, termContent,
-termKeyword, ...) belong to the caller.
+element of the backend payload: the external clause's own identity
+(``termId`` / ``termContent`` / ``termKeyword`` / ``termName`` — not to be
+confused with the same-named fields inside ``relationTerms``, which describe
+internal clauses) plus the analysis results. Enumerations are emitted as
+digit strings (see ``assets/clause-analysis-interface.md``). Document-level
+and orchestration fields (chapter, orderNum, applicable, ...) belong to the
+caller.
 """
 
 from __future__ import annotations
@@ -41,10 +44,11 @@ COVERAGE_CODE = {
 class ClauseInput(BaseModel):
     """One already-split external clause."""
 
+    term_content: str = Field(..., min_length=1, description="条款原文")
+    term_name: str = Field(..., description="条款名称(条款号),如 第一条")
+    term_id: str = Field(default="", description="条款 ID,原样透传到出参 termId;取不到传空串")
     document_name: str = Field(default="", description="外规名称(后端 docId 对应的法规名)")
-    clause_number: str = Field(default="", description="条款号,如 第一条 / Article 1")
     section: str = Field(default="", description="所属章节路径,无则空串")
-    text: str = Field(..., min_length=1, description="条款原文")
 
 
 class RelatedTerm(BaseModel):
@@ -66,7 +70,10 @@ class ClauseResult(BaseModel):
     give a valid value. The ESG payload carries "" for both in those cases.
     """
 
-    clause_number: str = ""
+    term_name: str = ""
+    term_id: str = ""
+    term_content: str = ""
+    term_keyword: str = ""
     internalize: str = Field(..., description="需要内化 / 无需内化")
     internalize_reason: str = ""
     require_type: str = Field(default="", description="义务性要求 / 禁止性要求 / 鼓励性要求")
@@ -80,7 +87,10 @@ class ClauseResult(BaseModel):
     def to_esg(self) -> dict[str, Any]:
         """Algorithm-owned fields of one ``data[]`` element (digit-string enums)."""
         return {
-            "termName": self.clause_number,
+            "termId": self.term_id,
+            "termContent": self.term_content,
+            "termKeyword": self.term_keyword,
+            "termName": self.term_name,
             "internalize": INTERNALIZE_CODE.get(self.internalize, ""),
             "internalizeReason": self.internalize_reason,
             "requireType": REQUIRE_TYPE_CODE.get(self.require_type, ""),

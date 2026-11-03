@@ -12,12 +12,17 @@
 from clause_analysis import ClauseAnalyzer, ClauseInput
 
 analyzer = ClauseAnalyzer.from_config()          # 启动时构建一次
-result = await analyzer.analyze(ClauseInput(
-    document_name="网络数据安全风险评估办法",
-    clause_number="第十二条",
-    section="第三章 风险评估内容",
-    text="网络运营者应当……",
-))
+result = await analyzer.analyze(
+    ClauseInput(
+        term_name="第十二条",
+        term_content="网络运营者应当……",
+        term_id="",                                # 可选,透传到出参 termId
+        document_name="网络数据安全风险评估办法",   # 可选
+        section="第三章 风险评估内容",              # 可选
+    ),
+    need_internalization=True,   # 外规(docType=1);内规/附件(2/3)传 False:只提关键词
+    keyword_mode="rules",        # 关键词提取:rules(默认,正则) | llm(失败自动回退 rules)
+)
 element = result.to_esg()                        # data[] 元素中的算法侧字段
 ```
 
@@ -51,6 +56,8 @@ tests/                    离线单测(纯逻辑 + Zeus 请求构造)
 ## 设计要点
 
 - **单条为操作单元**,无状态:每次 `analyze` 独立,检索缓存只属于本次调用。
+- **关键词前置提取**:内外规条款都要提关键词;`rules` 正则(默认,毫秒级)或 `llm`(质量更好,失败自动回退 rules),按耗时预算逐次选。
+- **内规/附件短路**:`need_internalization=False`(docType 2/3)只产出身份字段 + 关键词,不判定、不检索,不要求配置 Zeus。
 - **不做五元组拆解**:episode 只读条款原文,不让模型在输出中先拆义务。
 - **判定透传**:覆盖结论不因引用 id 无法回查而改变;id 只回填展示字段。
 - **降级而非抛出**:单条超时/解析失败/检索异常降级为 `缺失` + 需人工复核;仅 Zeus 鉴权/未配置会抛出,由调用方决定是否中止整批。

@@ -26,12 +26,21 @@ def main() -> None:
     parser.add_argument("input", type=Path, help="ClauseInput 的 JSON 文件")
     parser.add_argument("--raw", action="store_true", help="输出完整 ClauseResult 而非 ESG data[] 元素")
     parser.add_argument("--labels", default="", help="逗号分隔的 Zeus 检索标签;不填 = 检索全库")
+    parser.add_argument("--keyword-mode", choices=("rules", "llm"), default="rules",
+                        help="关键词提取方式:rules=正则(默认) / llm=模型(失败自动回退 rules)")
+    parser.add_argument("--skip-internalization", action="store_true",
+                        help="内规/附件模式:只提取关键词,不跑内化判定与比对")
     args = parser.parse_args()
 
     clause = ClauseInput.model_validate_json(args.input.read_text(encoding="utf-8"))
     labels = [s.strip() for s in args.labels.split(",") if s.strip()]
     analyzer = ClauseAnalyzer.from_config()
-    result = asyncio.run(analyzer.analyze(clause, search_labels=labels or None))
+    result = asyncio.run(analyzer.analyze(
+        clause,
+        need_internalization=not args.skip_internalization,
+        keyword_mode=args.keyword_mode,
+        search_labels=labels or None,
+    ))
     payload = result.model_dump(mode="json") if args.raw else result.to_esg()
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
