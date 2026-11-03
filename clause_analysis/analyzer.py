@@ -56,18 +56,8 @@ class ClauseAnalyzer:
         self.top_k = top_k
         self.snippet_max_tokens = snippet_max_tokens
         # Tool hints depend only on which tools exist, so one render serves all calls.
-        # In llm keyword mode the episode answer additionally carries relation_keywords.
         probe = self._registry()
-        hints = probe.tool_hints(cfg.PROMPT_LANG)
-        self._system_prompts = {
-            "rules": render("analysis_agent", tools=hints, relation_keywords_extra="", relation_keywords_rule=""),
-            "llm": render(
-                "analysis_agent",
-                tools=hints,
-                relation_keywords_extra=',"relation_keywords":{"<检索返回的 chunk_id>":"关键词1、关键词2"}',
-                relation_keywords_rule="- `relation_keywords`:对 `matched_internal_clause_ids` 中的每条内规条款提取 3-6 个核心合规关键词,顿号分隔;",
-            ),
-        }
+        self._system_prompt = render("analysis_agent", tools=probe.tool_hints(cfg.PROMPT_LANG))
         self._force_answer = load("force_answer")
 
     @classmethod
@@ -124,7 +114,7 @@ class ClauseAnalyzer:
         registry = self._registry(search_labels)
         agent = ReActAgent(
             self.llm, registry,
-            system_prompt=self._system_prompts["llm" if keyword_mode == "llm" else "rules"],
+            system_prompt=self._system_prompt,
             force_answer_msg=self._force_answer,
             max_tool_calls=self.max_tool_calls,
         )

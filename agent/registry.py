@@ -21,6 +21,12 @@ logger = get_logger()
 
 _SNIPPET_ATOM = re.compile(r"[一-鿿]|[a-z0-9]+|[^一-鿿a-zA-Z0-9]+", re.IGNORECASE)
 
+#: Tool message for a repeated query — nudges the model to rephrase or answer.
+_DUPLICATE_MSG = (
+    "重复检索:完全相同的 query 已检索过,结果不会变化。"
+    "请更换关键词表述(同义词、上位词、拆分子要点)再检索,或基于已有结果直接给出最终答案。"
+)
+
 
 def truncate_snippet(text: str, max_tokens: int) -> str:
     """CJK-aware truncation: CJK char ≈ 1 token, latin word ≈ 1 token."""
@@ -72,6 +78,10 @@ class ToolRegistry:
         self.snippet_max_tokens = snippet_max_tokens
         self.default_labels = list(default_labels or [])
         self._chunks: dict[str, Chunk] = {}
+        # Queries already run in this call; the tool path blocks exact repeats
+        # (models tend to loop on one query) without spending a Zeus request.
+        self._seen_queries: set[str] = set()
+        self.duplicate_searches = 0
         # Searches that raised a retrieval error. The ReAct loop turns tool
         # exceptions into messages, so callers check this to tell "no hits"
         # from "retrieval was down".
@@ -128,7 +138,12 @@ class ToolRegistry:
         return result
 
     def _run(self, name: str, args: dict[str, Any]) -> str:
-        hits = self.search(args.get("query", ""))
+        query = str(args.get("query", "")).strip()
+        if query in self._seen_queries:
+            self.duplicate_searches += 1
+            return _DUPLICATE_MSG
+        self._seen_queries.add(query)
+        hits = self.search(query)
         return json.dumps(
             [{
                 "score": None if h.score is None else round(h.score, 6),

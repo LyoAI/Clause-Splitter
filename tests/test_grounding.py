@@ -155,6 +155,32 @@ def test_failed_search_is_counted_so_a_miss_is_not_trusted():
     assert registry.failed_searches == 1
 
 
+def test_duplicate_query_is_blocked_without_hitting_rag():
+    class _CountingRag:
+        name = "stub"
+
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def available(self) -> bool:
+            return True
+
+        def search(self, query, k, labels=None):
+            self.calls += 1
+            return []
+
+    rag = _CountingRag()
+    registry = ToolRegistry(rag)
+    tool = registry.tool_names()[0]
+    first = registry.execute(tool, {"query": "数据安全"})
+    second = registry.execute(tool, {"query": "  数据安全  "})  # same query after strip
+    registry.execute(tool, {"query": "数据安全评估"})            # different query passes
+    assert rag.calls == 2
+    assert registry.duplicate_searches == 1
+    assert "重复" in second and second != first
+
+
 def test_registry_labels_use_default_until_overridden_per_call():
     """Retrieval scope: per-call labels win; None falls back to the caller's default."""
 

@@ -28,7 +28,7 @@ import 路径随之变化:`from clause_splitter.rag import X` → `from rag impo
 | `rag.providers.zeus.ZeusProvider` | 全功能,构造参数含 `search_labels`(初始化写死) | 仅检索;构造无 `search_labels`;`doc_id` 取行内 `org_data_id`(= 后端 docId),**不再解析 `doc:` 标签** |
 | `rag.providers.chillrag` | 本地开发 provider | 删除,只留 zeus |
 | `rag.types` | Chunk / Hit 等多个类型 | 只剩 Chunk / Hit;`Chunk.with_doc()` 删除(工具输出直接用 `chunk.meta`) |
-| `agent.registry.ToolRegistry` | knowledge_search + calculate | 只有 `knowledge_search`(calculator 删除);构造加 `default_labels`(检索范围,由 analyze 传入);`failed_searches` 计数保留 |
+| `agent.registry.ToolRegistry` | knowledge_search + calculate | 只有 `knowledge_search`(calculator 删除);构造加 `default_labels`(检索范围,由 analyze 传入);`failed_searches` 计数保留;相同 query 重复检索被拦截并计数(`duplicate_searches`) |
 | `llm.get_llm` / `LLM` | — | 加 `config_dir` / `timeout_s` 参数(openai / pingan provider 同步) |
 | `utils` | — | 纯移动,无内容变化 |
 

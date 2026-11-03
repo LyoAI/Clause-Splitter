@@ -6,7 +6,7 @@
 
 {{tools}}
 
-每条约内规条款是一个检索单元,chunk_id 由检索工具返回,引用时必须逐字使用,不要自行拼接。
+每条约内规条款是一个检索单元,chunk_id 由检索工具返回,引用时必须逐字使用,不要自行拼接。**同一 query 不要重复提交**——完全相同的检索不会返回新结果;结果不理想时更换表述(同义词、上位词、拆分子要点)再检索,通常 3-6 次检索足够。
 
 ## 判定标准
 
@@ -26,7 +26,7 @@
 
 最终判定用 JSON 包在 `<answer>` 标签内返回,不要输出其他内容:
 
-<answer>{"status":"完全覆盖|部分覆盖|缺失","matched_internal_clause_ids":["<检索返回的 chunk_id>",...],"evidence":{"<检索返回的 chunk_id>":"原文中支撑判定的关键句"},"analysis":"判定理由(简明)","difference_analysis":"内外规差异说明(仅部分覆盖)","core_regulatory_requirements":"核心监管要求(合规义务),编号逐条、每项一行","remedy_suggestion":"整改建议(仅部分覆盖/缺失需给出,完全覆盖可为空)"{{relation_keywords_extra}}}</answer>
+<answer>{"status":"完全覆盖|部分覆盖|缺失","matched_internal_clause_ids":["<检索返回的 chunk_id>",...],"evidence":{"<检索返回的 chunk_id>":"原文中支撑判定的关键句"},"analysis":"判定理由(简明)","difference_analysis":"内外规差异说明(仅部分覆盖)","core_regulatory_requirements":"核心监管要求(合规义务),编号逐条、每项一行","remedy_suggestion":"整改建议(仅部分覆盖/缺失需给出,完全覆盖可为空)","relation_keywords":{"<检索返回的 chunk_id>":"关键词1、关键词2"}}</answer>
 
 要求:
 - `status` 只能是 `完全覆盖` / `部分覆盖` / `缺失` 之一。
@@ -36,5 +36,6 @@
 - `difference_analysis`:仅当 `status` 为 `部分覆盖` 时必须逐条列出内规与外规的具体差异(遗漏了哪条子要求 / 哪项约束更松、标准更低 / 主体范围不一致 / 表述模糊无法确认);每条差异编号 `1)、2)…` 且**每项独占一行(换行分隔)**,措辞**简明**,单条控制在 30 字内;其余状态可为空字符串。
 - `core_regulatory_requirements`:提取该条款对适用主体设定的**每一条具体合规义务**,编号 `1)、2)…` 逐条列出,**每项独占一行(用换行分隔)**,每项 15-30 字并保留关键词与术语;条款属立法目的/适用范围/名词定义/附则,或仅对国家机关/监管机构/行业组织设定义务而无具体义务时,给空字符串。
 - `remedy_suggestion`:针对覆盖缺口给出整改建议(补充或修订内规条款)。仅 `部分覆盖` / `缺失` 需要给出——部分覆盖指出需补充哪些子项/加严哪些约束,缺失建议新建条款承接该外规义务;每条建议编号 `1)、2)…` 且**每项独占一行(用换行分隔)**,措辞简明、单条 30 字内;`完全覆盖` 给空字符串。
-{{relation_keywords_rule}}- 只判断覆盖承接情况,**不要**输出内化判定——`clause_type` / `internalization_decision` / `internalization_reason` 由比对前的内化判定阶段单独完成。
+- `relation_keywords`:对 `matched_internal_clause_ids` 中的每条内规条款提取 3-6 个核心合规关键词,顿号分隔;键为该条款的 chunk_id,未采纳的条款不要输出。
+- 只判断覆盖承接情况,**不要**输出内化判定——`clause_type` / `internalization_decision` / `internalization_reason` 由比对前的内化判定阶段单独完成。
 - 只能输出一个 `<answer>` 块,禁止任何前置说明文字。
