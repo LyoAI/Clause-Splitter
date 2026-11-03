@@ -3,7 +3,8 @@
 对**一条已拆好的外规条款**做内化判定,并在内规库(Zeus)中检索比对,输出外规内化结论。
 工程侧负责遍历条款、拆条、调度与 ESG 回调;本仓库只维护这一段算法。
 
-接口与字段契约见 [assets/clause-analysis-interface.md](assets/clause-analysis-interface.md)。
+接口与字段契约见 [assets/clause-analysis-interface.md](assets/clause-analysis-interface.md);
+与其他功能分支合并时的差异清单见 [assets/merge-notes.md](assets/merge-notes.md)。
 
 ## 用法
 
@@ -52,7 +53,7 @@ tests/                    离线单测(纯逻辑 + Zeus 请求构造)
 - **不做五元组拆解**:episode 只读条款原文,不让模型在输出中先拆义务。
 - **判定透传**:覆盖结论不因引用 id 无法回查而改变;id 只回填展示字段。
 - **降级而非抛出**:单条超时/解析失败/检索异常降级为 `缺失` + 需人工复核;仅 Zeus 鉴权/未配置会抛出,由调用方决定是否中止整批。
-- **内外规分库**,本模块只检索内规库。
+- **检索范围按次传**:`analyze(clause, search_labels=...)` 由调用方指定 Zeus 标签范围,不传则不加过滤、检索整个索引;范围不在客户端初始化时写死。
 
 ## 测试
 

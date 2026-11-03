@@ -1,5 +1,11 @@
 # 回调 / 拉取出参规范
 
+> ⚠️ **已过时(历史参考)**:本文是 `main` 分支全流程时代的出参规范,与本分支
+> `feature/clause-analysis` 的算法字段已不一致(如 `applicable` 布尔值、`termKeyword`、
+> 文档级摘要等,这些现在归工程/拆条分支)。算法侧字段以
+> [clause-analysis-interface.md](clause-analysis-interface.md) 为准,报文整体结构以
+> 《外规内化服务接口文档.docx》为准。合并差异清单见 [merge-notes.md](merge-notes.md)。
+
 同一份报文用于两处:**ESG 网关回调**(`POST {esg_open_end_point}/paerm/paermModelReturn?access_token=…&request_id=…`)和 **`GET /api/v1/clause_splitter/regulations/{docId}/result`**。后端只写一套解析器。
 
 结构沿用旧版:文档级字段全部在顶层,条款级字段放在 `data` 数组里;本次只在旧结构上新增了 `applicable` / `applicableReason` 与条款级分析字段。
