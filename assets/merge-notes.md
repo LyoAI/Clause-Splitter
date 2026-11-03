@@ -42,7 +42,7 @@ import 路径随之变化:`from clause_splitter.rag import X` → `from rag impo
 
 - **入库侧(工程)**:内规入库时 `org_data_id` 必须传**后端 docId**——检索命中的 `relationDocId` 直接取它;`text_labels` 必打(实测不打标签检索不到),标签清单与工程侧对齐。
 - **调用侧(工程 for 循环)**:每条款一次 `analyze(ClauseInput(...), need_internalization=..., keyword_mode=..., search_labels=...)`;`need_internalization` 按 docType 映射(1 外规 → True;2 内规 / 3 附件 → False,只提关键词、分析字段全空);`keyword_mode` 按耗时预算选(`rules` 默认 / `llm`);并发 ≤ 2(内网 LLM 只有 2 个槽);错误语义见接口文档 §4——仅 Zeus 鉴权/未配置会抛出,其余单条降级不中断整批。
-- **出参**:`to_esg()` 含条款身份字段(`termId` / `termContent` / `termKeyword` / `termName`)+ 分析结果字段,枚举为数字字符串。`termId` / `termContent` / `termName` 为入参原样回传(入参已由 `clause_number` / `text` 改名为 `term_name` / `term_content`);`termKeyword` 由独立前置关键词提取阶段产出,内外规条款都要提取;内规/附件路径分析字段全空(`internalize=""`,区别于判定产生的 `"0"`/`"1"`)。工程侧仍需补齐 `chapter` / `orderNum` 等文档级字段。入参必填只有 `term_content` / `term_name`。
+- **出参**:`to_esg()` 含条款身份字段(`termId` / `termContent` / `termKeyword` / `termName`)+ 分析结果字段,枚举为数字字符串。`termId` / `termContent` / `termName` 为入参原样回传(入参已由 `clause_number` / `text` 改名为 `term_name` / `term_content`);`termKeyword` 由独立前置关键词提取阶段产出,内外规条款都要提取,`relationTerms[].termKeyword` 同规则填充(rules 正则;llm 模式由比对阶段顺带提取);内规/附件路径分析字段全空(`internalize=""`,区别于判定产生的 `"0"`/`"1"`)。工程侧仍需补齐 `chapter` / `orderNum` 等文档级字段。入参必填只有 `term_content` / `term_name`。
 
 ## 6. 冲突处理建议
 

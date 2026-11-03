@@ -17,7 +17,7 @@ from typing import Any
 
 from agent import ReActAgent, ToolRegistry
 from llm import get_llm
-from rag import RagAuthError, RagNotConfigured, RagService
+from rag import Chunk, RagAuthError, RagNotConfigured, RagService
 from rag.providers.zeus import ZeusProvider
 from utils import get_logger, segment_label
 
@@ -25,7 +25,7 @@ from . import config as cfg
 from .episode import build_episode_prompt
 from .grounding import Verdict, ground, resolve_ids
 from .judge import Judgment, judge
-from .keywords import extract_keywords
+from .keywords import extract_keywords, regex_keywords
 from .prompts import load, render
 from .types import (
     NO_INTERNALIZATION,
@@ -56,8 +56,18 @@ class ClauseAnalyzer:
         self.top_k = top_k
         self.snippet_max_tokens = snippet_max_tokens
         # Tool hints depend only on which tools exist, so one render serves all calls.
+        # In llm keyword mode the episode answer additionally carries relation_keywords.
         probe = self._registry()
-        self._system_prompt = render("analysis_agent", tools=probe.tool_hints(cfg.PROMPT_LANG))
+        hints = probe.tool_hints(cfg.PROMPT_LANG)
+        self._system_prompts = {
+            "rules": render("analysis_agent", tools=hints, relation_keywords_extra="", relation_keywords_rule=""),
+            "llm": render(
+                "analysis_agent",
+                tools=hints,
+                relation_keywords_extra=',"relation_keywords":{"<检索返回的 chunk_id>":"关键词1、关键词2"}',
+                relation_keywords_rule="- `relation_keywords`:对 `matched_internal_clause_ids` 中的每条内规条款提取 3-6 个核心合规关键词,顿号分隔;",
+            ),
+        }
         self._force_answer = load("force_answer")
 
     @classmethod
@@ -114,7 +124,7 @@ class ClauseAnalyzer:
         registry = self._registry(search_labels)
         agent = ReActAgent(
             self.llm, registry,
-            system_prompt=self._system_prompt,
+            system_prompt=self._system_prompts["llm" if keyword_mode == "llm" else "rules"],
             force_answer_msg=self._force_answer,
             max_tool_calls=self.max_tool_calls,
         )
@@ -137,7 +147,7 @@ class ClauseAnalyzer:
             logger.warning("retrieval failed during %s; 缺失 is not trusted", clause.term_name)
             return _degraded(clause, judgment, keyword, "检索服务异常,未能完成承接判定,需人工复核。")
 
-        return _result(clause, judgment, keyword, verdict, registry)
+        return _result(clause, judgment, keyword, verdict, registry, keyword_mode)
 
     def _registry(self, search_labels: list[str] | None = None) -> ToolRegistry:
         return ToolRegistry(
@@ -187,9 +197,24 @@ def _degraded(clause: ClauseInput, judgment: Judgment, keyword: str, note: str) 
     )
 
 
+def _relation_keyword(cid: str, chunk: Chunk | None, verdict: Verdict, mode: str) -> str:
+    """Keywords for one adopted internal clause.
+
+    ``llm`` mode prefers the episode-extracted keywords and falls back to the
+    rules regex when the model gave none; ``rules`` mode always uses the regex.
+    """
+    if chunk is None:
+        return ""
+    if mode == "llm":
+        kw = verdict.relation_keywords.get(cid, "")
+        if kw:
+            return kw
+    return regex_keywords(chunk.text)
+
+
 def _result(
     clause: ClauseInput, judgment: Judgment, keyword: str,
-    verdict: Verdict, registry: ToolRegistry,
+    verdict: Verdict, registry: ToolRegistry, keyword_mode: str,
 ) -> ClauseResult:
     related = [
         RelatedTerm(
@@ -198,6 +223,7 @@ def _result(
             relation_doc_id=str(chunk.meta.get("org_data_id") or "") if chunk else "",
             term_content=chunk.text if chunk else "",
             term_id=cid,
+            term_keyword=_relation_keyword(cid, chunk, verdict, keyword_mode),
             term_name=segment_label(chunk) if chunk else "",
         )
         for cid, chunk in resolve_ids(verdict.claimed_ids, registry)

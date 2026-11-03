@@ -134,6 +134,18 @@ def test_evidence_is_parsed_per_chunk_id():
     assert verdict.evidence == {"办法#2": "第二条 原文关键句"}
 
 
+def test_relation_keywords_are_parsed_and_garbage_yields_empty():
+    verdict = ground(_answer({
+        "status": "部分覆盖",
+        "matched_internal_clause_ids": ["办法#2"],
+        "relation_keywords": {"办法#2": "数据安全、报送义务", "  ": "junk"},
+    }))
+    assert verdict.relation_keywords == {"办法#2": "数据安全、报送义务"}
+
+    assert ground(_answer({"status": "缺失", "relation_keywords": "oops"})).relation_keywords == {}
+    assert ground("no answer block").relation_keywords == {}
+
+
 def test_failed_search_is_counted_so_a_miss_is_not_trusted():
     from rag import RagNotConfigured
 

@@ -72,3 +72,18 @@ def test_unknown_mode_is_treated_as_rules_without_calling_llm():
     kw = asyncio.run(extract_keywords(llm, _clause("应当履行数据安全保护义务。"), mode="bogus", timeout_s=5))
     assert llm.calls == 0
     assert "数据安全" in kw.split("、")
+
+
+def test_relation_keyword_prefers_episode_keywords_and_falls_back_to_rules():
+    from types import SimpleNamespace
+
+    from clause_analysis.analyzer import _relation_keyword
+    from clause_analysis.grounding import ground
+
+    verdict = ground('<answer>{"status":"完全覆盖","relation_keywords":{"#a":"模型词1、模型词2"}}</answer>')
+    chunk = SimpleNamespace(text="网络运营者应当履行数据安全保护义务。")
+
+    assert _relation_keyword("#a", chunk, verdict, "llm") == "模型词1、模型词2"      # episode wins
+    assert "数据安全" in _relation_keyword("#b", chunk, verdict, "llm").split("、")  # missing -> regex
+    assert "数据安全" in _relation_keyword("#c", chunk, verdict, "rules").split("、")
+    assert _relation_keyword("#a", None, verdict, "llm") == ""

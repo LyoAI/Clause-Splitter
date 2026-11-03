@@ -58,7 +58,7 @@ class RelatedTerm(BaseModel):
     relation_doc_id: str = Field(default="", description="关联内规文档 ID")
     term_content: str = Field(default="", description="关联条款原文")
     term_id: str = Field(default="", description="关联条款 ID(检索返回的 chunk_id)")
-    term_keyword: str = Field(default="", description="关联条款关键字;由工程侧补充,本模块为空串")
+    term_keyword: str = Field(default="", description="关联条款关键词(rules 正则;llm 模式由比对阶段提取,缺失回退 rules);取不到为空串")
     term_name: str = Field(default="", description="关联条款名称(条款号)")
 
 

@@ -33,6 +33,8 @@ class Verdict:
     claimed_ids: list[str] = field(default_factory=list)
     #: chunk_id -> the key sentence the model cited as evidence.
     evidence: dict[str, str] = field(default_factory=dict)
+    #: chunk_id -> keywords the model extracted for that internal clause (llm keyword mode).
+    relation_keywords: dict[str, str] = field(default_factory=dict)
     analysis: str = ""
     difference_analysis: str = ""
     core_requirements: str = ""
@@ -72,6 +74,7 @@ def ground(raw_answer: str) -> Verdict:
         status=status,
         claimed_ids=_norm_ids(parsed.get("matched_internal_clause_ids")),
         evidence=_norm_evidence(parsed.get("evidence")),
+        relation_keywords=_norm_evidence(parsed.get("relation_keywords")),
         analysis=norm_str(parsed.get("analysis")),
         difference_analysis=norm_str(parsed.get("difference_analysis")),
         core_requirements=norm_str(parsed.get("core_regulatory_requirements")),

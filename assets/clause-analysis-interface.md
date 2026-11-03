@@ -25,7 +25,7 @@ for clause in clauses:                           # 工程的 for 循环
 
 - `analyze` 是唯一对外方法;无状态,每次调用独立。可选参数 `search_labels`(list[str]):本次检索的标签范围,由调用方按条款主动传;**不传或为空 = 不加过滤,检索整个索引**。检索范围不在初始化时写死。
 - `need_internalization`:是否执行内化分析。**外规(docType=1)传 `True`(默认)**;**内规/附件(docType=2/3)传 `False`**——只提取关键词,不做内化判定、不检索 Zeus(该路径不要求配置 Zeus),分析字段全空。
-- `keyword_mode`:关键词提取方式,**内外规条款都要提取**。`rules`(默认)为毫秒级正则;`llm` 质量更好但每条多一次 LLM 调用,任何失败自动回退 `rules`。按耗时预算逐次选择。
+- `keyword_mode`:关键词提取方式,**内外规条款都要提取**,且同时作用于出参外层 `termKeyword` 与 `relationTerms[].termKeyword`。`rules`(默认)为毫秒级正则;`llm` 质量更好但每条多一次 LLM 调用(关联条款关键词由比对阶段顺带提取,不另起调用),任何失败自动回退 `rules`。按耗时预算逐次选择。
 - 并发由调用方控制。内网 LLM 只有 2 个并发槽,并行度请 ≤ 2。
 - 单条冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果、`--keyword-mode llm` 换关键词提取方式、`--skip-internalization` 看内规/附件路径。
 
@@ -105,7 +105,7 @@ for clause in clauses:                           # 工程的 for 循环
 | `relationDocId` | 关联内规文档 ID,即后端 `docId`(内规入库时作为 Zeus `org_data_id` 写入);取不到时为 `""` |
 | `termContent` | 关联条款原文 |
 | `termId` | 关联条款 ID(检索返回的 chunk id) |
-| `termKeyword` | 关联条款关键字;**由工程侧补充,本模块输出 `""`** |
+| `termKeyword` | 关联条款关键词:默认 `rules` 正则从关联条款原文提取;`keyword_mode="llm"` 时由比对 LLM 在 answer 中顺带给出(缺失回退 rules);取不到为 `""` |
 | `termName` | 关联条款名称(条款号) |
 
 关联条款的 `relationDocId` / `termContent` / `termName` 仅在本次检索缓存中能查到时回填;查不到时 `termId` 仍保留,其余为 `""`。覆盖结论不因引用 id 无法回查而改变。
@@ -133,7 +133,7 @@ for clause in clauses:                           # 工程的 for 循环
 
 | 情况 | 行为 |
 |---|---|
-| 关键词提取 `llm` 模式失败/超时/输出无法解析 | 自动回退 `rules` 正则;均无命中时 `termKeyword=""`,不抛出 |
+| 关键词提取 `llm` 模式失败/超时/输出无法解析 | 自动回退 `rules` 正则(外层条款与 `relationTerms` 关联条款同规则);均无命中时 `termKeyword=""`,不抛出 |
 | 内化判定 LLM 超时/失败/输出无法解析 | 按需要内化(`"1"`)处理,`internalizeReason` 注明原因,继续比对 |
 | 单条比对超时(`EPISODE_TIMEOUT_S`)或执行异常 | `coverageStatus="0"`,`analysis` 注明"需人工复核",不抛出 |
 | Zeus 检索异常(不可达 / 5xx) | 失败的检索不中断比对;若最终判定为缺失且出现过检索失败,降级为 `"0"` + 需人工复核,不抛出 |
