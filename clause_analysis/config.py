@@ -1,6 +1,7 @@
 """Settings for the clause-analysis module (environment-overridable).
 
-LLM credentials stay in ``config/llm/<model>.yaml``; retrieval is Zeus only.
+``RUN_ENV`` ("stg" / "prd" ...; empty = local dev) routes which env file
+(``.{RUN_ENV}.env``) and model yaml (``<model>-<RUN_ENV>.yaml``) load.
 """
 
 from __future__ import annotations
@@ -10,15 +11,33 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from utils import get_logger
+
+logger = get_logger()
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+RUN_ENV = os.getenv("RUN_ENV", "").strip().lower()
+
+
+def _env_file(root: Path, run_env: str) -> Path:
+    """.{run_env}.env when set (fallback .env), else .env."""
+    if run_env:
+        candidate = root / f".{run_env}.env"
+        if candidate.is_file():
+            return candidate
+        logger.warning("RUN_ENV=%s but %s missing; falling back to .env", run_env, candidate.name)
+    return root / ".env"
+
+
 # Never overwrites variables already set in the environment.
-load_dotenv(REPO_ROOT / ".env")
+load_dotenv(_env_file(REPO_ROOT, RUN_ENV))
 
 # ── LLM ────────────────────────────────────────────────────────────────
 LLM_CONFIG_DIR = REPO_ROOT / "config" / "llm"
 # "openai" (OpenAI-compatible) or "pingan" (intranet gateway); names the yaml section.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "qwen3.8-27b")
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "qwen3.6-27b")
 # Per-request HTTP timeout (s).
 LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
 

@@ -57,3 +57,10 @@ def test_missing_provider_section_is_a_clear_error(tmp_path):
     cfg = _cfg(tmp_path, "m4", OPENAI)
     with pytest.raises(ValueError, match="pingan"):
         get_llm("m4", "pingan", config_dir=cfg, timeout_s=5)
+
+
+def test_run_env_routes_to_suffixed_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("RUN_ENV", "stg")
+    cfg = _cfg(tmp_path, "m1-stg", OPENAI)
+    llm = get_llm("m1", "openai", config_dir=cfg, timeout_s=5)
+    assert isinstance(llm.provider, OpenAICompatProvider)

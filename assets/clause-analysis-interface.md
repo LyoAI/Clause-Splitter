@@ -124,7 +124,8 @@ for clause in clauses:                           # 工程的 for 循环
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `LLM_PROVIDER` / `LLM_MODEL_NAME` | `openai` / `qwen3.8-27b` | 对应 `config/llm/<model>.yaml` 的 section |
+| `RUN_ENV` | 空(本地开发) | 部署环境路由:`stg` / `prd` 等。设置后 env 文件取 **`.stg.env` / `.prd.env`**(缺失则回退 `.env`),模型配置取 **`config/llm/<model>-<RUN_ENV>.yaml`**;不设置 = `.env` + `<model>.yaml`。`RUN_ENV` 须由部署平台/shell 注入,不读自 env 文件 |
+| `LLM_PROVIDER` / `LLM_MODEL_NAME` | `openai` / `qwen3.6-27b` | 对应 `config/llm/<model>.yaml` 的 section(文件名见 `RUN_ENV`) |
 | `LLM_TIMEOUT_S` | 180 | 单次 LLM 请求超时 |
 | `EPISODE_TIMEOUT_S` | 600 | 单条总时限(判定 + 比对) |
 | `MAX_TOOL_CALLS` | 15 | 单条检索调用预算 |

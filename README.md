@@ -21,7 +21,8 @@ result = await analyzer.analyze(ClauseInput(
 element = result.to_esg()                        # data[] 元素中的算法侧字段
 ```
 
-单条冒烟(真实 LLM + Zeus,需先配置 `.env` 与 `config/llm/<model>.yaml`):
+单条冒烟(真实 LLM + Zeus,需先配置 `.env` 与 `config/llm/<model>.yaml`;
+设置 `RUN_ENV=stg|prd` 时改为读 `.{RUN_ENV}.env` 与 `config/llm/<model>-<RUN_ENV>.yaml`):
 
 ```bash
 uv run python scripts/analyze_clause.py examples/clause_input.json

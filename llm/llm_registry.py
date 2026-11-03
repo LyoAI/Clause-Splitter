@@ -95,7 +95,10 @@ def get_llm(
 
 
 def _config_path(model_name: str, config_dir: Path) -> Path:
-    return config_dir / f"{model_name}.yaml"
+    # RUN_ENV ("stg"/"prd"...) routes to <model>-<RUN_ENV>.yaml; empty = <model>.yaml.
+    run_env = os.getenv("RUN_ENV", "").strip().lower()
+    stem = f"{model_name}-{run_env}" if run_env else model_name
+    return config_dir / f"{stem}.yaml"
 
 
 def _load_model_config(model_name: str, config_dir: Path) -> dict:
