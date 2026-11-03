@@ -73,12 +73,17 @@ class ClauseAnalyzer:
             recall_min_score=cfg.ZEUS_RECALL_MIN_SCORE,
             rerank_min_score=cfg.ZEUS_RERANK_MIN_SCORE,
             max_concurrency=cfg.ZEUS_MAX_CONCURRENCY,
-            search_labels=cfg.ZEUS_SEARCH_LABELS,
         )
         return cls(llm, rag)
 
-    async def analyze(self, clause: ClauseInput) -> ClauseResult:
+    async def analyze(
+        self, clause: ClauseInput, *, search_labels: list[str] | None = None
+    ) -> ClauseResult:
         """Judge, then (if needed) compare one clause against the internal corpus.
+
+        ``search_labels`` optionally narrows retrieval to Zeus chunks carrying
+        those labels; ``None`` / empty searches the whole index. Retrieval scope
+        is the caller's choice per call — never fixed at client init.
 
         Raises ``RagAuthError`` / ``RagNotConfigured`` for deployment problems so
         the caller can stop the batch. Every other failure degrades this clause only.
@@ -90,7 +95,7 @@ class ClauseAnalyzer:
         if judgment.decision == NO_INTERNALIZATION:
             return _base(clause, judgment)
 
-        registry = self._registry()
+        registry = self._registry(search_labels)
         agent = ReActAgent(
             self.llm, registry,
             system_prompt=self._system_prompt,
@@ -118,8 +123,13 @@ class ClauseAnalyzer:
 
         return _result(clause, judgment, verdict, registry)
 
-    def _registry(self) -> ToolRegistry:
-        return ToolRegistry(self.rag, top_k=self.top_k, snippet_max_tokens=self.snippet_max_tokens)
+    def _registry(self, search_labels: list[str] | None = None) -> ToolRegistry:
+        return ToolRegistry(
+            self.rag,
+            top_k=self.top_k,
+            snippet_max_tokens=self.snippet_max_tokens,
+            default_labels=search_labels,
+        )
 
 
 def _base(clause: ClauseInput, judgment: Judgment) -> ClauseResult:

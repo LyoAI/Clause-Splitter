@@ -16,10 +16,6 @@ class Chunk:
     text: str
     meta: dict[str, Any] = field(default_factory=dict)
 
-    def with_doc(self) -> dict[str, Any]:
-        """Provenance dict including the document name (tool output shape)."""
-        return {**self.meta, "doc": self.doc_id}
-
 
 @dataclass
 class Hit:

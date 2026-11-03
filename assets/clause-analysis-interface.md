@@ -18,7 +18,7 @@ for clause in clauses:                           # 工程的 for 循环
     element = res.to_esg()                       # data[] 元素中的算法侧字段
 ```
 
-- `analyze` 是唯一对外方法;无状态,每次调用独立。
+- `analyze` 是唯一对外方法;无状态,每次调用独立。可选参数 `search_labels`(list[str]):本次检索的标签范围,由调用方按条款主动传;**不传或为空 = 不加过滤,检索整个索引**。检索范围不在初始化时写死。
 - 并发由调用方控制。内网 LLM 只有 2 个并发槽,并行度请 ≤ 2。
 - 单条冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果。
 
@@ -131,9 +131,15 @@ for clause in clauses:                           # 工程的 for 循环
 | `SEARCH_TOP_K` / `SNIPPET_MAX_TOKENS` | 10 / 512 | 检索条数 / 摘要长度 |
 | `RAG_API_BASE` / `RAG_TIMEOUT_S` | 空 / 30 | Zeus 地址 / 单次 HTTP 超时 |
 | `ZEUS_APP_ID` / `ZEUS_APP_SECRET` / `ZEUS_INDEX` | 空 | Zeus 凭据与索引 |
-| `ZEUS_SEARCH_LABELS` | 空(整个索引) | 检索标签过滤,逗号分隔 |
 | `ZEUS_KB_LIMIT` / `ZEUS_MAX_K` / `ZEUS_RECALL_MIN_SCORE` / `ZEUS_RERANK_MIN_SCORE` / `ZEUS_MAX_CONCURRENCY` | 20 / 50 / 0.1 / 0 / 2 | Zeus 召回参数 |
 
 ## 6. 检索范围
 
-外规与内规分库存放,本模块只检索内规库。Zeus 只使用 `standard_search`,不做解析、入库或列表。
+Zeus 用 `text_labels` 区分同一索引内的不同库(如内规库、外规库)。检索范围只由调用方决定,**不在客户端初始化时写死**:
+
+- `analyze(clause, search_labels=["x"])` —— 本次分析的所有检索限定在这些标签下;
+- `analyze(clause)` —— 不加标签过滤,检索整个索引。
+
+标签选择完全由代码控制,不暴露给模型(避免模型编造标签造成假性 0 命中被当成"缺失")。
+
+命中条目的文档 ID(`relationDocId`、工具返回 `meta.org_data_id`)取自 Zeus 行的 `org_data_id`,即内规入库时写入的文档 ID(后端 docId);标签文本不做任何解析假设。

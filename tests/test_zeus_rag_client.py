@@ -47,7 +47,7 @@ def test_available_requires_every_credential():
 
 def test_search_sends_headers_and_documented_body():
     session = _Session(rows=[])
-    _provider(session, search_labels=["internal-regulation"], kb_limit=20).search("数据安全", 3)
+    _provider(session, kb_limit=20).search("数据安全", 3, labels=["internal-regulation"])
     call = session.calls[0]
     assert call["method"] == "POST"
     assert call["url"].endswith("/server/standard_search")
@@ -60,17 +60,27 @@ def test_search_sends_headers_and_documented_body():
     assert call["json"]["limit"] == 3
 
 
-def test_search_maps_rows_dedupes_by_best_score_and_reads_doc_label():
+def test_search_without_labels_sends_empty_filter_whole_index():
+    session = _Session(rows=[])
+    _provider(session).search("数据安全", 3)
+    assert session.calls[0]["json"]["kb"][0]["filter"]["text_labels"] == []
+
+
+def test_search_maps_rows_dedupes_by_best_score_and_doc_id_is_org_data_id():
     rows = [
-        {"id": "c#1", "text": "第一条 甲", "score": 0.4, "text_labels": ["doc:办法", "internal-regulation"]},
-        {"id": "c#1", "text": "第一条 甲", "score": 0.9, "text_labels": ["doc:办法"]},
+        {"id": "c#1", "org_data_id": "DOC-9", "text": "第一条 甲", "score": 0.4,
+         "text_labels": ["doc:办法", "internal-regulation"]},
+        {"id": "c#1", "org_data_id": "DOC-9", "text": "第一条 甲", "score": 0.9},
         {"id": "c#2", "text": "第二条 乙", "score": 0.5, "text_labels": []},
         {"id": "x", "text": "非文档", "data_type": "image"},
     ]
     hits = _provider(_Session(rows=rows)).search("q", 10)
     assert [h.chunk_id for h in hits] == ["c#1", "c#2"]
     assert hits[0].score == 0.9
-    assert hits[0].doc_id == "办法"
+    # doc:<stem> labels are backend-specific: doc_id is org_data_id only.
+    assert hits[0].doc_id == "DOC-9"
+    assert hits[0].meta["org_data_id"] == "DOC-9"
+    assert hits[1].doc_id == ""
     assert hits[0].section == "第一条 甲"
 
 

@@ -29,5 +29,9 @@ class RagService(ABC):
         """Whether the provider is configured enough to try."""
 
     @abstractmethod
-    def search(self, query: str, k: int) -> list[Hit]:
-        """Top-k internal chunks for ``query``, best score first."""
+    def search(self, query: str, k: int, labels: list[str] | None = None) -> list[Hit]:
+        """Top-k internal chunks for ``query``, best score first.
+
+        ``labels`` is an optional per-call corpus filter (backend-specific
+        meaning); ``None`` / empty = the whole index.
+        """

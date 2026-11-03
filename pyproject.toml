@@ -37,3 +37,6 @@ dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Top-level modules (rag/, agent/, ...) are plain directories, not an
+# installed package — put the repo root on sys.path for the tests.
+pythonpath = ["."]

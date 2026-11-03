@@ -49,10 +49,3 @@ ZEUS_RECALL_MIN_SCORE = float(os.getenv("ZEUS_RECALL_MIN_SCORE", "0.1"))
 ZEUS_RERANK_MIN_SCORE = float(os.getenv("ZEUS_RERANK_MIN_SCORE", "0.0"))
 # Documented gateway concurrency limit for this app.
 ZEUS_MAX_CONCURRENCY = int(os.getenv("ZEUS_MAX_CONCURRENCY", "2"))
-# Comma-separated label filter. Unset / "all" = whole knowledge base.
-_ZEUS_SEARCH_LABELS_RAW = os.getenv("ZEUS_SEARCH_LABELS", "").strip()
-ZEUS_SEARCH_LABELS: list[str] = (
-    []
-    if _ZEUS_SEARCH_LABELS_RAW.lower() in ("", "all")
-    else [s.strip() for s in _ZEUS_SEARCH_LABELS_RAW.split(",") if s.strip()]
-)

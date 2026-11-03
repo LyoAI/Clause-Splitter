@@ -59,10 +59,18 @@ _SEARCH_DEF = {
 class ToolRegistry:
     """Defines and executes the agent's tools over one RAG service."""
 
-    def __init__(self, service: RagService, *, top_k: int = 10, snippet_max_tokens: int = 512) -> None:
+    def __init__(
+        self,
+        service: RagService,
+        *,
+        top_k: int = 10,
+        snippet_max_tokens: int = 512,
+        default_labels: list[str] | None = None,
+    ) -> None:
         self.service = service
         self.top_k = top_k
         self.snippet_max_tokens = snippet_max_tokens
+        self.default_labels = list(default_labels or [])
         self._chunks: dict[str, Chunk] = {}
         # Searches that raised a retrieval error. The ReAct loop turns tool
         # exceptions into messages, so callers check this to tell "no hits"
@@ -80,10 +88,14 @@ class ToolRegistry:
 
     # ── retrieval cache ────────────────────────────────────────────────
 
-    def search(self, query: str, k: int | None = None) -> list[Hit]:
-        """Run one search and remember the returned chunks."""
+    def search(self, query: str, k: int | None = None, labels: list[str] | None = None) -> list[Hit]:
+        """Run one search and remember the returned chunks.
+
+        ``labels=None`` falls back to ``default_labels``; empty list = no filter.
+        """
+        available_labels = labels if labels is not None else (self.default_labels or None)
         try:
-            hits = self.service.search(query, k or self.top_k)
+            hits = self.service.search(query, k or self.top_k, labels=available_labels)
         except RagError:
             self.failed_searches += 1
             raise
@@ -122,7 +134,7 @@ class ToolRegistry:
                 "score": None if h.score is None else round(h.score, 6),
                 "chunk_id": h.chunk_id,
                 "snippet": truncate_snippet(h.text, self.snippet_max_tokens),
-                "meta": h.to_chunk().with_doc(),
+                "meta": h.to_chunk().meta,
             } for h in hits],
             ensure_ascii=False,
         )

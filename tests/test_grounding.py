@@ -118,3 +118,32 @@ def test_failed_search_is_counted_so_a_miss_is_not_trusted():
     with pytest.raises(RagNotConfigured):
         registry.search("数据安全")
     assert registry.failed_searches == 1
+
+
+def test_registry_labels_use_default_until_overridden_per_call():
+    """Retrieval scope: per-call labels win; None falls back to the caller's default."""
+
+    class _RecordingRag:
+        name = "stub"
+
+        def __init__(self):
+            self.calls = []
+
+        @property
+        def available(self) -> bool:
+            return True
+
+        def search(self, query, k, labels=None):
+            self.calls.append((query, k, labels))
+            return []
+
+    rag = _RecordingRag()
+    registry = ToolRegistry(rag, default_labels=["内规库"])
+    registry.search("q")
+    registry.search("q", labels=["限定"])
+    registry.search("q", labels=[])
+    assert rag.calls == [
+        ("q", 10, ["内规库"]),  # registry default applies
+        ("q", 10, ["限定"]),    # per-call labels win
+        ("q", 10, []),          # explicit empty = whole corpus
+    ]

@@ -5,9 +5,10 @@ All Zeus wire details live here: header auth (``x-app-id`` / ``x-app-secret`` /
 ``standard_search``. Ingestion and parsing are not part of this client; the
 internal corpus is loaded by the ingestion side.
 
-Zeus labels separate corpora inside one index. ``search`` filters on
-``search_labels`` (empty = whole knowledge base) and reads the document name
-back from the ``doc:<stem>`` label, since hits carry no file name.
+Zeus labels separate corpora inside one index. ``search`` takes an optional
+per-call ``labels`` filter (``None`` / empty = whole knowledge base); the
+document id of a hit is its ``org_data_id`` — the id the caller recorded at
+ingestion (the backend docId).
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ from ..types import Hit
 logger = get_logger()
 
 _SEARCH = "/api/v1/uns/zeus-search/{app_id}/server/standard_search"
-_LABEL_PREFIX = "doc:"
 # How long a thread may wait for a concurrency slot before giving up.
 _QUEUE_TIMEOUT_S = 120.0
 
@@ -56,7 +56,6 @@ class ZeusProvider(RagService):
         recall_min_score: float = 0.1,
         rerank_min_score: float = 0.0,
         max_concurrency: int = 2,
-        search_labels: list[str] | None = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.app_id = app_id
@@ -68,22 +67,18 @@ class ZeusProvider(RagService):
         self.recall_min_score = recall_min_score
         self.rerank_min_score = rerank_min_score
         self.max_concurrency = max(1, max_concurrency)
-        # Empty = text_labels=[], i.e. no label filter (whole knowledge base).
-        self.search_labels = list(search_labels or [])
         self._session = requests.Session()
         self._sem = threading.BoundedSemaphore(self.max_concurrency)
         logger.info(
-            "zeus provider ready: base=%s index=%s concurrency=%d search_labels=%s available=%s",
-            self.base_url or "-", self.index or "-", self.max_concurrency,
-            ",".join(self.search_labels) or "(none)", self.available,
+            "zeus provider ready: base=%s index=%s concurrency=%d available=%s",
+            self.base_url or "-", self.index or "-", self.max_concurrency, self.available,
         )
 
     @property
     def available(self) -> bool:
         return bool(self.base_url and self.app_id and self.app_secret and self.index)
 
-    def search(self, query: str, k: int) -> list[Hit]:
-        """One standard search; rows are deduped by chunk id, best score first."""
+    def search(self, query: str, k: int, labels: list[str] | None = None) -> list[Hit]:
         k = max(1, min(int(k or 0), self.max_k))
         body: dict[str, Any] = {
             "session_id": str(uuid.uuid4()),
@@ -92,7 +87,7 @@ class ZeusProvider(RagService):
                 "alias": self.index,
                 "filter": {
                     "data_type": ["doc"],
-                    "text_labels": list(self.search_labels),
+                    "text_labels": [str(lb) for lb in (labels or [])],
                     "min_score": self.recall_min_score,
                 },
                 "limit": max(k, self.kb_limit),
@@ -133,16 +128,15 @@ class ZeusProvider(RagService):
         hits: list[Hit] = []
         for cid, (score, row) in list(best.items())[:k]:
             text = str(row.get("text") or row.get("data") or "")
-            doc = _doc_name(row)
+            org_id = str(row.get("org_data_id") or "")
             hits.append(Hit(
                 chunk_id=cid,
                 text=text,
                 score=score,
-                doc_id=doc,
+                doc_id=org_id,
                 section=_section(text),
                 meta={
-                    "doc": doc,
-                    "org_data_id": str(row.get("org_data_id") or ""),
+                    "org_data_id": org_id,
                     "data_type": str(row.get("data_type") or ""),
                     "recall_score": _float(row.get("recall_score")),
                     "text_labels": _labels(row.get("text_labels")),
@@ -154,7 +148,7 @@ class ZeusProvider(RagService):
         else:
             logger.warning(
                 "zeus search: 0 条 —— %s（labels=%s；或命中被 min_score=%s / data_type 过滤）",
-                brief, ",".join(self.search_labels) or "(全部)", self.recall_min_score,
+                brief, ",".join(labels or []) or "(全部)", self.recall_min_score,
             )
         return hits
 
@@ -245,13 +239,6 @@ def _unwrap(resp: requests.Response) -> Any:
             f"Zeus 业务错误({resp.status_code}, status={status or 'missing'}): {detail}"
         )
     return body.get("data")
-
-
-def _doc_name(row: dict[str, Any]) -> str:
-    for label in _labels(row.get("text_labels")):
-        if label.startswith(_LABEL_PREFIX) and len(label) > len(_LABEL_PREFIX):
-            return label[len(_LABEL_PREFIX):]
-    return str(row.get("org_data_id") or "") or str(row.get("id") or "")
 
 
 def _labels(value: Any) -> list[str]:

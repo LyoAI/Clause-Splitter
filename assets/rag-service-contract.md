@@ -1,5 +1,10 @@
 # RAG 服务接入说明
 
+> 分支范围说明:`feature/clause-analysis` 只保留 `search`(Zeus `standard_search`);
+> `ingest` / `parse` / `fetch_chunks` 等能力见 `main` 分支。本分支检索不固定标签,
+> 范围由调用方经 `analyze(search_labels=...)` 按次传入,`doc_id` 取行内
+> `org_data_id`(详见第 3 节修正处)。
+
 本服务(条款拆分与内外规比对)不包含检索引擎:解析、分块、索引、检索全部由**外部 RAG 服务**提供。
 业务代码只依赖 `clause_splitter/rag/base.py` 的 `RagService` 抽象类;具体服务是 provider,
 由 `RAG_PROVIDER` 选择。当前已实现 `chillrag`(本地开发)与 `zeus`(内网知识库)。
@@ -123,13 +128,13 @@ RAG_PARSE_TIMEOUT_S=1800          # 上传 + 入库轮询总时限
   附件,只有 `text_labels` 能区分。实测**提交时不打标签的文档检索不到**,所以标签是必需项。
   - 入库(内规):`text_labels=["internal-regulation", "doc:<文件名 stem>"]`
   - 入库(附件):`text_labels=["attach-regulation", "doc:<文件名 stem>"]`
-  - 检索:默认 `filter.text_labels=["internal-regulation", "attach-regulation"]`;
-    `ZEUS_SEARCH_LABELS` 不写或写 `all` → `text_labels=[]`(不过滤,整个知识库);
-    写 `x,y` 时只在这些标签下检索。
+  - 检索(**本分支**):范围由调用方经 `analyze(clause, search_labels=[...])` 按次
+    传入(不传 = `text_labels=[]`,不过滤,整个知识库);不再有 `ZEUS_SEARCH_LABELS`
+    环境变量,标签也不暴露给模型选择。
   - 多值 filter 是 OR 还是 AND 尚未确认,联调时需验证。
-- **制度名来自标签**:检索结果不带文件名,`search` 从 `doc:` 标签还原 `doc_id`(回退
-  进程内 `org_data_id → 文件名` 映射,再回退 `org_data_id`)。语料若由其他系统入库
-  (无 `doc:` 标签),复核页与 ESG 回调中的内规制度名会退化为 `org_data_id`。
+- **文档 ID 即 org_data_id(本分支)**:检索结果不带文件名,`doc_id` 直接取该行的
+  `org_data_id`(入库时记录的文档 ID,即后端 docId);标签文本是入库方的约定,
+  检索侧不做任何解析假设(旧版"从 `doc:` 标签还原制度名"的规则已删除)。
 - **入库异步**:提交成功只代表受理,后台解析/分块/embedding 完成后才可检索;Zeus 没有
   状态接口,`state` / `chunk_count` 只是乐观值。刚入库就检索可能为空,需等 Zeus 处理完。
 - **检索 404 = 能力未开通**:文档说明搜索端点 404 表示该应用未配置检索,provider 转成
@@ -155,7 +160,6 @@ ZEUS_UPLOAD_TIMEOUT_S=300     # 上传单次超时
 ZEUS_CREATED_BY=<UM 号>       # 提交时的上传人
 ZEUS_LABEL_INTERNAL=internal-regulation
 ZEUS_LABEL_ATTACH=attach-regulation
-ZEUS_SEARCH_LABELS=           # 空/all = text_labels=[](整个知识库);x,y = 指定标签
 ```
 
 ## 4. 接入新内网 provider
