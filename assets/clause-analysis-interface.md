@@ -80,7 +80,7 @@ for clause in clauses:                           # 工程的 for 循环
 |---|---|---|
 | `termId` | str | 外规条款 ID,入参 `term_id` 原样回传 |
 | `termContent` | str | 外规条款原文,入参 `term_content` 原样回传 |
-| `termKeyword` | str | 外规条款核心合规关键词,由**前置关键词提取阶段**产出(`keyword_mode` 选 `rules` / `llm`,llm 失败自动回退 rules);两种方式均无命中时为 `""` |
+| `termKeyword` | str | 外规条款核心合规关键词,由**前置关键词提取阶段**产出(`keyword_mode` 选 `rules` / `llm`,llm 失败自动回退 rules);两种方式均无命中时为 `""`(详见 §3.3) |
 | `termName` | str | 外规条款名称(条款号),入参 `term_name` 原样回传 |
 
 **分析结果字段**:
@@ -93,7 +93,7 @@ for clause in clauses:                           # 工程的 for 循环
 | `coverageStatus` | str | 覆盖状态,枚举见 3.2;**无需内化时为 `""`**(未执行分析) |
 | `analysis` | str | 覆盖分析;无需内化时为 `""` |
 | `differenceAnalysis` | str | 差异说明(仅部分覆盖) |
-| `coreRequirements` | str | 核心监管要求 |
+| `coreRequirements` | str | 核心监管要求:需要内化时由比对阶段产出,比对失败降级时回填判定阶段的值;判定为无需内化时由判定阶段产出(概括条款核心规范内容,如义务要点、适用范围、生效时间);都取不到时为 `""` |
 | `remedySuggestion` | str | 整改建议 |
 | `relationTerms` | array | 采纳的内规条款,无则 `[]` |
 
@@ -129,12 +129,22 @@ for clause in clauses:                           # 工程的 for 循环
 
 注:示例文件中的 `applicable`(0 不适用 / 1 适用 / 2 直接适用 / 3 间接适用)是**文档级**字段,由工程侧的适用性判断产出,不在本模块输出中。
 
+### 3.3 `termKeyword` 何时为空
+
+关键词由前置阶段尽力提取,以下情况会输出 `""`,属预期行为而非故障:
+
+- **`rules` 模式无命中**:条款不含领域词典词、也没有"…义务/…制度/…报告"类名词短语——典型为立法目的、适用范围、定义、附则/施行日期、章节标题、表格行、纯符号或纯编号条款;
+- **`llm` 模式失败后回退**:LLM 超时/异常、输出无法解析、键名不符或返回空串,回退 `rules` 后仍无命中;
+- **超短条款**:如"不得泄露。"这类信息量不足的条款。
+
+模型把关键词输出成数组时会自动拼接(见内置归一化);如需统计空值来源,`rules` 无命中会打 `no keywords (rules) for <条款>` 的 INFO 日志。对内规/附件批量场景,如要求关键词覆盖率高,可由调用方传 `keyword_mode="llm"`。
+
 ## 4. 错误语义
 
 | 情况 | 行为 |
 |---|---|
 | 关键词提取 `llm` 模式失败/超时/输出无法解析 | 自动回退 `rules` 正则(外层条款与 `relationTerms` 关联条款同规则);均无命中时 `termKeyword=""`,不抛出 |
-| 内化判定 LLM 超时/失败/输出无法解析 | 按需要内化(`"1"`)处理,`internalizeReason` 注明原因,继续比对 |
+| 内化判定 LLM 超时/失败/输出无法解析 | 按需要内化(`"1"`)处理,`internalizeReason` 注明原因,继续比对;此时 `coreRequirements` 由比对阶段给出 |
 | 单条比对超时(`EPISODE_TIMEOUT_S`)或执行异常 | `coverageStatus="0"`,`analysis` 注明"需人工复核",不抛出 |
 | Zeus 检索异常(不可达 / 5xx) | 失败的检索不中断比对;若最终判定为缺失且出现过检索失败,降级为 `"0"` + 需人工复核,不抛出 |
 | Zeus 未配置 | 抛出 `RagNotConfigured` |

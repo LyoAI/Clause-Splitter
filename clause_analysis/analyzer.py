@@ -160,7 +160,7 @@ def _identity(clause: ClauseInput, keyword: str) -> ClauseResult:
 
 
 def _base(clause: ClauseInput, judgment: Judgment, keyword: str) -> ClauseResult:
-    """Judgment-only result (no analysis fields)."""
+    """Judgment-only result: no coverage analysis, but the clause's core content is kept."""
     return ClauseResult(
         term_name=clause.term_name,
         term_id=clause.term_id,
@@ -169,11 +169,16 @@ def _base(clause: ClauseInput, judgment: Judgment, keyword: str) -> ClauseResult
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
         require_type=judgment.require_type,
+        core_requirements=judgment.core_requirements,
     )
 
 
 def _degraded(clause: ClauseInput, judgment: Judgment, keyword: str, note: str) -> ClauseResult:
-    """Failed episode: a 缺失 verdict whose analysis says it needs human review."""
+    """Failed episode: a 缺失 verdict whose analysis says it needs human review.
+
+    The judgment already read the clause, so its core requirements backfill the
+    field the episode failed to produce.
+    """
     return ClauseResult(
         term_name=clause.term_name,
         term_id=clause.term_id,
@@ -182,6 +187,7 @@ def _degraded(clause: ClauseInput, judgment: Judgment, keyword: str, note: str) 
         internalize=judgment.decision,
         internalize_reason=judgment.reason,
         require_type=judgment.require_type,
+        core_requirements=judgment.core_requirements,
         coverage_status=CoverageStatus.NOT_COVERED,
         analysis=note,
     )

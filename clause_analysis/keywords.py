@@ -76,12 +76,23 @@ async def extract_keywords(llm: Any, clause: ClauseInput, *, mode: str, timeout_
             logger.warning("keyword LLM failed for %s; falling back to rules: %s", clause.term_name, e)
         else:
             parsed = parse_answer_json(resp.content or "")
-            keyword = norm_str(parsed.get("term_keyword")) if parsed else ""
+            keyword = _norm_keyword(parsed.get("term_keyword")) if parsed else ""
             if keyword:
                 return keyword
             logger.warning("keyword LLM output empty/unparseable for %s; falling back to rules", clause.term_name)
     # "rules" and any unknown mode value land here (fail-open).
-    return regex_keywords(clause.term_content)
+    keyword = regex_keywords(clause.term_content)
+    if not keyword:
+        logger.info("no keywords (rules) for %s: %r", clause.term_name, clause.term_content[:60])
+    return keyword
+
+
+def _norm_keyword(value: object) -> str:
+    """LLM output as a deduped "、" string — models sometimes answer with a list."""
+    if isinstance(value, list):
+        items = [norm_str(v) for v in value]
+        return "、".join(dict.fromkeys(i for i in items if i))
+    return norm_str(value)
 
 
 def _keywords_prompt(clause: ClauseInput) -> str:

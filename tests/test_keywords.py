@@ -67,6 +67,12 @@ def test_llm_mode_exception_falls_back_to_rules():
     assert "数据安全" in kw.split("、")
 
 
+def test_llm_mode_joins_list_output_and_filters_non_strings():
+    llm = _StubLLM('<answer>{"term_keyword":["数据安全","报送",42,"数据安全"]}</answer>')
+    kw = asyncio.run(extract_keywords(llm, _clause("应当报送。"), mode="llm", timeout_s=5))
+    assert kw == "数据安全、报送"
+
+
 def test_unknown_mode_is_treated_as_rules_without_calling_llm():
     llm = _StubLLM("whatever")
     kw = asyncio.run(extract_keywords(llm, _clause("应当履行数据安全保护义务。"), mode="bogus", timeout_s=5))

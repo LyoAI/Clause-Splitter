@@ -27,6 +27,7 @@ class Judgment:
     reason: str = ""
     clause_type: str = ""
     require_type: str = ""
+    core_requirements: str = ""
 
 
 def _fallback(reason: str) -> Judgment:
@@ -55,6 +56,7 @@ async def judge(llm: Any, clause: ClauseInput, timeout_s: float) -> Judgment:
         reason=norm_str(parsed.get("internalization_reason")),
         clause_type=norm_str(parsed.get("clause_type")),
         require_type=require_type if require_type in _REQUIRE_TYPES else "",
+        core_requirements=norm_str(parsed.get("core_regulatory_requirements")),
     )
 
 
