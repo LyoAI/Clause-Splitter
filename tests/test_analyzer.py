@@ -48,6 +48,35 @@ def test_degraded_path_backfills_core_requirements_from_judgment():
     assert res.analysis == "该条款比对超时,需人工复核。"
 
 
+def test_llm_keywords_reuse_judgment_without_an_extra_call():
+    from clause_analysis.analyzer import _resolve_keyword
+    from clause_analysis.judge import Judgment
+
+    class _CountingLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, messages):
+            self.calls += 1
+            from types import SimpleNamespace
+            return SimpleNamespace(content='<answer>{"term_keyword":"数据安全"}</answer>')
+
+    clause = ClauseInput(term_name="第一条", term_content="应当履行数据安全保护义务。")
+    llm = _CountingLLM()
+
+    judged = Judgment(decision="需要内化", term_keyword="数据安全、保护义务")
+    assert asyncio.run(_resolve_keyword(llm, clause, mode="llm", timeout_s=5, judgment=judged)) == "数据安全、保护义务"
+    assert llm.calls == 0  # reused the judgment's keywords
+
+    # Judgment produced no keywords (e.g. fail-open / model omitted) -> dedicated call.
+    assert asyncio.run(_resolve_keyword(llm, clause, mode="llm", timeout_s=5, judgment=Judgment(decision="需要内化"))) == "数据安全"
+    assert llm.calls == 1
+
+    # rules mode never calls the LLM.
+    assert "数据安全" in asyncio.run(_resolve_keyword(llm, clause, mode="rules", timeout_s=5, judgment=judged)).split("、")
+    assert llm.calls == 1
+
+
 def test_skip_internalization_needs_no_zeus_and_fills_identity_only():
     analyzer = ClauseAnalyzer(object(), ZeusProvider())  # unconfigured Zeus + unused llm
     clause = ClauseInput(

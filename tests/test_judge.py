@@ -37,6 +37,16 @@ def test_core_requirements_default_empty_when_field_missing():
     assert j.core_requirements == ""
 
 
+def test_term_keyword_parsed_from_judgment():
+    j = _judge(
+        '{"internalization_decision":"需要内化","internalization_reason":"义务性",'
+        '"term_keyword":"数据安全、报送义务"}'
+    )
+    assert j.term_keyword == "数据安全、报送义务"
+
+    assert _judge('{"internalization_decision":"无需内化"}').term_keyword == ""
+
+
 def test_judge_failure_fails_open_to_needs_internalization():
     clause = ClauseInput(term_name="第一条", term_content="应当建立制度。")
 

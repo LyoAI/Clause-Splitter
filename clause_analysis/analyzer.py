@@ -1,7 +1,8 @@
 """Unified entry point: one clause in, one ``ClauseResult`` out.
 
 Flow per clause:
-    keywords (rules | llm) — always, 内规/附件 stop here when ``need_internalization=False``
+    keywords — always; 内规/附件 stop here (``need_internalization=False``).
+               llm mode reuses the judgment's keywords for 外规 (no extra call)
     judge (text only) → 无需内化: return ·
                       → episode (ReAct over Zeus) → grounding → result
 
@@ -83,17 +84,19 @@ class ClauseAnalyzer:
         clause: ClauseInput,
         *,
         need_internalization: bool = True,
-        keyword_mode: str = "rules",
+        keyword_mode: str = "llm",
         search_labels: list[str] | None = None,
     ) -> ClauseResult:
         """Extract keywords, then (外规 only) judge and compare against the corpus.
 
-        Keywords are the前置 step and run for every clause — 内规/附件 need
-        them too. ``need_internalization=False`` (docType 2/3) skips judgment
-        and retrieval entirely: only identity fields + keywords are filled, and
-        Zeus stays untouched. ``keyword_mode`` picks the extraction:
-        ``"rules"`` (regex, default) or ``"llm"`` (falls back to rules on any
-        failure).
+        Keywords run for every clause — 内规/附件 need them too. In ``"llm"``
+        mode (default) 外规 clauses reuse the judgment call's keywords, so the
+        only extra call is the one 内规/附件 need anyway; ``"rules"`` is the
+        ms-level regex alternative. Any llm failure falls back to rules.
+
+        ``need_internalization=False`` (docType 2/3) skips judgment and retrieval
+        entirely: only identity fields + keywords are filled, and Zeus stays
+        untouched.
 
         ``search_labels`` optionally narrows retrieval to Zeus chunks carrying
         those labels; ``None`` / empty searches the whole index. Retrieval scope
@@ -102,13 +105,16 @@ class ClauseAnalyzer:
         Raises ``RagAuthError`` / ``RagNotConfigured`` for deployment problems so
         the caller can stop the batch. Every other failure degrades this clause only.
         """
-        keyword = await extract_keywords(self.llm, clause, mode=keyword_mode, timeout_s=self.timeout_s)
         if not need_internalization:
+            keyword = await extract_keywords(self.llm, clause, mode=keyword_mode, timeout_s=self.timeout_s)
             return _identity(clause, keyword)
         if not self.rag.available:
             raise RagNotConfigured("Zeus 未配置 —— 请设置 RAG_API_BASE / ZEUS_APP_ID / ZEUS_APP_SECRET / ZEUS_INDEX")
 
         judgment = await judge(self.llm, clause, self.timeout_s)
+        keyword = await _resolve_keyword(
+            self.llm, clause, mode=keyword_mode, timeout_s=self.timeout_s, judgment=judgment
+        )
         if judgment.decision == NO_INTERNALIZATION:
             return _base(clause, judgment, keyword)
         registry = self._registry(search_labels)
@@ -146,6 +152,20 @@ class ClauseAnalyzer:
             snippet_max_tokens=self.snippet_max_tokens,
             default_labels=search_labels,
         )
+
+
+async def _resolve_keyword(
+    llm: Any, clause: ClauseInput, *, mode: str, timeout_s: float, judgment: Judgment | None = None
+) -> str:
+    """Keywords for one clause.
+
+    In ``llm`` mode a 外规 clause reuses the keywords its judgment call already
+    produced — no extra LLM request. Otherwise a dedicated keyword call runs
+    (内规/附件 have no judgment call), falling back to rules on failure.
+    """
+    if mode == "llm" and judgment is not None and judgment.term_keyword:
+        return judgment.term_keyword
+    return await extract_keywords(llm, clause, mode=mode, timeout_s=timeout_s)
 
 
 def _identity(clause: ClauseInput, keyword: str) -> ClauseResult:

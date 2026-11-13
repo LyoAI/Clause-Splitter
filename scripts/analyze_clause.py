@@ -26,8 +26,8 @@ def main() -> None:
     parser.add_argument("input", type=Path, help="ClauseInput 的 JSON 文件")
     parser.add_argument("--raw", action="store_true", help="输出完整 ClauseResult 而非 ESG data[] 元素")
     parser.add_argument("--labels", default="", help="逗号分隔的 Zeus 检索标签;不填 = 检索全库")
-    parser.add_argument("--keyword-mode", choices=("rules", "llm"), default="rules",
-                        help="关键词提取方式:rules=正则(默认) / llm=模型(失败自动回退 rules)")
+    parser.add_argument("--keyword-mode", choices=("rules", "llm"), default="llm",
+                        help="关键词提取方式:llm=模型(默认;外规复用判定调用) / rules=正则(毫秒级)")
     parser.add_argument("--skip-internalization", action="store_true",
                         help="内规/附件模式:只提取关键词,不跑内化判定与比对")
     args = parser.parse_args()

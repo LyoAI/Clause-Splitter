@@ -18,16 +18,16 @@ for clause in clauses:                           # 工程的 for 循环
             section="第三章 风险评估内容",             # 无章节传 ""
         ),
         need_internalization=True,   # 外规(docType=1);内规/附件(2/3)传 False
-        keyword_mode="rules",        # 关键词提取:rules(默认,正则) | llm(失败自动回退 rules)
+        keyword_mode="llm",          # 关键词提取:llm(默认) | rules(正则)
     )
     element = res.to_esg()                       # data[] 元素中的算法侧字段
 ```
 
 - `analyze` 是唯一对外方法;无状态,每次调用独立。可选参数 `search_labels`(list[str]):本次检索的标签范围,由调用方按条款主动传;**不传或为空 = 不加过滤,检索整个索引**。检索范围不在初始化时写死。
 - `need_internalization`:是否执行内化分析。**外规(docType=1)传 `True`(默认)**;**内规/附件(docType=2/3)传 `False`**——只提取关键词,不做内化判定、不检索 Zeus(该路径不要求配置 Zeus),分析字段全空。
-- `keyword_mode`:关键词提取方式,**内外规条款都要提取**,且同时作用于出参外层 `termKeyword` 与 `relationTerms[].termKeyword`。`rules`(默认)为毫秒级正则;`llm` 质量更好但每条多一次 LLM 调用(关联条款关键词由比对阶段顺带提取,不另起调用),任何失败自动回退 `rules`。按耗时预算逐次选择。
+- `keyword_mode`:关键词提取方式,**内外规条款都要提取**,且同时作用于出参外层 `termKeyword` 与 `relationTerms[].termKeyword`。**默认 `llm`:外规复用判定调用顺带产出的关键词,不产生额外 LLM 请求;内规/附件走一次专用短调用**。`rules` 为毫秒级正则备选(不调 LLM,但结构性条款常提不出词)。llm 任何失败自动回退 `rules`。
 - 并发由调用方控制。内网 LLM 只有 2 个并发槽,并行度请 ≤ 2。
-- 单条冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果、`--keyword-mode llm` 换关键词提取方式、`--skip-internalization` 看内规/附件路径。
+- 单条冒烟(真实 LLM + Zeus):`uv run python scripts/analyze_clause.py examples/clause_input.json`,加 `--raw` 输出完整结果、`--keyword-mode rules` 换正则提取、`--skip-internalization` 看内规/附件路径。
 
 ## 2. 输入 `ClauseInput`
 
@@ -80,7 +80,7 @@ for clause in clauses:                           # 工程的 for 循环
 |---|---|---|
 | `termId` | str | 外规条款 ID,入参 `term_id` 原样回传 |
 | `termContent` | str | 外规条款原文,入参 `term_content` 原样回传 |
-| `termKeyword` | str | 外规条款核心合规关键词,由**前置关键词提取阶段**产出(`keyword_mode` 选 `rules` / `llm`,llm 失败自动回退 rules);两种方式均无命中时为 `""`(详见 §3.3) |
+| `termKeyword` | str | 外规条款核心合规关键词,由关键词提取阶段产出(`keyword_mode` 默认 `llm`,外规复用判定调用;失败自动回退 rules);无有效结果时为 `""`(详见 §3.3) |
 | `termName` | str | 外规条款名称(条款号),入参 `term_name` 原样回传 |
 
 **分析结果字段**:
@@ -105,7 +105,7 @@ for clause in clauses:                           # 工程的 for 循环
 | `relationDocId` | 关联内规文档 ID,即后端 `docId`(内规入库时作为 Zeus `org_data_id` 写入);取不到时为 `""` |
 | `termContent` | 关联条款原文 |
 | `termId` | 关联条款 ID(检索返回的 chunk id) |
-| `termKeyword` | 关联条款关键词:默认 `rules` 正则从关联条款原文提取;`keyword_mode="llm"` 时由比对 LLM 在 answer 中顺带给出(缺失回退 rules);取不到为 `""` |
+| `termKeyword` | 关联条款关键词:默认 `llm` 由比对 LLM 在 answer 中顺带给出(缺失回退 rules 正则);`keyword_mode="rules"` 时直接用正则;取不到为 `""` |
 | `termName` | 关联条款名称(条款号) |
 
 关联条款的 `relationDocId` / `termContent` / `termName` 仅在本次检索缓存中能查到时回填;查不到时 `termId` 仍保留,其余为 `""`。覆盖结论不因引用 id 无法回查而改变。
@@ -131,13 +131,13 @@ for clause in clauses:                           # 工程的 for 循环
 
 ### 3.3 `termKeyword` 何时为空
 
-关键词由前置阶段尽力提取,以下情况会输出 `""`,属预期行为而非故障:
+默认 `keyword_mode="llm"`,关键词通常都有值;以下情况会输出 `""`:
 
-- **`rules` 模式无命中**:条款不含领域词典词、也没有"…义务/…制度/…报告"类名词短语——典型为立法目的、适用范围、定义、附则/施行日期、章节标题、表格行、纯符号或纯编号条款;
-- **`llm` 模式失败后回退**:LLM 超时/异常、输出无法解析、键名不符或返回空串,回退 `rules` 后仍无命中;
+- **显式选择 `rules` 且无命中**:条款不含领域词典词、也没有"…义务/…制度/…报告"类名词短语——典型为立法目的、适用范围、定义、附则/施行日期、章节标题、表格行、纯符号或纯编号条款;
+- **`llm` 模式双重失败**:LLM 超时/异常、输出无法解析、键名不符或返回空串,回退 `rules` 后仍无命中;
 - **超短条款**:如"不得泄露。"这类信息量不足的条款。
 
-模型把关键词输出成数组时会自动拼接(见内置归一化);如需统计空值来源,`rules` 无命中会打 `no keywords (rules) for <条款>` 的 INFO 日志。对内规/附件批量场景,如要求关键词覆盖率高,可由调用方传 `keyword_mode="llm"`。
+模型把关键词输出成数组时会自动拼接(见内置归一化);如需统计空值来源,`rules` 无命中会打 `no keywords (rules) for <条款>` 的 INFO 日志。大批量内规如跑 `rules` 追求速度,接受这批条款中的预期空值即可。
 
 ## 4. 错误语义
 

@@ -21,7 +21,7 @@ result = await analyzer.analyze(
         section="第三章 风险评估内容",              # 可选
     ),
     need_internalization=True,   # 外规(docType=1);内规/附件(2/3)传 False:只提关键词
-    keyword_mode="rules",        # 关键词提取:rules(默认,正则) | llm(失败自动回退 rules)
+    keyword_mode="llm",          # 关键词提取:llm(默认) | rules(毫秒级正则)
 )
 element = result.to_esg()                        # data[] 元素中的算法侧字段
 ```
@@ -56,7 +56,7 @@ tests/                    离线单测(纯逻辑 + Zeus 请求构造)
 ## 设计要点
 
 - **单条为操作单元**,无状态:每次 `analyze` 独立,检索缓存只属于本次调用。
-- **关键词前置提取**:内外规条款都要提关键词;`rules` 正则(默认,毫秒级)或 `llm`(质量更好,失败自动回退 rules),按耗时预算逐次选;`relationTerms` 关联内规条款的关键词同规则填充。
+- **关键词提取**:内外规条款都要提关键词;默认 `llm`——外规复用判定调用顺带产出(无额外请求),内规/附件走一次专用短调用;`rules` 是毫秒级正则备选,失败自动回退规则;`relationTerms` 关联内规条款的关键词同规则填充。
 - **内规/附件短路**:`need_internalization=False`(docType 2/3)只产出身份字段 + 关键词,不判定、不检索,不要求配置 Zeus。
 - **无需内化也保留核心内容**:外规判定为无需内化时,`coreRequirements` 由判定阶段概括条款核心规范内容(义务要点/适用范围/生效时间),差异分析与整改建议仍为空。
 - **不做五元组拆解**:episode 只读条款原文,不让模型在输出中先拆义务。
